@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+Database/*.db
+Database/*.db-journal
+Database/*.db-wal
+Database/*.db-shm
+Raw-PDFs/
+Transcripts/
+Clone/
+.DS_Store
