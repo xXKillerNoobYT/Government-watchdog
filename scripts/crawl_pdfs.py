@@ -48,7 +48,7 @@ logger = logging.getLogger("crawl_pdfs")
 
 USER_AGENT = "GovernmentWatchdogBot/0.1 (+contact: weirdtoocompany@gmail.com)"
 MIN_DELAY = 3.0
-MAX_DELAY = 12.0
+MAX_DELAY = 5.0  # avg 4s ≈ 15 req/min, under spec ceiling of 20/min
 PER_MINUTE_CAP = 20
 REQUEST_TIMEOUT = 30
 MAX_PAGES_PER_TARGET = 500  # safety cap on page traversal
@@ -389,7 +389,14 @@ def crawl_target(
                 continue
             if link in seen_urls:
                 continue
-            queue.append((link, url))
+            # Prioritize PDF-looking links (incl. Drupal /media/<id> assets)
+            # so a sitemap flood of text pages doesn't starve the queue of
+            # actual documents.
+            path_lower = urllib.parse.urlparse(link).path.lower()
+            if _is_pdf_url(link) or "/media/" in path_lower:
+                queue.appendleft((link, url))
+            else:
+                queue.append((link, url))
 
         logger.debug("scanned %s (cms=%s)", url, cms)
 

@@ -120,9 +120,53 @@ def embed_pass(
     return inserted
 
 
+def _extract_pdf_text(local_path: Path) -> str:
+    # pypdf is pure-Python, no system deps. Fail soft: return "" so the
+    # row stays in the DB without raw_text and we can re-try in Phase 2.
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        logger.warning("pypdf not installed; PDFs will not be embedded")
+        return ""
+    try:
+        reader = PdfReader(str(local_path))
+        return "\n".join((p.extract_text() or "") for p in reader.pages).strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pdf extract failed for %s: %s", local_path, exc)
+        return ""
+
+
+def extract_missing_document_text(conn, repo_root: Path) -> int:
+    """Populate documents.raw_text for rows that don't have it yet.
+
+    Returns count of newly-extracted rows.
+    """
+    rows = conn.execute(
+        "SELECT id, local_path FROM documents "
+        "WHERE raw_text IS NULL OR length(raw_text) = 0"
+    ).fetchall()
+    extracted = 0
+    for row in rows:
+        path = repo_root / row["local_path"]
+        if not path.exists():
+            logger.warning("missing local pdf %s", path)
+            continue
+        text = _extract_pdf_text(path)
+        if not text:
+            continue
+        conn.execute("UPDATE documents SET raw_text = ? WHERE id = ?",
+                     (text, row["id"]))
+        conn.commit()
+        extracted += 1
+    return extracted
+
+
 def run(*, db_path: Path, model: str = MODEL, embed_fn=ollama_embed) -> dict:
     db.apply_migrations(db_path)
     conn = db.open_db(db_path)
+
+    repo_root = Path(__file__).resolve().parent.parent
+    extracted = extract_missing_document_text(conn, repo_root)
 
     docs = conn.execute(
         "SELECT id, raw_text FROM documents WHERE raw_text IS NOT NULL AND length(raw_text) > 0"
@@ -138,7 +182,8 @@ def run(*, db_path: Path, model: str = MODEL, embed_fn=ollama_embed) -> dict:
                         rows=[(r["id"], r["full_text"]) for r in transcripts],
                         model=model, embed_fn=embed_fn)
     return {"new_document_chunks": new_doc, "new_transcript_chunks": new_tx,
-            "documents_scanned": len(docs), "transcripts_scanned": len(transcripts)}
+            "documents_scanned": len(docs), "transcripts_scanned": len(transcripts),
+            "pdf_text_extracted": extracted}
 
 
 def check_ollama() -> bool:

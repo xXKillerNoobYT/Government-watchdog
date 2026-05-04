@@ -54,8 +54,16 @@ def _existing_video_ids(conn: sqlite3.Connection) -> set[str]:
 
 
 def discover_via_channel(channel_id: str, limit: int) -> list[dict]:
-    """Use yt-dlp --flat-playlist to enumerate channel videos (newest first)."""
-    url = f"https://www.youtube.com/channel/{channel_id}/videos"
+    """Use yt-dlp --flat-playlist to enumerate channel uploads (newest first).
+
+    The /videos tab URL only returns featured/highlighted videos; use the
+    auto-generated uploads playlist (UC… → UU…) for the full upload feed.
+    """
+    if channel_id.startswith("UC"):
+        playlist_id = "UU" + channel_id[2:]
+        url = f"https://www.youtube.com/playlist?list={playlist_id}"
+    else:
+        url = f"https://www.youtube.com/channel/{channel_id}/videos"
     return _yt_dlp_enumerate(url, limit)
 
 
@@ -104,28 +112,33 @@ def _yt_dlp_enumerate(target: str, limit: int) -> list[dict]:
 
 
 def fetch_transcript(video_id: str) -> dict | None:
-    """Return {full_text, timestamped_text, language, segments} or None on miss."""
+    """Return {full_text, timestamped_text, language, segment_count} or None on miss."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError as exc:
         raise RuntimeError("youtube-transcript-api not installed; pip install -r requirements.txt") from exc
 
+    # youtube-transcript-api 1.x switched from a classmethod to an
+    # instance-based API: YouTubeTranscriptApi().fetch(video_id) returns
+    # a FetchedTranscript with .snippets, .language_code, etc.
     try:
-        segments = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "en-US"])
+        api = YouTubeTranscriptApi()
+        fetched = api.fetch(video_id, languages=["en", "en-US"])
     except Exception as exc:  # noqa: BLE001 — library raises various subclasses
         logger.info("transcript-miss %s: %s", video_id, exc.__class__.__name__)
         return None
 
-    full = " ".join(seg.get("text", "").strip() for seg in segments if seg.get("text"))
+    snippets = list(fetched.snippets)
+    full = " ".join(s.text.strip() for s in snippets if getattr(s, "text", "").strip())
     timestamped = "\n".join(
-        f"{int(seg['start'] // 60):02d}:{int(seg['start'] % 60):02d} {seg.get('text', '').strip()}"
-        for seg in segments
+        f"{int(s.start // 60):02d}:{int(s.start % 60):02d} {s.text.strip()}"
+        for s in snippets
     )
     return {
         "full_text": full,
         "timestamped_text": timestamped,
-        "language": "en",
-        "segment_count": len(segments),
+        "language": getattr(fetched, "language_code", "en") or "en",
+        "segment_count": len(snippets),
     }
 
 

@@ -56,6 +56,8 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=ft.DEFAULT_LIMIT)
     parser.add_argument("--target", choices=list(crawl_pdfs.TARGETS), action="append",
                         help="restrict crawler to one or more targets")
+    parser.add_argument("--pdf-limit", type=int, default=None,
+                        help="early-exit after N new PDFs per target (live runs)")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
     logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -79,7 +81,8 @@ def main() -> int:
         crawl_summary = []
         for t in targets:
             try:
-                new, scanned = crawl_pdfs.crawl_target(t, conn, dry_run=False, rate=rate)
+                new, scanned = crawl_pdfs.crawl_target(t, conn, dry_run=False,
+                                                       rate=rate, limit=args.pdf_limit)
                 crawl_summary.append({"target": t.key, "new_pdfs": new, "scanned": scanned})
             except Exception as exc:
                 logger.exception("crawl failed for %s", t.key)
