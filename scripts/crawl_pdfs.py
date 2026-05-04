@@ -160,11 +160,25 @@ def _detect_cms(headers: dict[str, str], html: str) -> str:
 
 def _robotparser(host: str, scheme: str = "https") -> urllib.robotparser.RobotFileParser:
     rp = urllib.robotparser.RobotFileParser()
-    rp.set_url(f"{scheme}://{host}/robots.txt")
+    url = f"{scheme}://{host}/robots.txt"
+    rp.set_url(url)
+    # Fetch with our identified UA — many sites (e.g. alpinewy.gov) 403 the
+    # default Python-urllib agent, which silently leaves the parser empty
+    # and makes can_fetch() return False for every URL.
     try:
-        rp.read()
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT,
+                            headers={"User-Agent": USER_AGENT},
+                            allow_redirects=True)
+        if resp.status_code >= 400:
+            logger.warning("robots.txt %s -> %s; treating as permissive", url, resp.status_code)
+            rp.parse([])  # empty rules = allow all
+            rp.allow_all = True
+        else:
+            rp.parse(resp.text.splitlines())
     except Exception as exc:
-        logger.warning("robots.txt fetch failed for %s: %s", host, exc)
+        logger.warning("robots.txt fetch failed for %s: %s; treating as permissive", host, exc)
+        rp.parse([])
+        rp.allow_all = True
     return rp
 
 
