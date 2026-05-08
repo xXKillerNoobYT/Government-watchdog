@@ -1,0 +1,221 @@
+{
+  "brief_id": "2026-05-08-alpine-wwtp-financing",
+  "topic": "alpine-wwtp-financing",
+  "title": "Alpine wastewater treatment plant \u2014 financing and operations",
+  "generated_utc": "2026-05-08T00:00:00Z",
+  "keywords": [
+    "wastewater",
+    "WWTP",
+    "CWSRF",
+    "sewer plant",
+    "treatment plant",
+    "pre-treatment plant",
+    "JVA"
+  ],
+  "corpus": {
+    "db_path": "Database/gov_watchdog.db",
+    "documents": 16,
+    "transcripts": 9
+  },
+  "brief_sha256": "990f1f58e718adfc74bd57ba0c8620639c99adb941bb11f563d0c7f21a03d13f",
+  "evidence": [
+    {
+      "n": 1,
+      "kind": "doc",
+      "source_id": 4,
+      "source_url": "https://www.alpinewy.gov/media/1356",
+      "fetch_time_utc": "2026-05-04T10:18:19.973+00:00",
+      "offset": 2446,
+      "length": 490
+    },
+    {
+      "n": 2,
+      "kind": "doc",
+      "source_id": 4,
+      "source_url": "https://www.alpinewy.gov/media/1356",
+      "fetch_time_utc": "2026-05-04T10:18:19.973+00:00",
+      "offset": 3554,
+      "length": 752
+    },
+    {
+      "n": 3,
+      "kind": "doc",
+      "source_id": 4,
+      "source_url": "https://www.alpinewy.gov/media/1356",
+      "fetch_time_utc": "2026-05-04T10:18:19.973+00:00",
+      "offset": 5013,
+      "length": 490
+    },
+    {
+      "n": 4,
+      "kind": "doc",
+      "source_id": 6,
+      "source_url": "https://www.alpinewy.gov/media/1386",
+      "fetch_time_utc": "2026-05-04T10:18:28.760+00:00",
+      "offset": 172279,
+      "length": 948
+    },
+    {
+      "n": 5,
+      "kind": "doc",
+      "source_id": 6,
+      "source_url": "https://www.alpinewy.gov/media/1386",
+      "fetch_time_utc": "2026-05-04T10:18:28.760+00:00",
+      "offset": 175043,
+      "length": 501
+    },
+    {
+      "n": 6,
+      "kind": "doc",
+      "source_id": 9,
+      "source_url": "https://www.alpinewy.gov/media/1371",
+      "fetch_time_utc": "2026-05-04T10:18:39.777+00:00",
+      "offset": 625,
+      "length": 490
+    },
+    {
+      "n": 7,
+      "kind": "doc",
+      "source_id": 9,
+      "source_url": "https://www.alpinewy.gov/media/1371",
+      "fetch_time_utc": "2026-05-04T10:18:39.777+00:00",
+      "offset": 1725,
+      "length": 490
+    },
+    {
+      "n": 8,
+      "kind": "doc",
+      "source_id": 9,
+      "source_url": "https://www.alpinewy.gov/media/1371",
+      "fetch_time_utc": "2026-05-04T10:18:39.777+00:00",
+      "offset": 2408,
+      "length": 490
+    },
+    {
+      "n": 9,
+      "kind": "doc",
+      "source_id": 11,
+      "source_url": "https://www.alpinewy.gov/media/1401",
+      "fetch_time_utc": "2026-05-04T10:18:49.307+00:00",
+      "offset": 443,
+      "length": 490
+    },
+    {
+      "n": 10,
+      "kind": "doc",
+      "source_id": 11,
+      "source_url": "https://www.alpinewy.gov/media/1401",
+      "fetch_time_utc": "2026-05-04T10:18:49.307+00:00",
+      "offset": 1345,
+      "length": 490
+    },
+    {
+      "n": 11,
+      "kind": "doc",
+      "source_id": 11,
+      "source_url": "https://www.alpinewy.gov/media/1401",
+      "fetch_time_utc": "2026-05-04T10:18:49.307+00:00",
+      "offset": 1933,
+      "length": 490
+    },
+    {
+      "n": 12,
+      "kind": "doc",
+      "source_id": 13,
+      "source_url": "https://www.alpinewy.gov/media/1411",
+      "fetch_time_utc": "2026-05-04T10:19:00.569+00:00",
+      "offset": 35132,
+      "length": 484
+    },
+    {
+      "n": 13,
+      "kind": "doc",
+      "source_id": 13,
+      "source_url": "https://www.alpinewy.gov/media/1411",
+      "fetch_time_utc": "2026-05-04T10:19:00.569+00:00",
+      "offset": 178966,
+      "length": 608
+    },
+    {
+      "n": 14,
+      "kind": "doc",
+      "source_id": 16,
+      "source_url": "https://www.alpinewy.gov/media/1426",
+      "fetch_time_utc": "2026-05-04T10:19:10.947+00:00",
+      "offset": 638,
+      "length": 490
+    },
+    {
+      "n": 15,
+      "kind": "doc",
+      "source_id": 16,
+      "source_url": "https://www.alpinewy.gov/media/1426",
+      "fetch_time_utc": "2026-05-04T10:19:10.947+00:00",
+      "offset": 1701,
+      "length": 490
+    },
+    {
+      "n": 16,
+      "kind": "doc",
+      "source_id": 16,
+      "source_url": "https://www.alpinewy.gov/media/1426",
+      "fetch_time_utc": "2026-05-04T10:19:10.947+00:00",
+      "offset": 2392,
+      "length": 490
+    },
+    {
+      "n": 17,
+      "kind": "tx",
+      "source_id": 3,
+      "source_url": "https://www.youtube.com/watch?v=xTKDhDwgrdU",
+      "fetch_time_utc": "2026-05-04T10:21:29.513+00:00",
+      "offset": 3256,
+      "length": 964
+    },
+    {
+      "n": 18,
+      "kind": "tx",
+      "source_id": 3,
+      "source_url": "https://www.youtube.com/watch?v=xTKDhDwgrdU",
+      "fetch_time_utc": "2026-05-04T10:21:29.513+00:00",
+      "offset": 31701,
+      "length": 491
+    },
+    {
+      "n": 19,
+      "kind": "tx",
+      "source_id": 3,
+      "source_url": "https://www.youtube.com/watch?v=xTKDhDwgrdU",
+      "fetch_time_utc": "2026-05-04T10:21:29.513+00:00",
+      "offset": 32366,
+      "length": 491
+    },
+    {
+      "n": 20,
+      "kind": "tx",
+      "source_id": 6,
+      "source_url": "https://www.youtube.com/watch?v=yKXDn4S1DrA",
+      "fetch_time_utc": "2026-05-04T10:21:36.066+00:00",
+      "offset": 27094,
+      "length": 1031
+    },
+    {
+      "n": 21,
+      "kind": "tx",
+      "source_id": 9,
+      "source_url": "https://www.youtube.com/watch?v=TQ4Tj1Mt7T8",
+      "fetch_time_utc": "2026-05-04T10:21:48.512+00:00",
+      "offset": 8978,
+      "length": 655
+    },
+    {
+      "n": 22,
+      "kind": "tx",
+      "source_id": 9,
+      "source_url": "https://www.youtube.com/watch?v=TQ4Tj1Mt7T8",
+      "fetch_time_utc": "2026-05-04T10:21:48.512+00:00",
+      "offset": 127993,
+      "length": 490
+    }
+  ]
+}
