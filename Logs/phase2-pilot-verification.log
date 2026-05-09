@@ -1,0 +1,45 @@
+# Phase 2 pilot — WEI-486 acceptance verification
+
+Run timestamp (wall clock, not part of artifact): 2026-05-08
+Verifier: CTO agent 328fddb9
+Spec: Docs/phase2-pilot-spec.md (frozen v1)
+Pilot artifacts:
+  - Docs/Briefs/2026-05-08-alpine-wwtp-financing.md
+  - Docs/Briefs/2026-05-08-alpine-wwtp-financing.citations.json
+Generator: scripts/watchdog_brief.py
+
+## Acceptance criteria (Docs/phase2-pilot-spec.md §4)
+
+AC1 Spec frozen — PASS. Docs/phase2-pilot-spec.md committed in 73dc6a4..f0a29ab; status line "Frozen v1".
+
+AC2 Corpus QA report posted — PASS (board comment thread, WEI-486).
+
+AC3 Brief generator committed — PASS. scripts/watchdog_brief.py present; stdlib + sqlite3 only (verified AC8).
+
+AC4 Pilot brief committed — PASS. Both Docs/Briefs files present (16,313 + 5,875 bytes).
+
+AC5 Citations valid — PASS.
+  - 22 evidence entries in citations JSON, 22 footnote definitions in markdown,
+    22 inline footnote references; sets equal {1..22}.
+  - All 22 (source_url, fetch_time_utc) tuples resolve to a documents.source_url
+    or transcripts.video_url row with matching fetch_time_utc. Missing: 0.
+
+AC6 Repeatable — PASS.
+  Pre-rerun  brief    SHA256: 990f1f58e718adfc74bd57ba0c8620639c99adb941bb11f563d0c7f21a03d13f
+  Pre-rerun  citations SHA256: 6a52db6a180f5a94c109953490f445bce738ecfe7c03df534438beba9167aff1
+  Command: python scripts/watchdog_brief.py --topic alpine-wwtp-financing
+  Post-rerun brief    SHA256: 990f1f58e718adfc74bd57ba0c8620639c99adb941bb11f563d0c7f21a03d13f
+  Post-rerun citations SHA256: 6a52db6a180f5a94c109953490f445bce738ecfe7c03df534438beba9167aff1
+  Byte-identical: yes (both files).
+  brief_sha256 embedded in citations JSON also equals the file hash above.
+
+AC7 No corpus mutation — PASS. scripts/watchdog_brief.py:105 opens DB with
+  uri=file:...?mode=ro (sqlite3 read-only URI).
+
+AC8 No paid API calls — PASS. grep -E 'anthropic|openai|api\.openai|api\.anthropic|http(s)?://|requests\.|urlopen|urllib'
+  in scripts/watchdog_brief.py returns nothing.
+
+## Result
+
+All eight acceptance criteria met. Pilot is review-ready; next action belongs to
+CEO review on WEI-486. No executor work continues until reviewer feedback.
