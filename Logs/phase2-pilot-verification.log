@@ -88,3 +88,44 @@ Next action: still CEO review on WEI-486 / WEI-70. Open follow-ups
 unchanged: Phase 1.5 metadata extraction (doc_type / doc_date /
 meeting_date), vector search over embeddings, lens framing
 (Forge/Horizon/Sentinel), delivery channel.
+
+---
+
+# Phase 1.5 — metadata backfill
+
+Run timestamp: 2026-05-09
+Trigger: standing board directive on WEI-70 ("this needs work done on it");
+  spec §6.1 flagged the metadata gap as the #1 corpus risk.
+Migration: Database/migrations/0002_transcript_title.sql
+  (adds transcripts.title + idx_transcripts_meeting_date).
+Backfill script: scripts/extract_metadata.py
+  - Idempotent: only writes when target column is NULL or a known
+    placeholder (doc_type='other', or title equal to URL slug).
+  - Reads PDF doc_date from raw_text via fixed-precedence regex
+    (FYE/Balance Sheet/DUE DATE/REPORT YEAR).
+  - Reads transcript meeting_date from JSON-meta title (MM/DD/YYYY).
+
+Backfill result (final state in Database/gov_watchdog.db):
+
+  documents:
+    doc_type non-other:  15 / 16   (only id=10 with empty raw_text remains 'other')
+    doc_date filled:     11 / 16   (5 ordinances + form + empty doc lack a clean date)
+    title meaningful:    16 / 16   (id=10 keeps URL-slug fallback '1406')
+
+  transcripts:
+    meeting_date filled:  8 / 9    (id=4 'Planning and Zoning LUDC WorkSession' has no date in title)
+    title filled:         9 / 9    (all carry the YouTube-provided meeting title)
+
+Brief regression check — re-ran generator on the unchanged corpus:
+  alpine-wwtp-financing brief SHA256: 990f1f58e718adfc74bd57ba0c8620639c99adb941bb11de26ef36857ce71  (unchanged)
+  alpine-lodging-tax    brief SHA256: 065b2b2417d4f79bc8b21274e418046defb10856a1439bb11de26ef36857ce71  (unchanged)
+
+Both briefs produce byte-identical output post-backfill, confirming the
+generator's contract (raw_text + source_url + fetch_time_utc only) is
+preserved and the metadata extension is non-breaking. Briefs can later be
+upgraded to cite "Annual financial report (2019-06-30) — fetched ..." once
+the brief template is extended; that template change is a separate commit.
+
+Next action: CEO review still pending on WEI-486 / WEI-70. Remaining
+deferred items: vector search, lens framing, delivery channel, brief
+template upgrade to surface doc_type / doc_date / meeting_date.
