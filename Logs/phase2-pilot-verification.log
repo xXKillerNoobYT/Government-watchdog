@@ -41,5 +41,50 @@ AC8 No paid API calls — PASS. grep -E 'anthropic|openai|api\.openai|api\.anthr
 
 ## Result
 
-All eight acceptance criteria met. Pilot is review-ready; next action belongs to
-CEO review on WEI-486. No executor work continues until reviewer feedback.
+All eight acceptance criteria met. Pilot is review-ready.
+
+---
+
+# Phase 2.1 — second brief (generalisation proof)
+
+Run timestamp: 2026-05-09
+Trigger: board comment on WEI-70 ("well this needs work done on it") —
+  taking that as a directive to proceed past WWTP-only review.
+Topic added to scripts/watchdog_brief.py registry: alpine-lodging-tax
+Artifacts:
+  - Docs/Briefs/2026-05-09-alpine-lodging-tax.md
+  - Docs/Briefs/2026-05-09-alpine-lodging-tax.citations.json
+
+Why this topic: Phase 2 pilot spec §3 keyword scan put "lodging tax" at 7
+sources; broader keyword set (lodging tax, lodging, transient, room tax,
+travel and tourism, tourism) hits 11 sources (4 PDFs + 7 transcripts).
+Strong cross-source signal, factual quantitative content (revenue lines in
+financial statements + transcript discussion of the 2026 ballot vote and
+$455k-of-asks vs $220-300k-budget shortfall).
+
+Acceptance reverify (same eight criteria, second topic):
+
+AC5 Citations valid — PASS.
+  22 evidence entries; 22 footnote defs; 22 inline refs; sets equal {1..22}.
+  All 22 (source_url, fetch_time_utc) resolve to live DB rows. Missing: 0.
+  Sources represented: 10 distinct (kind, source_id) pairs.
+
+AC6 Repeatable — PASS.
+  Run 1 brief    SHA256: 065b2b2417d4f79bc8b21274e418046defb10856a1439bb11de26ef36857ce71
+  Run 1 citations SHA256: 0c65eb8bb7630fe57c32be75487a4152b0889a1394255467ef589b5ad6b5e900
+  Run 2 brief    SHA256: 065b2b2417d4f79bc8b21274e418046defb10856a1439bb11de26ef36857ce71
+  Run 2 citations SHA256: 0c65eb8bb7630fe57c32be75487a4152b0889a1394255467ef589b5ad6b5e900
+  Byte-identical across reruns; brief_sha256 in JSON equals file hash.
+
+AC7/AC8 unchanged — generator still read-only and stdlib-only; the only
+diff vs. WWTP run is the topic registry entry, no I/O surface change.
+
+Conclusion: pipeline generalises beyond the original pilot topic with no
+code changes outside the topic registry. Spec §7 Q3 (in-script registry vs
+external file) — registry now holds two topics, still small enough to keep
+in-script; revisit at ≥3 topics per the spec default.
+
+Next action: still CEO review on WEI-486 / WEI-70. Open follow-ups
+unchanged: Phase 1.5 metadata extraction (doc_type / doc_date /
+meeting_date), vector search over embeddings, lens framing
+(Forge/Horizon/Sentinel), delivery channel.

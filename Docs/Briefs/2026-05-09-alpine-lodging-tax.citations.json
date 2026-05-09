@@ -1,0 +1,220 @@
+{
+  "brief_id": "2026-05-09-alpine-lodging-tax",
+  "topic": "alpine-lodging-tax",
+  "title": "Alpine lodging tax \u2014 revenue, tourism dependence, and use",
+  "generated_utc": "2026-05-09T00:00:00Z",
+  "keywords": [
+    "lodging tax",
+    "lodging",
+    "transient",
+    "room tax",
+    "travel and tourism",
+    "tourism"
+  ],
+  "corpus": {
+    "db_path": "Database/gov_watchdog.db",
+    "documents": 16,
+    "transcripts": 9
+  },
+  "brief_sha256": "065b2b2417d4f79bc8b21274e418046defb10856a1439bb11de26ef36857ce71",
+  "evidence": [
+    {
+      "n": 1,
+      "kind": "doc",
+      "source_id": 4,
+      "source_url": "https://www.alpinewy.gov/media/1356",
+      "fetch_time_utc": "2026-05-04T10:18:19.973+00:00",
+      "offset": 0,
+      "length": 408
+    },
+    {
+      "n": 2,
+      "kind": "doc",
+      "source_id": 4,
+      "source_url": "https://www.alpinewy.gov/media/1356",
+      "fetch_time_utc": "2026-05-04T10:18:19.973+00:00",
+      "offset": 12090,
+      "length": 491
+    },
+    {
+      "n": 3,
+      "kind": "doc",
+      "source_id": 9,
+      "source_url": "https://www.alpinewy.gov/media/1371",
+      "fetch_time_utc": "2026-05-04T10:18:39.777+00:00",
+      "offset": 381,
+      "length": 491
+    },
+    {
+      "n": 4,
+      "kind": "doc",
+      "source_id": 11,
+      "source_url": "https://www.alpinewy.gov/media/1401",
+      "fetch_time_utc": "2026-05-04T10:18:49.307+00:00",
+      "offset": 236,
+      "length": 487
+    },
+    {
+      "n": 5,
+      "kind": "doc",
+      "source_id": 16,
+      "source_url": "https://www.alpinewy.gov/media/1426",
+      "fetch_time_utc": "2026-05-04T10:19:10.947+00:00",
+      "offset": 394,
+      "length": 491
+    },
+    {
+      "n": 6,
+      "kind": "tx",
+      "source_id": 2,
+      "source_url": "https://www.youtube.com/watch?v=F2jqEVhYtww",
+      "fetch_time_utc": "2026-05-04T10:21:27.312+00:00",
+      "offset": 1137,
+      "length": 1335
+    },
+    {
+      "n": 7,
+      "kind": "tx",
+      "source_id": 2,
+      "source_url": "https://www.youtube.com/watch?v=F2jqEVhYtww",
+      "fetch_time_utc": "2026-05-04T10:21:27.312+00:00",
+      "offset": 2786,
+      "length": 903
+    },
+    {
+      "n": 8,
+      "kind": "tx",
+      "source_id": 2,
+      "source_url": "https://www.youtube.com/watch?v=F2jqEVhYtww",
+      "fetch_time_utc": "2026-05-04T10:21:27.312+00:00",
+      "offset": 10060,
+      "length": 545
+    },
+    {
+      "n": 9,
+      "kind": "tx",
+      "source_id": 3,
+      "source_url": "https://www.youtube.com/watch?v=xTKDhDwgrdU",
+      "fetch_time_utc": "2026-05-04T10:21:29.513+00:00",
+      "offset": 9241,
+      "length": 1563
+    },
+    {
+      "n": 10,
+      "kind": "tx",
+      "source_id": 3,
+      "source_url": "https://www.youtube.com/watch?v=xTKDhDwgrdU",
+      "fetch_time_utc": "2026-05-04T10:21:29.513+00:00",
+      "offset": 10858,
+      "length": 751
+    },
+    {
+      "n": 11,
+      "kind": "tx",
+      "source_id": 3,
+      "source_url": "https://www.youtube.com/watch?v=xTKDhDwgrdU",
+      "fetch_time_utc": "2026-05-04T10:21:29.513+00:00",
+      "offset": 13843,
+      "length": 487
+    },
+    {
+      "n": 12,
+      "kind": "tx",
+      "source_id": 5,
+      "source_url": "https://www.youtube.com/watch?v=RLYvkxdtItc",
+      "fetch_time_utc": "2026-05-04T10:21:33.929+00:00",
+      "offset": 5885,
+      "length": 487
+    },
+    {
+      "n": 13,
+      "kind": "tx",
+      "source_id": 5,
+      "source_url": "https://www.youtube.com/watch?v=RLYvkxdtItc",
+      "fetch_time_utc": "2026-05-04T10:21:33.929+00:00",
+      "offset": 11450,
+      "length": 487
+    },
+    {
+      "n": 14,
+      "kind": "tx",
+      "source_id": 5,
+      "source_url": "https://www.youtube.com/watch?v=RLYvkxdtItc",
+      "fetch_time_utc": "2026-05-04T10:21:33.929+00:00",
+      "offset": 19321,
+      "length": 487
+    },
+    {
+      "n": 15,
+      "kind": "tx",
+      "source_id": 7,
+      "source_url": "https://www.youtube.com/watch?v=Br-xOqO9GR8",
+      "fetch_time_utc": "2026-05-04T10:21:38.159+00:00",
+      "offset": 7563,
+      "length": 1851
+    },
+    {
+      "n": 16,
+      "kind": "tx",
+      "source_id": 7,
+      "source_url": "https://www.youtube.com/watch?v=Br-xOqO9GR8",
+      "fetch_time_utc": "2026-05-04T10:21:38.159+00:00",
+      "offset": 9630,
+      "length": 487
+    },
+    {
+      "n": 17,
+      "kind": "tx",
+      "source_id": 8,
+      "source_url": "https://www.youtube.com/watch?v=pouTtRMr638",
+      "fetch_time_utc": "2026-05-04T10:21:46.118+00:00",
+      "offset": 65591,
+      "length": 1010
+    },
+    {
+      "n": 18,
+      "kind": "tx",
+      "source_id": 8,
+      "source_url": "https://www.youtube.com/watch?v=pouTtRMr638",
+      "fetch_time_utc": "2026-05-04T10:21:46.118+00:00",
+      "offset": 66771,
+      "length": 900
+    },
+    {
+      "n": 19,
+      "kind": "tx",
+      "source_id": 8,
+      "source_url": "https://www.youtube.com/watch?v=pouTtRMr638",
+      "fetch_time_utc": "2026-05-04T10:21:46.118+00:00",
+      "offset": 70908,
+      "length": 487
+    },
+    {
+      "n": 20,
+      "kind": "tx",
+      "source_id": 9,
+      "source_url": "https://www.youtube.com/watch?v=TQ4Tj1Mt7T8",
+      "fetch_time_utc": "2026-05-04T10:21:48.512+00:00",
+      "offset": 12890,
+      "length": 1132
+    },
+    {
+      "n": 21,
+      "kind": "tx",
+      "source_id": 9,
+      "source_url": "https://www.youtube.com/watch?v=TQ4Tj1Mt7T8",
+      "fetch_time_utc": "2026-05-04T10:21:48.512+00:00",
+      "offset": 14225,
+      "length": 958
+    },
+    {
+      "n": 22,
+      "kind": "tx",
+      "source_id": 9,
+      "source_url": "https://www.youtube.com/watch?v=TQ4Tj1Mt7T8",
+      "fetch_time_utc": "2026-05-04T10:21:48.512+00:00",
+      "offset": 21433,
+      "length": 487
+    }
+  ]
+}

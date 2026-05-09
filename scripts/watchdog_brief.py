@@ -40,6 +40,19 @@ TOPICS = {
             "JVA",
         ],
     },
+    "alpine-lodging-tax": {
+        "title": "Alpine lodging tax — revenue, tourism dependence, and use",
+        "brief_id": "2026-05-09-alpine-lodging-tax",
+        "generated_utc": "2026-05-09T00:00:00Z",
+        "keywords": [
+            "lodging tax",
+            "lodging",
+            "transient",
+            "room tax",
+            "travel and tourism",
+            "tourism",
+        ],
+    },
 }
 
 WINDOW_BEFORE = 220
