@@ -1,0 +1,13 @@
+{
+  "name": "government-watchdog-tooling",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first source registry tooling for Government Watchdog verification.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
