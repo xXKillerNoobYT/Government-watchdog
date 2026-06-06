@@ -1,0 +1,20 @@
+name: Local Runner Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Verify local Mac runner (backend)
+    runs-on: [self-hosted, macOS, ARM64, government-watchdog, gov-backend]
+    steps:
+      - name: Print runner context
+        run: |
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Runner name: $RUNNER_NAME"
+          echo "Runner OS: $RUNNER_OS"
+          echo "Runner arch: $RUNNER_ARCH"
+          sw_vers || true
+          uname -a
+      - name: Verify checkout works
+        uses: actions/checkout@v4
