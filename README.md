@@ -5,6 +5,7 @@ Pilot scope: **Alpine, Wyoming only**. Long-term zero-human AI Government Watchd
 Phase 1 is the data foundation: PDF crawler, YouTube transcript bulk-pull, SQLite + embeddings, mechanics doc.
 
 - Phase 1 spec: [`Docs/phase1-spec.md`](Docs/phase1-spec.md)
+- Stage 0 GitHub/Paperclip credential path: [`Docs/stage0-github-paperclip-secret-path.md`](Docs/stage0-github-paperclip-secret-path.md)
 - Tracking issue: WEI-255
 - Project root in vault: `01_projects/Government-Watchdog/`
 
