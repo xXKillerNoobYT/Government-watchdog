@@ -641,11 +641,34 @@ Any of the above is an **owner-escalation trigger**: stop and route to CEO.
 
 - **VerificationSafetyReviewer** (`3f95c8ce`): label/gate correctness — attribution
   states, AI/verbatim labeling, `verificationStatus`→`uiStatus` mapping,
-  fail-closed publication.
+  fail-closed publication. **Verdict: APPROVE** (GOV-41, `done`) — enums/gates
+  verified against the enforcing `compute_ui_status` code, not the prose.
 - **CTO** (`24fddc65`): technical contract sign-off — typed-model coherence with
   the concept-map registries and Stage 1.05/1.06 contracts, field-name alignment,
   next-gate readiness. Agent sign-off via comment + status, not a board
-  `request_confirmation` (per WORKFLOW_GOVERNANCE).
+  `request_confirmation` (per WORKFLOW_GOVERNANCE). **Verdict: APPROVE**
+  (GOV-42, `done`) — node/edge/card/link/status registries verified 1:1 against
+  `scripts/validate_concept_map_export.py`.
+
+## Carry-Forward for the Downstream Implementation Gate (non-blocking)
+
+Recorded from the two APPROVE sign-offs so the next Stage 1 planning/implementation
+gate inherits them. **Neither blocks GOV-40** and neither is authorized here:
+
+1. **Raw-content SHA-256 must become an explicit `source_record` field.** The hash
+   drives the `sourceChanged` → `source-changed` gate (§5.2) but is currently only
+   referenced as a vault-only field (§7.1), not declared on the §1.1
+   `source_record` schema. The implementation issue should add it to the Stage 1.05
+   source registry so `sourceChanged` is deterministically computable. The pointer
+   object (§2.1) correctly keeps the hash itself private.
+2. **Exact public-facing AI-label display strings** (e.g. "AI-generated — not
+   independently verified") are owned at render time by GOV-35 and must be
+   applied/audited when the frontend is built. This model contract correctly
+   mandates only that a label + layer exist, not the display copy.
+3. **Predecessor-branch merge-or-re-verify gate.** The enums/validator and the
+   Stage 1.05/1.06 artifacts live on the unmerged `gov-17-newsletter-briefing-contract`
+   branch. No implementation issue may be spawned from this contract until those
+   are merged to `main` or re-verified against the implementation branch.
 
 ## Risk Classification
 
