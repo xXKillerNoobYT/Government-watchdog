@@ -143,8 +143,16 @@ the spine of §4:
 
 - **Unit:** each of rules #1–#12 has at least one case that uniquely triggers it
   (first-match-wins means later rules need inputs that pass earlier guards).
-- **Contract:** `validate_concept_map_export.py` rejects any card whose stored
-  `uiStatus` disagrees with `compute_ui_status` over its inputs.
+- **Contract:** `validate_concept_map_export.py` today computes `compute_ui_status`
+  only to enforce the publication allowlist on any `publicExportApproved` card; it
+  does **not** yet read or validate a stored card-level `uiStatus` (the concept-map
+  export carries no stored `uiStatus`; that field first appears on the §7.1
+  reviewed public-subset fixture). The implementation issue that introduces the
+  stored-`uiStatus` public-subset export **must extend the validator** (or add a
+  paired public-subset validator) to (a) reject a stored `uiStatus` outside
+  `ALLOWED_UI_STATUSES` and (b) reject any card whose stored `uiStatus` disagrees
+  with `compute_ui_status` over its inputs — shipped as a new contract test, not
+  assumed to already exist.
 - **Drift guard:** the module-load parity assertion
   `set(_VERIFICATION_STATUS_ROLES) == ALLOWED_VERIFICATION_STATUSES` holds; a
   test deliberately imports the module to assert it does not raise, and a
@@ -175,7 +183,7 @@ routed review*, never a silent pass and never a hard crash that drops the record
 | A7 | **Unsupported claim (orphan)** | AI `statement` with no resolving `pointer` | **hard-rejected at extraction** (1.07 §2.3); never stored, never surfaced | 1.07 / 1.09 step 8 |
 | A8 | **Stale / corrected output** | card with a later `corrected_later` layer | correction links **forward** with `correction_date`+source trail; `known_then` intact; `uiStatus == corrected` only if `reviewed && correctionStatus==corrected` (rule 5) | 1.07 §4 / 1.08 §4 / 1.09 step 14 |
 | A9 | **Low-confidence AI output** | `machine_extracted_unreviewed`, low `confidence` | stays `unverified` (rule 7); never auto-promoted by confidence; reviewer-only | 1.09 §2 / step 11 |
-| A10 | **Wrong/unknown status value** | card with `verificationStatus` outside the 6-value enum, or `uiStatus` outside the 10-value enum | validator rejects (error); `compute_ui_status` would fall to `pending-review`; never fails open | §4 / validator |
+| A10 | **Wrong/unknown status value** | card with `verificationStatus` outside the 6-value enum, or `uiStatus` outside the 10-value enum | a `verificationStatus` outside the 6-value enum is a validator **error** today (nodes/edges/cards/sources) and `compute_ui_status` falls to `pending-review` (rule 12); a stored `uiStatus` outside the 10-value enum becomes a validator error **only once the §1.3 stored-`uiStatus` check is added** with the public-subset export. Never fails open. | §4 / validator |
 | A11 | **Conflicting sources** | two statements with `contradicts` edge | record stays gated; neither asserted as fact; routed to VSR (G3) | 1.07 / 1.09 §5 |
 | A12 | **Scope leak** (non-Alpine row in an Alpine run) | registry row `scope != alpine` | rejected with explicit out-of-scope logging; not processed | 1.05 / 1.09 step 1 |
 | A13 | **AI tries to write a gating field** | AI step attempts to set `verificationStatus=human_verified` / `publicExportApproved=true` | rejected; AI may only write labeled non-authoritative drafts; gating fields are DET/HUM-only | 1.09 §2.3 |
