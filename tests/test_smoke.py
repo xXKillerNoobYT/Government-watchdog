@@ -43,6 +43,8 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "schema_migrations",  # GOV-74 §6: idempotent migration ledger
         "agenda_items",  # GOV-81: Slice 2 B — 1.07 §1 agenda_item node
         "transcript_segments",  # GOV-81: Slice 2 B — 1.07 §1 addressable segment rows
+        "statements",  # GOV-82: Slice 2 C — 1.07 §1/§2 statement node
+        "evidence_links",  # GOV-82: Slice 2 C — 1.07 §1.4/§2 exact-source pointer
     }
 
 
