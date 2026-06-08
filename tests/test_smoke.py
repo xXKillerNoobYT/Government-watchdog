@@ -41,6 +41,8 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "crawl_runs",
         "sources",  # GOV-74: source registry
         "schema_migrations",  # GOV-74 §6: idempotent migration ledger
+        "agenda_items",  # GOV-81: Slice 2 B — 1.07 §1 agenda_item node
+        "transcript_segments",  # GOV-81: Slice 2 B — 1.07 §1 addressable segment rows
     }
 
 
