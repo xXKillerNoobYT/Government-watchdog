@@ -36,3 +36,10 @@ jobs:
           # smoke proves the verify command runs end-to-end against a migrated DB.
           ./.ci-venv/bin/python scripts/raw_preservation.py verify --db .ci-smoke.db
           rm -f .ci-smoke.db
+      - name: First-slice integration smoke — raw preserved / provenance / default-not-publishable (GOV-77 / 1.02+1.03+1.04+1.05)
+        run: |
+          # End-to-end: migrate -> seed Alpine registry -> ingest a small
+          # sanitized fixture -> assert the three slice-1 contract invariants.
+          # Exits non-zero (fails the run LOUDLY) if any invariant regresses.
+          # Runs in a throwaway sandbox: no real DB / Raw-PDFs / network.
+          ./.ci-venv/bin/python scripts/slice1_smoke.py

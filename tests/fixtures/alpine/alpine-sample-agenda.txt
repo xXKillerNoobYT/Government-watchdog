@@ -1,0 +1,15 @@
+TOWN OF ALPINE — SAMPLE TOWN COUNCIL AGENDA (SYNTHETIC FIXTURE)
+
+This is a synthetic, sanitized fixture used only by the Stage 1 Slice 1
+integration smoke (GOV-77). It is NOT real crawled raw data and intentionally
+contains no real names, addresses, or other personal data. Its byte content is
+fixed so its SHA-256 is stable across runs; the smoke re-hashes it to prove the
+raw-preservation / reproducibility invariant (contract 1.04).
+
+1. Call to order
+2. Approval of minutes (placeholder)
+3. Budget discussion (placeholder)
+4. Public comment (placeholder)
+5. Adjournment
+
+-- end of synthetic fixture --
