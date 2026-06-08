@@ -30,4 +30,9 @@ jobs:
         run: |
           ./.ci-venv/bin/python scripts/source_inventory.py --db .ci-smoke.db
           ./.ci-venv/bin/python scripts/source_inventory.py --db .ci-smoke.db  # re-run: idempotent
+      - name: Raw reproducibility check (GOV-75 / 1.04)
+        run: |
+          # Empty store is trivially reproducible (checked=0); exits 0. This
+          # smoke proves the verify command runs end-to-end against a migrated DB.
+          ./.ci-venv/bin/python scripts/raw_preservation.py verify --db .ci-smoke.db
           rm -f .ci-smoke.db

@@ -23,6 +23,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402
+import raw_preservation  # noqa: E402
 
 logger = logging.getLogger("embed")
 
@@ -139,6 +140,13 @@ def _extract_pdf_text(local_path: Path) -> str:
 def extract_missing_document_text(conn, repo_root: Path) -> int:
     """Populate documents.raw_text for rows that don't have it yet.
 
+    Raw-before-parse gate (1.04-a/b): each document must pass
+    ``raw_preservation.assert_raw_preserved`` — raw artifact present AND its
+    bytes re-hash to the recorded sha256 — before its text is extracted. A
+    missing or tampered/corrupted raw artifact BLOCKS extraction (no derived
+    record without a hash-verifiable raw predecessor) instead of silently
+    feeding a bad artifact downstream.
+
     Returns count of newly-extracted rows.
     """
     rows = conn.execute(
@@ -147,10 +155,12 @@ def extract_missing_document_text(conn, repo_root: Path) -> int:
     ).fetchall()
     extracted = 0
     for row in rows:
-        path = repo_root / row["local_path"]
-        if not path.exists():
-            logger.warning("missing local pdf %s", path)
+        try:
+            raw_preservation.assert_raw_preserved(conn, "document", row["id"], repo_root)
+        except raw_preservation.RawPreservationError as exc:
+            logger.error("raw-before-parse gate blocked extraction: %s", exc)
             continue
+        path = repo_root / row["local_path"]
         text = _extract_pdf_text(path)
         if not text:
             continue

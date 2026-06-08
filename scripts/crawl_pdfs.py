@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
 import random
 import re
@@ -43,6 +42,7 @@ except ImportError:  # pragma: no cover
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402
+import raw_preservation  # noqa: E402
 
 logger = logging.getLogger("crawl_pdfs")
 
@@ -436,13 +436,22 @@ def main() -> int:
             notes.append(f"{t.key}: ERROR {exc}")
 
     if not args.dry_run:
-        conn.execute(
-            "INSERT INTO crawl_runs (started_utc, finished_utc, status, targets, "
-            "new_documents, notes) VALUES (?, ?, ?, ?, ?, ?)",
-            (started, _now_utc_iso(), "ok", json.dumps([t.key for t in targets]),
-             total_new, "; ".join(notes)),
+        # Lane 1 (deterministic ingest) run log: input source set + status +
+        # retry (GOV-75 / 1.04-f). The crawler's input source set is its target
+        # key list; retry handling is per-request inside crawl_target, so the
+        # run-level retry_count is 0 here until a retrying fetch layer lands.
+        target_keys = [t.key for t in targets]
+        raw_preservation.record_crawl_run(
+            conn,
+            started_utc=started,
+            finished_utc=_now_utc_iso(),
+            status="ok",
+            source_set=target_keys,
+            targets=target_keys,
+            retry_count=0,
+            new_documents=total_new,
+            notes="; ".join(notes),
         )
-        conn.commit()
 
     logger.info("DONE: %d new pdfs across %d pages", total_new, total_scanned)
     return 0
