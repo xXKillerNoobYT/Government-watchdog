@@ -88,20 +88,35 @@ issue-creation trigger (possible tamper/corruption), not a silent log line.
 
 ## 4. Data-publication boundary (non-negotiable)
 
-Raw bytes, the SQLite DB, and run logs are **local/vault-only and are never
-committed to GitHub** (WORKFLOW_GOVERNANCE data-publication boundary; 1.04-g).
-`.gitignore` enforces this:
+Raw bytes, the SQLite DB, and **operational ingest run logs** are
+**local/vault-only and are never committed to GitHub** (WORKFLOW_GOVERNANCE
+data-publication boundary; 1.04-g). `.gitignore` enforces this:
 
 ```
 Database/*.db
 Raw-PDFs/
 Transcripts/
+Logs/crawl-*.log
 ```
 
-Only **tooling, migrations, tests, and this documentation** are versioned. This
-change set adds no raw data to the repo. If a raw artifact were ever found to
-contain private identity/address/voter-registry data beyond the boundary rules,
-stop and escalate to CEO / SecurityPrivacyAgent (1.15 §4; risk workflow cat. 3).
+> **Run-log distinction (SecurityPrivacyAgent boundary review, GOV-75).** Two
+> classes of log exist and are treated differently:
+> - **Operational ingest run logs** (`Logs/crawl-*.log`) — the raw-adjacent Lane 1
+>   crawl/fetch logs. These are **gitignored, local/vault-only, never committed**.
+> - **Acceptance/verification evidence logs** (e.g. `Logs/acceptance.log`,
+>   `Logs/phase2-pilot-verification.log`) — deliberately committed as audit
+>   evidence. These contain **summary counts, SHA-256 hashes, and public source
+>   target keys only** — no raw document text, no PII, no address/voter-registry
+>   data — and so stay within the boundary's "summary counts" allowance.
+>
+> The authoritative provenance record remains the SQLite DB row (`crawl_runs`),
+> which is itself local-only (`Database/*.db`).
+
+Only **tooling, migrations, tests, summary-only evidence logs, and this
+documentation** are versioned. This change set adds no raw data to the repo. If a
+raw artifact (or any committed log) were ever found to contain private
+identity/address/voter-registry data beyond the boundary rules, stop and escalate
+to CEO / SecurityPrivacyAgent (1.15 §4; risk workflow cat. 3).
 
 ---
 
