@@ -1,5 +1,6 @@
 requests>=2.31
 beautifulsoup4>=4.12
+lxml>=5.0  # xml tree builder for sitemap parsing (crawl_pdfs / test_extract_sitemap_urls)
 youtube-transcript-api>=1.2
 yt-dlp>=2024.0.0
 pypdf>=4.0
