@@ -18,3 +18,16 @@ jobs:
           uname -a
       - name: Verify checkout works
         uses: actions/checkout@v4
+      - name: Set up venv and install deps
+        run: |
+          python3 -m venv .ci-venv
+          ./.ci-venv/bin/pip install --upgrade pip
+          ./.ci-venv/bin/pip install -r requirements.txt
+      - name: Run backend tests (pytest)
+        run: |
+          ./.ci-venv/bin/python -m pytest -q
+      - name: Apply migrations + load Alpine source registry (smoke)
+        run: |
+          ./.ci-venv/bin/python scripts/source_inventory.py --db .ci-smoke.db
+          ./.ci-venv/bin/python scripts/source_inventory.py --db .ci-smoke.db  # re-run: idempotent
+          rm -f .ci-smoke.db

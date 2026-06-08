@@ -39,6 +39,8 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "meeting_documents",
         "embeddings",
         "crawl_runs",
+        "sources",  # GOV-74: source registry
+        "schema_migrations",  # GOV-74 §6: idempotent migration ledger
     }
 
 

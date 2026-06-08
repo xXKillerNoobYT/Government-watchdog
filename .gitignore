@@ -9,3 +9,5 @@ Raw-PDFs/
 Transcripts/
 Clone/
 .DS_Store
+.ci-venv/
+.ci-smoke.db
