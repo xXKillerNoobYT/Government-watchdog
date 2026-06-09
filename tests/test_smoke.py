@@ -45,6 +45,13 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "transcript_segments",  # GOV-81: Slice 2 B — 1.07 §1 addressable segment rows
         "statements",  # GOV-82: Slice 2 C — 1.07 §1/§2 statement node
         "evidence_links",  # GOV-82: Slice 2 C — 1.07 §1.4/§2 exact-source pointer
+        "persons",  # GOV-83: Slice 2 D — 1.07 §3 person node (gated identity)
+        "roles",  # GOV-83: Slice 2 D — 1.07 §1 role node
+        "served_in_role",  # GOV-83: Slice 2 D — 1.07 §1.2 person→role edge
+        "speaker_attributions",  # GOV-83: Slice 2 D — 1.07 §3 safe attribution record
+        "made_statement",  # GOV-83: Slice 2 D — 1.07 §3.4 gated person→statement edge
+        "outcomes",  # GOV-83: Slice 2 D — 1.07 §4 later-outcome node
+        "outcome_updates",  # GOV-83: Slice 2 D — 1.07 §4.2 forward-only update edge
     }
 
 
