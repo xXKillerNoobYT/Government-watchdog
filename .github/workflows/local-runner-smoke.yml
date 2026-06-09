@@ -43,3 +43,11 @@ jobs:
           # Exits non-zero (fails the run LOUDLY) if any invariant regresses.
           # Runs in a throwaway sandbox: no real DB / Raw-PDFs / network.
           ./.ci-venv/bin/python scripts/slice1_smoke.py
+      - name: Second-slice integration smoke — no-orphan / not-publishable / valid-pointers / speaker-safe (GOV-84 / Contract 1.07 end-to-end)
+        run: |
+          # End-to-end: migrate -> reuse Slice-1 registry -> load the sanitized
+          # 2026-05-08 WWTP-financing fixture -> segment -> statements +
+          # evidence_links with exact pointers -> speaker-attribution safety gate.
+          # Asserts the four Slice-2 invariants; exits non-zero (fails LOUDLY) on
+          # any regression. Throwaway sandbox: no real DB / network.
+          ./.ci-venv/bin/python scripts/slice2_smoke.py
