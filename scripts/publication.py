@@ -361,6 +361,10 @@ WEB_UNSAFE_FIELDS = frozenset({
     "segment_id",
     "created_by",
     "note",
+    # GOV-98 label-layer addendum: the alias sourceRef's vault/local pointer is
+    # reviewer-internal provenance only. read_api builds the web-safe sourceRef
+    # from the public source id + original/archive URL + locator and omits this.
+    "source_ref_local_ref",
 })
 
 

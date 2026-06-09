@@ -203,6 +203,70 @@ def published_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Plain-language label layer (owner addendum / §A.7) — web-safe projection.
+# ---------------------------------------------------------------------------
+
+
+def _safe_alias(row: dict[str, Any]) -> dict[str, Any]:
+    """Project one alias row onto the web-safe shape (sourceRef WITHOUT local_ref).
+
+    The MANDATORY provenance is preserved as public-citable fields — source id,
+    original/archive URL, and the locator. The vault/local ref
+    (``source_ref_local_ref``) is reviewer-internal and is deliberately NOT
+    projected (the transport sweep re-proves no local path survives).
+    """
+    ref: dict[str, Any] = {"sourceId": row.get("source_ref_source_id")}
+    if row.get("source_ref_original_url"):
+        ref["originalUrl"] = row["source_ref_original_url"]
+    if row.get("source_ref_archive_url"):
+        ref["archiveUrl"] = row["source_ref_archive_url"]
+    locator: dict[str, Any] = {}
+    for db_key, out_key in (
+        ("source_ref_timestamp_human", "timestampHuman"),
+        ("source_ref_page", "page"),
+        ("source_ref_section", "section"),
+        ("source_ref_paragraph", "paragraph"),
+    ):
+        value = row.get(db_key)
+        if value not in (None, ""):
+            locator[out_key] = value
+    if locator:
+        ref["locator"] = locator
+
+    alias: dict[str, Any] = {
+        "term": row.get("term"),
+        "aliasType": row.get("alias_type"),
+        "sourceRef": ref,
+    }
+    if row.get("first_seen_meeting_id") is not None:
+        alias["firstSeenMeetingId"] = row["first_seen_meeting_id"]
+    if row.get("first_seen_date"):
+        alias["firstSeenDate"] = row["first_seen_date"]
+    return alias
+
+
+def _with_label_layer(
+    conn: sqlite3.Connection, safe_node: dict[str, Any], node_id: str, node_type: str
+) -> dict[str, Any]:
+    """Attach `canonicalHumanLabel` + web-safe `sourceAliases` to a node dict.
+
+    The government/source string is never the primary label — it travels in
+    `sourceAliases`, each carrying its mandatory sourceRef provenance (owner
+    addendum). `canonicalHumanLabel` is the plain-English primary display.
+    """
+    row = conn.execute(
+        f"SELECT canonical_human_label FROM {'topics' if node_type == 'topic' else 'agenda_threads'} "
+        f"WHERE {'topic_id' if node_type == 'topic' else 'agenda_thread_id'} = ?",
+        (node_id,),
+    ).fetchone()
+    safe_node["canonicalHumanLabel"] = row["canonical_human_label"] if row is not None else None
+    safe_node["sourceAliases"] = [
+        _safe_alias(a) for a in cm.aliases_for_node(conn, node_id, node_type)
+    ]
+    return safe_node
+
+
+# ---------------------------------------------------------------------------
 # Agenda thread (GOV-98 A.4): node + chronological members + typed lifecycle.
 # ---------------------------------------------------------------------------
 
@@ -244,7 +308,9 @@ def agenda_thread(conn: sqlite3.Connection, thread_id: str) -> dict[str, Any] | 
             lifecycle.append(pub.to_web_safe(edge))
 
     return {
-        "thread": pub.to_web_safe(dict(thread_row)),
+        "thread": _with_label_layer(
+            conn, pub.to_web_safe(dict(thread_row)), thread_id, "agenda_thread"
+        ),
         "members": [pub.to_web_safe(dict(row)) for row in member_rows],
         "lifecycle_edges": lifecycle,
     }
@@ -268,6 +334,12 @@ def _topic_children_map(conn: sqlite3.Connection) -> dict[str, list[str]]:
 def _topic_row(conn: sqlite3.Connection, topic_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM topics WHERE topic_id = ?", (topic_id,)).fetchone()
     return dict(row) if row is not None else None
+
+
+def _safe_topic(conn: sqlite3.Connection, topic_id: str) -> dict[str, Any]:
+    """Web-safe topic node with its label layer (canonicalHumanLabel + aliases)."""
+    safe = pub.to_web_safe(_topic_row(conn, topic_id) or {"topic_id": topic_id})
+    return _with_label_layer(conn, safe, topic_id, "topic")
 
 
 def topic_descendants(conn: sqlite3.Connection, topic_id: str) -> set[str]:
@@ -304,13 +376,12 @@ def _breadcrumb(conn: sqlite3.Connection, topic_id: str) -> list[dict[str, Any]]
         seen.add(parent)
         node = parent
     chain.reverse()  # top ancestor first
-    return [pub.to_web_safe(_topic_row(conn, tid) or {"topic_id": tid}) for tid in chain]
+    return [_safe_topic(conn, tid) for tid in chain]
 
 
 def _subtree(conn: sqlite3.Connection, topic_id: str, children: dict[str, list[str]]) -> dict[str, Any]:
-    row = _topic_row(conn, topic_id) or {"topic_id": topic_id}
     return {
-        "topic": pub.to_web_safe(row),
+        "topic": _safe_topic(conn, topic_id),
         "children": [
             _subtree(conn, child, children) for child in sorted(children.get(topic_id, ()))
         ],
@@ -326,7 +397,7 @@ def topic_tree(conn: sqlite3.Connection, root_topic_id: str) -> dict[str, Any]:
     cm.assert_acyclic(conn)
     children = _topic_children_map(conn)
     return {
-        "root": pub.to_web_safe(_topic_row(conn, root_topic_id) or {"topic_id": root_topic_id}),
+        "root": _safe_topic(conn, root_topic_id),
         "breadcrumb": _breadcrumb(conn, root_topic_id),
         "tree": _subtree(conn, root_topic_id, children),
     }

@@ -117,18 +117,31 @@ def _seed(conn: sqlite3.Connection) -> None:
         ],
     )
 
-    cm.insert_agenda_thread(conn, "alpine:thread:fireworks-ban", "Fireworks ban", "alpine")
+    cm.insert_agenda_thread(conn, "alpine:thread:fireworks-ban", "Fireworks ban",
+                            "alpine", "fireworks ban")
     cm.insert_edge(conn, "agenda_item_in_thread", "alpine:2026-04-10:item-3", "alpine:thread:fireworks-ban")
     cm.insert_edge(conn, "agenda_item_in_thread", "alpine:2026-05-08:item-7", "alpine:thread:fireworks-ban")
     cm.insert_edge(conn, "agenda_item_supersedes", "alpine:2026-05-08:item-7", "alpine:2026-04-10:item-3")
-    for tid, name in (
-        ("topic:fireworks", "Fireworks"),
-        ("topic:fire", "Fire prevention"),
-        ("topic:safety", "General safety"),
+    for tid, name, label in (
+        ("topic:fireworks", "Fireworks", "fireworks"),
+        ("topic:fire", "Fire prevention", "fire prevention"),
+        ("topic:safety", "General safety", "general safety"),
     ):
-        cm.insert_topic(conn, tid, name, jurisdiction_id="alpine")
+        cm.insert_topic(conn, tid, name, label, jurisdiction_id="alpine")
     cm.insert_edge(conn, "topic_rollup", "topic:fireworks", "topic:fire")
     cm.insert_edge(conn, "topic_rollup", "topic:fire", "topic:safety")
+    # plain-language label layer: a government alias with mandatory provenance,
+    # including a vault local_ref that MUST be stripped at the read-API boundary.
+    cm.insert_label_alias(
+        conn, "topic:safety", "topic", "public safety", "government_term",
+        {
+            "source_id": "alpine_packet",
+            "original_url": "https://alpinewy.gov/packet.pdf",
+            "local_ref": "/Users/IA/Obsidian Vault/Source-Data/alpine/safety.md",
+            "page": 3,
+        },
+        first_seen_meeting_id=2, first_seen_date="2026-05-08",
+    )
 
 
 def main() -> int:
@@ -183,6 +196,33 @@ def main() -> int:
             if fire["topic"]["topic_id"] != "topic:fire" or fire["children"][0]["topic"]["topic_id"] != "topic:fireworks":
                 _fail("topic_rollup chain (safety -> fire -> fireworks) not exposed")
 
+            # (3b) label layer: ≥1 topic node has canonicalHumanLabel + a government
+            # sourceAlias carrying provenance; the government string is NOT primary;
+            # the vault local_ref is stripped (already covered by the body sweep).
+            root = response["topic_tree"]["root"]
+            if root.get("canonicalHumanLabel") != "general safety":
+                _fail(f"topic canonicalHumanLabel missing/wrong: {root.get('canonicalHumanLabel')}")
+            aliases = root.get("sourceAliases") or []
+            gov = [a for a in aliases if a.get("aliasType") == "government_term"]
+            if not gov:
+                _fail("no government sourceAlias on the topic node")
+            ref = gov[0].get("sourceRef") or {}
+            if not (ref.get("sourceId") and (ref.get("originalUrl") or ref.get("archiveUrl")) and ref.get("locator")):
+                _fail(f"government alias sourceRef lacks mandatory provenance: {ref}")
+            if root.get("canonicalHumanLabel") == gov[0].get("term"):
+                _fail("government string leaked as the primary canonicalHumanLabel")
+            if "local_ref" in blob or "localRef" in blob:
+                _fail("alias local_ref leaked into the response body")
+
+            # (3c) validator rejects an alias missing sourceRef (acceptance add).
+            try:
+                cm.insert_label_alias(conn, "topic:safety", "topic", "no-prov",
+                                      "government_term", None)
+            except cm.LabelAliasError:
+                pass
+            else:
+                _fail("validator accepted an alias with NO sourceRef")
+
             # (4) acyclicity enforced before serving the tree
             conn.execute(
                 "INSERT INTO concept_edges (edge_id, edge_type, from_node_id, "
@@ -201,7 +241,9 @@ def main() -> int:
 
     print("SLICE4-PREREQ0 SMOKE PASS: eligible-only serve; zero raw paths in body; "
           "agenda_thread + chronological members + typed supersede; topic_rollup "
-          "chain + breadcrumb; acyclicity enforced; labels travel; no orphan served.")
+          "chain + breadcrumb; canonicalHumanLabel + government sourceAlias w/ "
+          "provenance (local_ref stripped) + validator rejects missing sourceRef; "
+          "acyclicity enforced; labels travel; no orphan served.")
     return 0
 
 

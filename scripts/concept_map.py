@@ -144,6 +144,22 @@ AGENDA_LIFECYCLE_EDGE_TYPES = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# Plain-language label layer (GOV-98 owner addendum / GOV-97 §A.7).
+# ---------------------------------------------------------------------------
+
+# Node types that carry the label layer (canonicalHumanLabel + sourceAliases).
+LABELLED_NODE_TYPES = frozenset({"topic", "agenda_thread"})
+
+# A source/government alias is one of these typed kinds. A government string is
+# NEVER the primary label — it lives here, with mandatory provenance.
+ALLOWED_ALIAS_TYPES = frozenset({
+    "government_term",
+    "legal_term",
+    "historical_term",
+    "agenda_label",
+})
+
+# ---------------------------------------------------------------------------
 # Import-time drift guards (fail at import, not at runtime).
 # ---------------------------------------------------------------------------
 
@@ -166,6 +182,10 @@ assert AGENDA_LIFECYCLE_EDGE_TYPES <= ALLOWED_EDGE_TYPES
 
 class EdgeError(ValueError):
     """An edge violates the registry endpoint contract or a node is missing."""
+
+
+class LabelAliasError(ValueError):
+    """A label alias is malformed or missing its mandatory sourceRef provenance."""
 
 
 class TopicTreeCycleError(ValueError):
@@ -316,23 +336,32 @@ def insert_agenda_thread(
     agenda_thread_id: str,
     title: str,
     jurisdiction_id: str,
+    canonical_human_label: str,
     *,
     status: str = "open",
     first_seen_date: str | None = None,
     last_seen_date: str | None = None,
     commit: bool = True,
 ) -> str:
-    """Insert an ``agenda_thread`` node (GOV-98 A.1). Alpine-locked by caller."""
+    """Insert an ``agenda_thread`` node (GOV-98 A.1). Alpine-locked by caller.
+
+    ``canonical_human_label`` is the REQUIRED plain-English primary label (owner
+    addendum / §A.7). Government/source terms are added separately as
+    :func:`insert_label_alias` rows — never as the primary label.
+    """
     if status not in {"open", "decided", "dormant"}:
         raise EdgeError(f"agenda_thread status {status!r} invalid")
     if not (agenda_thread_id and title and jurisdiction_id):
         raise EdgeError("agenda_thread requires id, title, jurisdiction_id")
+    if not canonical_human_label or not canonical_human_label.strip():
+        raise LabelAliasError("agenda_thread requires a non-empty canonical_human_label")
     conn.execute(
         "INSERT OR IGNORE INTO agenda_threads ("
         "agenda_thread_id, title, jurisdiction_id, status, first_seen_date, "
-        "last_seen_date, created_utc) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "last_seen_date, canonical_human_label, created_utc) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (agenda_thread_id, title, jurisdiction_id, status, first_seen_date,
-         last_seen_date, _now_utc_iso()),
+         last_seen_date, canonical_human_label, _now_utc_iso()),
     )
     if commit:
         conn.commit()
@@ -343,18 +372,135 @@ def insert_topic(
     conn: sqlite3.Connection,
     topic_id: str,
     name: str,
+    canonical_human_label: str,
     *,
     jurisdiction_id: str | None = None,
     commit: bool = True,
 ) -> str:
-    """Insert a flat ``topic`` node. The tree is carried by topic_rollup edges."""
+    """Insert a flat ``topic`` node. The tree is carried by topic_rollup edges.
+
+    ``canonical_human_label`` is the REQUIRED plain-English primary label (owner
+    addendum / §A.7): the everyday core-concept term (e.g. 'general safety'), not
+    a government string. Government terms are :func:`insert_label_alias` rows.
+    """
     if not (topic_id and name):
         raise EdgeError("topic requires id and name")
+    if not canonical_human_label or not canonical_human_label.strip():
+        raise LabelAliasError("topic requires a non-empty canonical_human_label")
     conn.execute(
-        "INSERT OR IGNORE INTO topics (topic_id, name, jurisdiction_id, created_utc) "
-        "VALUES (?, ?, ?, ?)",
-        (topic_id, name, jurisdiction_id, _now_utc_iso()),
+        "INSERT OR IGNORE INTO topics (topic_id, name, jurisdiction_id, "
+        "canonical_human_label, created_utc) VALUES (?, ?, ?, ?, ?)",
+        (topic_id, name, jurisdiction_id, canonical_human_label, _now_utc_iso()),
     )
     if commit:
         conn.commit()
     return topic_id
+
+
+# Pointer keys consumed from a sourceRef dict (the MANDATORY provenance object).
+_SOURCE_REF_REF_FIELDS = ("original_url", "archive_url", "local_ref")
+_SOURCE_REF_LOCATOR_FIELDS = ("timestamp_human", "page", "section", "paragraph")
+
+
+def validate_source_ref(source_ref: dict[str, Any] | None) -> None:
+    """Validate an alias's MANDATORY sourceRef provenance. Raises on failure.
+
+    Owner rule "an alias may not exist without a source trail". A valid sourceRef
+    carries, at minimum: a ``source_id`` (source/doc id), at least one ref
+    (``original_url`` / ``archive_url`` / ``local_ref``), and at least one locator
+    (``timestamp_human`` / ``page`` / ``section`` / ``paragraph``). Fail-closed:
+    a missing or incomplete sourceRef is rejected, never silently accepted.
+    """
+    if not isinstance(source_ref, dict):
+        raise LabelAliasError("alias sourceRef is required (missing provenance object)")
+    if not source_ref.get("source_id"):
+        raise LabelAliasError("alias sourceRef requires a non-empty source_id (source/doc id)")
+    if not any(source_ref.get(f) for f in _SOURCE_REF_REF_FIELDS):
+        raise LabelAliasError(
+            "alias sourceRef requires at least one of "
+            f"{_SOURCE_REF_REF_FIELDS} (original/archive/local ref)"
+        )
+    if not any(source_ref.get(f) not in (None, "") for f in _SOURCE_REF_LOCATOR_FIELDS):
+        raise LabelAliasError(
+            "alias sourceRef requires at least one locator "
+            f"{_SOURCE_REF_LOCATOR_FIELDS} (timestamp/page/section/paragraph)"
+        )
+
+
+def insert_label_alias(
+    conn: sqlite3.Connection,
+    node_id: str,
+    node_type: str,
+    term: str,
+    alias_type: str,
+    source_ref: dict[str, Any],
+    *,
+    first_seen_meeting_id: int | None = None,
+    first_seen_date: str | None = None,
+    created_by: str | None = None,
+    alias_id: str | None = None,
+    commit: bool = True,
+) -> str:
+    """Append a source/government alias to a topic/agenda_thread node (append-only).
+
+    Validates (raising before any write): the node type carries the label layer;
+    ``alias_type`` is a known kind; ``term`` is non-empty; and the ``source_ref``
+    passes :func:`validate_source_ref` (the alias may not exist without a source
+    trail). There is intentionally NO delete path — aliases are append/curate, so
+    a reviewer can never strip an alias's sourceRef. Idempotent on
+    ``(node_id, node_type, term, alias_type)``.
+    """
+    if node_type not in LABELLED_NODE_TYPES:
+        raise LabelAliasError(
+            f"node_type {node_type!r} does not carry a label layer; "
+            f"expected one of {sorted(LABELLED_NODE_TYPES)}"
+        )
+    if alias_type not in ALLOWED_ALIAS_TYPES:
+        raise LabelAliasError(
+            f"alias_type {alias_type!r} not in {sorted(ALLOWED_ALIAS_TYPES)}"
+        )
+    if not node_id or not term or not term.strip():
+        raise LabelAliasError("alias requires a non-empty node_id and term")
+    validate_source_ref(source_ref)
+
+    alias_id = alias_id or f"{node_type}:{node_id}:{alias_type}:{term}"
+    conn.execute(
+        "INSERT OR IGNORE INTO node_label_aliases ("
+        "alias_id, node_id, node_type, term, alias_type, source_ref_source_id, "
+        "source_ref_original_url, source_ref_archive_url, source_ref_local_ref, "
+        "source_ref_locator_kind, source_ref_timestamp_human, source_ref_page, "
+        "source_ref_section, source_ref_paragraph, first_seen_meeting_id, "
+        "first_seen_date, created_by, created_utc) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            alias_id, node_id, node_type, term, alias_type,
+            source_ref.get("source_id"),
+            source_ref.get("original_url"),
+            source_ref.get("archive_url"),
+            source_ref.get("local_ref"),
+            source_ref.get("locator_kind"),
+            source_ref.get("timestamp_human"),
+            source_ref.get("page"),
+            source_ref.get("section"),
+            source_ref.get("paragraph"),
+            first_seen_meeting_id,
+            first_seen_date,
+            created_by,
+            _now_utc_iso(),
+        ),
+    )
+    if commit:
+        conn.commit()
+    return alias_id
+
+
+def aliases_for_node(
+    conn: sqlite3.Connection, node_id: str, node_type: str
+) -> list[dict[str, Any]]:
+    """Raw alias rows for a node (reviewer-internal; web-safe projection in read_api)."""
+    rows = conn.execute(
+        "SELECT * FROM node_label_aliases WHERE node_id = ? AND node_type = ? "
+        "ORDER BY alias_type, term",
+        (node_id, node_type),
+    ).fetchall()
+    return [dict(row) for row in rows]

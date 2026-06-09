@@ -59,6 +59,7 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "agenda_threads",  # GOV-98: Slice 4 Prereq-0 — concept-map agenda_thread node
         "topics",  # GOV-98: Slice 4 Prereq-0 — flat topic node (tree via topic_rollup)
         "concept_edges",  # GOV-98: Slice 4 Prereq-0 — generic forward-linking typed edges
+        "node_label_aliases",  # GOV-98 addendum: plain-language label layer (§A.7)
     }
 
 

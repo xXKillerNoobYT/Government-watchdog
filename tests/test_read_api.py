@@ -146,19 +146,34 @@ def _seed(conn: sqlite3.Connection) -> None:
     )
 
     # concept-map: agenda_thread + members + a typed lifecycle edge; topic tree.
-    cm.insert_agenda_thread(conn, "alpine:thread:fireworks-ban", "Fireworks ban", "alpine")
+    cm.insert_agenda_thread(conn, "alpine:thread:fireworks-ban", "Fireworks ban",
+                            "alpine", "fireworks ban")
     cm.insert_edge(conn, "agenda_item_in_thread", "alpine:2026-04-10:item-3", "alpine:thread:fireworks-ban")
     cm.insert_edge(conn, "agenda_item_in_thread", "alpine:2026-05-08:item-7", "alpine:thread:fireworks-ban")
     cm.insert_edge(conn, "agenda_item_supersedes", "alpine:2026-05-08:item-7", "alpine:2026-04-10:item-3")
 
-    for tid, name in (
-        ("topic:fireworks", "Fireworks"),
-        ("topic:fire", "Fire prevention"),
-        ("topic:safety", "General safety"),
+    for tid, name, label in (
+        ("topic:fireworks", "Fireworks", "fireworks"),
+        ("topic:fire", "Fire prevention", "fire prevention"),
+        ("topic:safety", "General safety", "general safety"),
     ):
-        cm.insert_topic(conn, tid, name, jurisdiction_id="alpine")
+        cm.insert_topic(conn, tid, name, label, jurisdiction_id="alpine")
     cm.insert_edge(conn, "topic_rollup", "topic:fireworks", "topic:fire")
     cm.insert_edge(conn, "topic_rollup", "topic:fire", "topic:safety")
+
+    # plain-language label layer: a government alias on the 'general safety' topic,
+    # carrying mandatory provenance INCLUDING a vault local_ref (must be stripped).
+    cm.insert_label_alias(
+        conn, "topic:safety", "topic", "public safety", "government_term",
+        {
+            "source_id": "alpine_packet",
+            "original_url": "https://alpinewy.gov/packet.pdf",
+            "local_ref": "/Users/IA/Obsidian Vault/Source-Data/alpine/safety.md",
+            "page": 3,
+        },
+        first_seen_meeting_id=2,
+        first_seen_date="2026-05-08",
+    )
 
 
 # --- eligibility (fail-closed, both gates) ---------------------------------
@@ -281,6 +296,60 @@ def test_rollup_filter_returns_descendants(conn: sqlite3.Connection) -> None:
     assert descendants == {"topic:fire", "topic:fireworks"}
     # a leaf returns only itself
     assert read_api.topic_descendants(conn, "topic:fireworks") == {"topic:fireworks"}
+
+
+# --- plain-language label layer (owner addendum / §A.7) --------------------
+
+
+def test_topic_node_carries_canonical_human_label(conn: sqlite3.Connection) -> None:
+    tree = read_api.topic_tree(conn, "topic:safety")
+    assert tree["root"]["canonicalHumanLabel"] == "general safety"
+    # every node in the subtree carries the primary label
+    fire = tree["tree"]["children"][0]
+    assert fire["topic"]["canonicalHumanLabel"] == "fire prevention"
+
+
+def test_government_alias_exposed_with_provenance(conn: sqlite3.Connection) -> None:
+    tree = read_api.topic_tree(conn, "topic:safety")
+    aliases = tree["root"]["sourceAliases"]
+    assert len(aliases) == 1
+    alias = aliases[0]
+    assert alias["term"] == "public safety"
+    assert alias["aliasType"] == "government_term"
+    # mandatory provenance present (public-citable form)
+    assert alias["sourceRef"]["sourceId"] == "alpine_packet"
+    assert alias["sourceRef"]["originalUrl"] == "https://alpinewy.gov/packet.pdf"
+    assert alias["sourceRef"]["locator"]["page"] == 3
+    assert alias["firstSeenMeetingId"] == 2
+
+
+def test_alias_local_ref_never_web_projected(conn: sqlite3.Connection) -> None:
+    tree = read_api.topic_tree(conn, "topic:safety")
+    blob = json.dumps(tree)
+    # the vault local_ref on the alias's sourceRef must be stripped at the boundary
+    assert "/Users/" not in blob
+    assert "Obsidian Vault" not in blob
+    assert "local_ref" not in blob
+    assert "localRef" not in blob
+
+
+def test_canonical_label_is_primary_government_never_primary(conn: sqlite3.Connection) -> None:
+    # The government string is only ever an alias — never the canonicalHumanLabel.
+    tree = read_api.topic_tree(conn, "topic:safety")
+    assert tree["root"]["canonicalHumanLabel"] != "public safety"
+    terms = {a["term"] for a in tree["root"]["sourceAliases"]}
+    assert "public safety" in terms
+
+
+def test_full_response_label_layer_passes_transport(conn: sqlite3.Connection) -> None:
+    # The label layer (incl. its provenance) survives the transport sweep clean.
+    body = read_api.build_response(conn, thread_id="alpine:thread:fireworks-ban",
+                                   topic_root="topic:safety")
+    blob = json.dumps(body)
+    assert "/Users/" not in blob and "Obsidian Vault" not in blob
+    assert "canonicalHumanLabel" in blob and "sourceAliases" in blob
+    # thread node also carries the label layer
+    assert body["agenda_thread"]["thread"]["canonicalHumanLabel"] == "fireworks ban"
 
 
 def test_topic_tree_rejects_cycle_before_serving(conn: sqlite3.Connection) -> None:

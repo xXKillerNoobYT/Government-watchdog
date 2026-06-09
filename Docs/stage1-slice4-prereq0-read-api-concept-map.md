@@ -79,5 +79,17 @@ A topic cannot roll up into its own descendant. Acyclicity is enforced **twice**
 | Acyclicity rejection test passes | `tests/test_concept_map.py::test_topic_rollup_cycle_rejected` (insert + serve) |
 | Labels travel; no orphan served | `tests/test_read_api.py::test_labels_travel`, `::test_orphan_not_served` |
 
+## 8. Plain-language label layer (owner addendum — Isaac 2026-06-09, GOV-97 §A.7)
+
+Binding, additive. Every `topic` and `agenda_thread` node carries a label layer in the registry + read-API (GOV-98 is the authoritative source the frontend reads, so it lands here, not downstream).
+
+- **`canonicalHumanLabel`** — REQUIRED primary display: the everyday plain-English core-concept label (e.g. `"general safety"`, not the government `"public safety"`). `concept_map.insert_topic` / `insert_agenda_thread` reject an empty one. Stored as `topics.canonical_human_label` / `agenda_threads.canonical_human_label` (migration 0013).
+- **`sourceAliases[]`** — the government/source strings, which are NEVER primary and NEVER dropped. Each alias = `{ term, aliasType ∈ {government_term, legal_term, historical_term, agenda_label}, sourceRef, firstSeenMeetingId?, firstSeenDate? }`, stored one-row-per-alias in `node_label_aliases`.
+- **`sourceRef` is MANDATORY provenance.** `concept_map.validate_source_ref` requires a `source_id` (source/doc id) + at least one ref (original/archive/**local**) + at least one locator (timestamp/page/section/paragraph). `insert_label_alias` rejects an alias whose sourceRef is absent or incomplete ("an alias may not exist without a source trail"). There is **no delete path** — aliases are append/curate, so a reviewer can never strip an alias's sourceRef.
+
+**Web-safe boundary for the label layer (GOV-34 reconciliation).** The `sourceRef`'s **local/vault ref** (`source_ref_local_ref`) is reviewer-internal and is **never** projected: `read_api` hand-builds the web-safe `sourceRef` from the public source id + original/archive URL + locator only, and the transport sweep re-proves no local path leaks. So the mandated provenance is preserved in citable form without leaking a vault path — **no** relaxation of the allowlist or publication path (no pass-up trigger).
+
+**Acceptance add:** read-API sample output shows ≥1 `topic` node with `canonicalHumanLabel` + a `government_term` `sourceAlias` carrying provenance (see `slice4_prereq0_smoke.py` + `tests/test_read_api.py::test_government_alias_exposed_with_provenance`), and the validator rejects an alias missing `sourceRef` (`tests/test_concept_map.py::test_alias_missing_source_ref_rejected`).
+
 ## 7. Pass-up trigger
-Any need to relax the fail-closed publication path, the web-safe allowlist, or Alpine scope → stop, escalate to CTO/CEO/Isaac. Nothing in this slice relaxes any of them.
+Any need to relax the fail-closed publication path, the web-safe allowlist, or Alpine scope → stop, escalate to CTO/CEO/Isaac. Nothing in this slice relaxes any of them (the label-layer §8 preserves the boundary).

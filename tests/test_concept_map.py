@@ -87,8 +87,8 @@ def test_insert_edge_rejects_non_generic_edge(conn: sqlite3.Connection) -> None:
 
 
 def test_insert_edge_is_idempotent(conn: sqlite3.Connection) -> None:
-    cm.insert_topic(conn, "topic:fireworks", "Fireworks")
-    cm.insert_topic(conn, "topic:fire", "Fire prevention")
+    cm.insert_topic(conn, "topic:fireworks", "Fireworks", "fireworks")
+    cm.insert_topic(conn, "topic:fire", "Fire prevention", "fire prevention")
     cm.insert_edge(conn, "topic_rollup", "topic:fireworks", "topic:fire")
     cm.insert_edge(conn, "topic_rollup", "topic:fireworks", "topic:fire")  # no dup
     count = conn.execute(
@@ -101,12 +101,12 @@ def test_insert_edge_is_idempotent(conn: sqlite3.Connection) -> None:
 
 
 def _seed_topic_chain(conn: sqlite3.Connection) -> None:
-    for tid, name in (
-        ("topic:fireworks", "Fireworks"),
-        ("topic:fire", "Fire prevention"),
-        ("topic:safety", "General safety"),
+    for tid, name, label in (
+        ("topic:fireworks", "Fireworks", "fireworks"),
+        ("topic:fire", "Fire prevention", "fire prevention"),
+        ("topic:safety", "General safety", "general safety"),
     ):
-        cm.insert_topic(conn, tid, name)
+        cm.insert_topic(conn, tid, name, label)
     cm.insert_edge(conn, "topic_rollup", "topic:fireworks", "topic:fire")
     cm.insert_edge(conn, "topic_rollup", "topic:fire", "topic:safety")
 
@@ -117,9 +117,76 @@ def test_topic_rollup_chain_serves_acyclic(conn: sqlite3.Connection) -> None:
 
 
 def test_topic_rollup_self_loop_rejected(conn: sqlite3.Connection) -> None:
-    cm.insert_topic(conn, "topic:x", "X")
+    cm.insert_topic(conn, "topic:x", "X", "x")
     with pytest.raises(cm.TopicTreeCycleError):
         cm.insert_edge(conn, "topic_rollup", "topic:x", "topic:x")
+
+
+# --- plain-language label layer (owner addendum / §A.7) --------------------
+
+
+_GOOD_SOURCE_REF = {
+    "source_id": "alpine_packet",
+    "original_url": "https://alpinewy.gov/packet.pdf",
+    "page": 3,
+}
+
+
+def test_canonical_human_label_required_on_topic(conn: sqlite3.Connection) -> None:
+    with pytest.raises(cm.LabelAliasError):
+        cm.insert_topic(conn, "topic:y", "Y", "")
+
+
+def test_canonical_human_label_required_on_thread(conn: sqlite3.Connection) -> None:
+    with pytest.raises(cm.LabelAliasError):
+        cm.insert_agenda_thread(conn, "alpine:thread:z", "Z", "alpine", "")
+
+
+def test_alias_with_full_source_ref_accepted(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    cm.insert_label_alias(conn, "topic:safety", "topic", "public safety",
+                          "government_term", _GOOD_SOURCE_REF)
+    aliases = cm.aliases_for_node(conn, "topic:safety", "topic")
+    assert len(aliases) == 1
+    assert aliases[0]["term"] == "public safety"
+    assert aliases[0]["source_ref_source_id"] == "alpine_packet"
+
+
+def test_alias_missing_source_ref_rejected(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.LabelAliasError):
+        cm.insert_label_alias(conn, "topic:safety", "topic", "public safety",
+                              "government_term", None)
+
+
+def test_alias_source_ref_missing_locator_rejected(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.LabelAliasError):
+        # has a source_id + url but NO locator (timestamp/page/section/paragraph)
+        cm.insert_label_alias(conn, "topic:safety", "topic", "public safety",
+                              "government_term",
+                              {"source_id": "alpine_packet",
+                               "original_url": "https://alpinewy.gov/packet.pdf"})
+
+
+def test_alias_source_ref_missing_source_id_rejected(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.LabelAliasError):
+        cm.insert_label_alias(conn, "topic:safety", "topic", "public safety",
+                              "government_term", {"original_url": "https://x", "page": 1})
+
+
+def test_alias_bad_alias_type_rejected(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.LabelAliasError):
+        cm.insert_label_alias(conn, "topic:safety", "topic", "public safety",
+                              "made_up_kind", _GOOD_SOURCE_REF)
+
+
+def test_alias_on_non_labelled_node_rejected(conn: sqlite3.Connection) -> None:
+    with pytest.raises(cm.LabelAliasError):
+        cm.insert_label_alias(conn, "stmt-1", "statement", "x",
+                              "government_term", _GOOD_SOURCE_REF)
 
 
 def test_topic_rollup_cycle_rejected_at_insert(conn: sqlite3.Connection) -> None:
