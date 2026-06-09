@@ -54,6 +54,8 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "outcome_updates",  # GOV-83: Slice 2 D — 1.07 §4.2 forward-only update edge
         "ai_extraction_runs",  # GOV-89: Slice 3 B — Lane 2 AI-gateway run ledger
         "ai_verification_results",  # GOV-90: Slice 3 C — Lane 3 verification verdict ledger
+        "ai_risk_flags",  # GOV-91: Slice 3 D — Lane 4 risk-layer findings ledger
+        "reviewer_decisions",  # GOV-91: Slice 3 D — Lane 5 reviewer-gate audit ledger
     }
 
 
