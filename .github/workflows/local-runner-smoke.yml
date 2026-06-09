@@ -74,3 +74,16 @@ jobs:
           # fail-closed downstream). Exits non-zero (fails LOUDLY) on any
           # regression. Throwaway sandbox: no real DB / AI / network.
           ./.ci-venv/bin/python scripts/slice3c_smoke.py
+      - name: Slice 3 D Lane-4/5 smoke — risk-flags / no-gating-write / reviewer-gate-rejects / failed-run-blocks / never-publishes / run-log (GOV-91 / Lanes 4+5, 1.09+1.11)
+        run: |
+          # End-to-end Lanes 4+5: migrate -> reuse Slice-1 registry -> load the
+          # sanitized fixture -> segment (Lane-1) -> Lane-2 AI extraction -> Lane-4
+          # risk screen -> Lane-5 reviewer-gate. Asserts the six Lane-4/5
+          # invariants (1.11 risk flags recorded incl. a legal no-go; the risk
+          # layer writes no gating field; the Lane-4 run is logged on the ledger
+          # as lane=4_risk; promoting an AI row WITHOUT a reviewer decision is
+          # rejected; a failed gateway run blocks downstream; a valid human
+          # promotion reaches reviewed but NEVER flips publication_state). Exits
+          # non-zero (fails LOUDLY) on any regression. Throwaway sandbox: no real
+          # DB / AI / network.
+          ./.ci-venv/bin/python scripts/slice3d_smoke.py
