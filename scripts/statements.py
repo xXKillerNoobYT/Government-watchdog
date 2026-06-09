@@ -24,9 +24,13 @@ Re-typing them would defeat publication.py's import-time drift guards. The only
 new vocabularies introduced by 1.07 (the §1.4 ``relation`` enum, the §2 locator
 kinds, the §4 ``layer`` enum) are defined once below.
 
-SCOPE LOCK (this slice): ``produced_by`` is narrowed to ``automation|human`` —
-the §5.4 ``ai`` value is intentionally excluded (no AI extraction path this
-slice). No network, no AI, Alpine-only, local/vault-only.
+SCOPE (Slice 3 B, GOV-89): the 0007 scope lock is lifted — ``produced_by`` now
+permits ``ai`` for the Lane-2 AI extraction path (migration 0009 widened both the
+DB CHECK and the app-layer set in lockstep, per CTO D-1). ``ai`` is gated by the
+fail-closed defaults (``machine_extracted_unreviewed`` / ``not_publishable`` /
+``unreviewed``) + the mandatory source anchor + the run ledger, NOT by exclusion.
+The AI writer lives in :mod:`ai_extraction` and reuses :func:`insert_statement`
+unchanged. No network here, Alpine-only, local/vault-only.
 """
 
 from __future__ import annotations
@@ -68,11 +72,13 @@ ALLOWED_ARCHIVE_STATUSES = frozenset({"available", "unavailable", "not_checked"}
 
 ALLOWED_CONFIDENCE = frozenset({"high", "medium", "low"})
 
-# Scope-narrowed produced_by for this slice: a strict SUBSET of the SSOT
-# ALLOWED_PRODUCED_BY (no 'ai'). Asserting the subset relationship proves the
-# narrowing is a reuse, not an independent re-typing.
-ALLOWED_STATEMENT_PRODUCED_BY = frozenset({"automation", "human"})
-assert ALLOWED_STATEMENT_PRODUCED_BY <= pub.ALLOWED_PRODUCED_BY, (
+# Slice 3 B (GOV-89) widens the app-layer set to the full SSOT producer set so
+# the Lane-2 AI path can land. CTO D-1 ruling (GOV-88 §5): both layers move
+# together — this set and the migration-0009 ``statements.produced_by`` CHECK are
+# widened in lockstep. The equality (not subset) assertion is the parity guard
+# that the app layer cannot drift from the SSOT enum in either direction.
+ALLOWED_STATEMENT_PRODUCED_BY = frozenset(pub.ALLOWED_PRODUCED_BY)  # {automation, ai, human}
+assert ALLOWED_STATEMENT_PRODUCED_BY == pub.ALLOWED_PRODUCED_BY, (
     "statement produced_by drifted from the SSOT publication.ALLOWED_PRODUCED_BY"
 )
 
@@ -235,10 +241,8 @@ def insert_statement(
 
     produced_by = statement.get("produced_by", "automation")
     if produced_by not in ALLOWED_STATEMENT_PRODUCED_BY:
-        # 'ai' is intentionally rejected this slice (scope lock).
         raise ValueError(
-            f"produced_by {produced_by!r} not in {sorted(ALLOWED_STATEMENT_PRODUCED_BY)} "
-            f"(no 'ai' path this slice)"
+            f"produced_by {produced_by!r} not in {sorted(ALLOWED_STATEMENT_PRODUCED_BY)}"
         )
 
     verification_status = statement.get("verification_status", "machine_extracted_unreviewed")
@@ -289,14 +293,19 @@ def insert_statement(
         }
     )
 
+    # Per-record gateway-run provenance (0009): an AI-produced row names the run
+    # that produced it; every evidence_link inherits the same run id unless it
+    # carries its own. NULL for automation/human rows.
+    run_id = statement.get("ai_extraction_run_id")
+
     now = _now_utc_iso()
     conn.execute(
         "INSERT INTO statements ("
         "statement_id, segment_id, agenda_item_id, speaker_attribution_id, "
         "statement_text, is_verbatim, layer, produced_by, verification_status, "
         "correction_status, review_state, publication_state, source_changed, "
-        "ui_status, confidence, updates_statement_id, created_utc"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "ui_status, confidence, updates_statement_id, ai_extraction_run_id, created_utc"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             statement_id,
             statement.get("segment_id"),
@@ -314,6 +323,7 @@ def insert_statement(
             ui_status,
             confidence,
             statement.get("updates_statement_id"),
+            run_id,
             now,
         ),
     )
@@ -326,8 +336,9 @@ def insert_statement(
             "layer, locator_kind, timestamp_seconds, timestamp_human, page, section, "
             "paragraph, original_url, final_url, archive_url, archive_status, scan_date, "
             "captured_at_utc, agenda_item_id, is_verbatim, verification_status, "
-            "correction_status, confidence, transcript_path, deep_link, created_utc"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "correction_status, confidence, transcript_path, deep_link, "
+            "ai_extraction_run_id, created_utc"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 link_id,
                 link.get("from_node_id", statement_id),
@@ -354,6 +365,7 @@ def insert_statement(
                 link.get("confidence", "medium"),
                 link.get("transcript_path"),
                 link.get("deep_link"),
+                link.get("ai_extraction_run_id", run_id),
                 now,
             ),
         )
