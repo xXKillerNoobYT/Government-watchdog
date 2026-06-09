@@ -348,24 +348,36 @@ verbatim (no re-typing), and duplicate no Slice-1/2 code. No table is dropped.
 blocks `'ai'`. **SQLite cannot `ALTER` an existing CHECK constraint** — this is
 the one place "additive" needs a documented technique, not a one-liner.
 
-- **Primary (recommended): app-layer widening, no DB rebuild.** Widen
-  `statements.py::STATEMENT_PRODUCED_BY` to `{automation, ai, human}` (=
-  `publication.ALLOWED_PRODUCED_BY`) and route ALL writes through
-  `insert_statement`, which already validates the set. The 0007 CHECK stays as a
-  *belt-and-suspenders floor for direct SQL*; because `'ai'` rows are written via
-  the app path, the value space is governed by the Python set. **Caveat to
-  resolve with CTO:** a raw `INSERT … produced_by='ai'` would still hit the 0007
-  CHECK and fail — acceptable (defense-in-depth) only if every Lane-2 write goes
-  through `insert_statement`. If CTO wants the DB to accept `'ai'` directly →
-  Alternate below.
-- **Alternate: 12-step SQLite table rebuild in `0009`.** New `statements_new` with
-  the widened CHECK, `INSERT INTO statements_new SELECT * FROM statements`, drop
-  old, rename, recreate indexes — all guarded so re-run is a no-op. Higher blast
-  radius (touches the load-bearing table); only if CTO requires DB-level `'ai'`.
+**CTO ruling (GOV-88 sign-off, agent `24fddc65`):** the impl issue MUST widen the
+**DB-level** CHECK on `statements.produced_by`; app-layer widening alone is
+**necessary but not sufficient**. Rationale + the two options weighed:
 
-**Recommendation:** Primary (app-layer) — it is strictly additive, touches no
-landed rows, and keeps the 0007 CHECK as a conservative floor. Record the choice
-in the GOV-88 sign-off.
+- **App-layer widening alone — REJECTED as insufficient.** Widening
+  `statements.py::STATEMENT_PRODUCED_BY` to `{automation, ai, human}` is required,
+  but it does **not** make `'ai'` rows land. A SQLite CHECK is enforced by the
+  engine on **every** INSERT/UPDATE — including parameterized writes through
+  `insert_statement` — not only "direct SQL". With the 0007 CHECK left at
+  `IN ('automation','human')`, a `produced_by='ai'` write fails at the DB layer
+  regardless of code path, so Lane 2 would not function. (Corrects the earlier
+  "value space governed by the Python set" framing.)
+- **Controlled `statements` rebuild in `0009` — SELECTED.** SQLite cannot `ALTER`
+  a CHECK, so widen it via the guarded 12-step rebuild: `statements_new` with
+  `CHECK (produced_by IN ('automation','ai','human'))`,
+  `INSERT INTO statements_new SELECT * FROM statements`, drop, rename, recreate
+  indexes/triggers — each step `IF NOT EXISTS`/`PRAGMA`-guarded so a re-run is a
+  no-op. **This is low-risk, not high-risk: it mirrors landed precedent** —
+  migration `0005_ssot_publication.sql:29` already carries the identical widened
+  literal `CHECK (produced_by IN ('automation','ai','human'))`. The rebuild
+  reproduces an existing in-schema constraint, touches no row values, and only
+  grows the value space (strictly additive in effect).
+
+**Both layers move together:** the Python `STATEMENT_PRODUCED_BY` set and the new
+DB CHECK must be widened in the same `0009` change, and the **D-4 parity guard**
+(`set(STATEMENT_PRODUCED_BY) == ALLOWED_PRODUCED_BY` and the CHECK literal == the
+Python enum) must assert they agree — preventing the two-layer drift that caused
+the rejected option's confusion. Wrap the rebuild in a transaction with
+`foreign_keys=OFF` for the swap, re-enable + `PRAGMA foreign_key_check` after, per
+the standard SQLite recipe.
 
 ### Decision D-2 — `ai_extraction_runs` ledger + per-record provenance (`0009`)
 
@@ -403,6 +415,11 @@ stay green; a parity test asserts any new CHECK literal matches the Python enum
   by `to_web_safe()` (extends the §2 private-field test).
 - A parity test that the widened `produced_by` set == `ALLOWED_PRODUCED_BY` and
   any `0009` CHECK literal matches its Python enum.
+- A `statements`-rebuild safety test (per CTO D-1 ruling): row count and a content
+  digest of every landed row are identical pre/post `0009`; a `PRAGMA
+  foreign_key_check` returns empty after the swap; the migration is idempotent
+  (second run is a no-op); and a `produced_by='ai'` INSERT through `insert_statement`
+  now **succeeds** at the DB layer (proving the CHECK was actually widened).
 - A test that `error_status ∈ ('partial','failed')` keeps the run's outputs
   non-publishable (fail-closed downstream block).
 
@@ -414,7 +431,7 @@ stay green; a parity test asserts any new CHECK literal matches the Python enum
 |---|---|---|
 | Gap matrix complete (every Lane 2–5 clause → 1.09/1.11) | §4.1–§4.4 (L2-1…L5-6) with HAVE/GAP/N/A-here + closure | ✅ |
 | Gateway-run-log schema defined | §3 (`ai_extraction_runs` fields, rules, provenance link) | ✅ |
-| Additive migration plan decided; reuses 1.07 enums/fields (no re-typing); no Slice-1/2 duplication | §5 D-1…D-5 (app-layer `produced_by` widening + `0009` ledger; no new vocab; rebuild explicitly avoided) | ✅ |
+| Additive migration plan decided; reuses 1.07 enums/fields (no re-typing); no Slice-1/2 duplication | §5 D-1…D-5 — CTO ruling: `0009` guarded `statements` CHECK rebuild (mirrors landed `0005` literal) + matching Python-set widening + parity guard + `ai_extraction_runs` ledger; no new vocab; effect strictly additive | ✅ |
 | Analysis-only — no runtime AI code | this issue ships one `Docs/` file; all code is named for a future impl issue | ✅ |
 | Reviewer sign-off + PR squash-merged to `main` | §7 reviewer lanes; PR + CTO merge | ⏳ pending review |
 
