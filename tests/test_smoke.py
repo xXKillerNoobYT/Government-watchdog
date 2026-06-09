@@ -56,6 +56,10 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "ai_verification_results",  # GOV-90: Slice 3 C — Lane 3 verification verdict ledger
         "ai_risk_flags",  # GOV-91: Slice 3 D — Lane 4 risk-layer findings ledger
         "reviewer_decisions",  # GOV-91: Slice 3 D — Lane 5 reviewer-gate audit ledger
+        "agenda_threads",  # GOV-98: Slice 4 Prereq-0 — concept-map agenda_thread node
+        "topics",  # GOV-98: Slice 4 Prereq-0 — flat topic node (tree via topic_rollup)
+        "concept_edges",  # GOV-98: Slice 4 Prereq-0 — generic forward-linking typed edges
+        "node_label_aliases",  # GOV-98 addendum: plain-language label layer (§A.7)
     }
 
 

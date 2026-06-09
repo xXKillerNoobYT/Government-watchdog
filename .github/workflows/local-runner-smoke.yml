@@ -101,3 +101,23 @@ jobs:
           # decision. Exits non-zero (fails LOUDLY) on any regression. Throwaway
           # sandbox: no real DB / AI / network.
           ./.ci-venv/bin/python scripts/slice3e_smoke.py
+      - name: Slice 4 Prereq-0 read-API smoke — eligible-only serve / zero raw paths (transport) / agenda_thread + typed lifecycle / topic_rollup + acyclicity / plain-language label layer + alias provenance / labels travel / no orphan (GOV-98 / 1.05+1.07 + concept-map additions + §A.7)
+        run: |
+          # Reviewer-internal read-API + concept-map registry additions. End-to-end:
+          # migrate -> seed registry source + meetings + agenda items -> write one
+          # ELIGIBLE reviewed/publishable statement (evidence pointer carrying a
+          # vault path + raw deep-link) + non-eligible statements -> register the
+          # agenda_thread + members + a typed supersede edge + a topic_rollup chain
+          # + a plain-language label layer (canonicalHumanLabel + a government
+          # sourceAlias whose mandatory sourceRef carries a vault local_ref) ->
+          # drive read_api.build_response. Asserts: only the reviewed/eligible
+          # record is served (default not returned); the serialized body has ZERO
+          # raw/absolute paths incl. the alias local_ref (transport-level, GOV-34);
+          # the new node/edge types are exposed (agenda_thread + chronological
+          # members + typed lifecycle; topic_rollup chain + breadcrumb); each
+          # topic/thread carries canonicalHumanLabel (government string never
+          # primary) + a government sourceAlias with provenance; the validator
+          # rejects an alias missing sourceRef; acyclicity rejects a written cycle
+          # before serving; labels travel; no orphan served. Exits non-zero (fails
+          # LOUDLY) on any regression. Throwaway sandbox: no real DB / network.
+          ./.ci-venv/bin/python scripts/slice4_prereq0_smoke.py
