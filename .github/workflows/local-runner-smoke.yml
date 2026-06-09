@@ -87,3 +87,17 @@ jobs:
           # non-zero (fails LOUDLY) on any regression. Throwaway sandbox: no real
           # DB / AI / network.
           ./.ci-venv/bin/python scripts/slice3d_smoke.py
+      - name: Slice 3 E full AI-gateway integration smoke — Lane 2->3->4->5 end-to-end fail-closed; nothing publishable by default (GOV-92 / Lanes 2-5, 1.09+1.11)
+        run: |
+          # The Slice-3 capstone. End-to-end Lane 2->3->4->5 as ONE continuous
+          # pipeline over a single DB: migrate -> reuse Slice-1 registry -> load
+          # the sanitized fixture (preserved raw) -> segment (Lane 1) -> Lane-2 AI
+          # extraction -> Lane-3 verification -> Lane-4 risk screen -> Lane-5
+          # reviewer-gate. Asserts the twelve end-to-end invariants and, above all,
+          # the HEADLINE cross-lane guarantee: after the whole pipeline EVERY
+          # AI-written row is still publication-blocked — including a row a human
+          # reviewer has approved (the owner publication gate never auto-flips). So
+          # zero AI rows reach a publishable state without a reviewer + owner
+          # decision. Exits non-zero (fails LOUDLY) on any regression. Throwaway
+          # sandbox: no real DB / AI / network.
+          ./.ci-venv/bin/python scripts/slice3e_smoke.py
