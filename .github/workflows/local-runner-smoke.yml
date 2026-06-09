@@ -62,3 +62,15 @@ jobs:
           # non-zero (fails LOUDLY) on any regression. Throwaway sandbox: no real
           # DB / AI / network.
           ./.ci-venv/bin/python scripts/slice3_smoke.py
+      - name: Slice 3 C Lane-3 verification smoke — labels / never-promotes / no-gating-write / run-log / fail-closed (GOV-90 / Lane 3, 1.09+1.11)
+        run: |
+          # End-to-end Lane 3: migrate -> reuse Slice-1 registry -> load the
+          # sanitized fixture -> segment (Lane-1) -> Lane-2 AI extraction -> run a
+          # deterministic Lane-3 verification over those AI rows. Asserts the five
+          # Lane-3 invariants (a verification label per AI statement; a mismatch
+          # flags but NEVER promotes — every AI row stays
+          # machine_extracted_unreviewed + not_publishable; Lane 3 writes no gating
+          # field; the Lane-3 run is logged on the ledger as lane=3_verification;
+          # fail-closed downstream). Exits non-zero (fails LOUDLY) on any
+          # regression. Throwaway sandbox: no real DB / AI / network.
+          ./.ci-venv/bin/python scripts/slice3c_smoke.py

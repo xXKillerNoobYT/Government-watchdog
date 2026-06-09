@@ -297,12 +297,12 @@ Legend: **HAVE** = enforced on `main` today · **GAP** = Slice-3 (or later) must
 
 | # | Clause | State | Where / what closes it |
 |---|---|---|---|
-| L3-1 | Deterministic compare of draft to source at the pointer (1.09 step 11 prep, §3) | **GAP** | a DET comparison helper (future impl issue); reads pointer, flags mismatch — writes NO gating field |
+| L3-1 | Deterministic compare of draft to source at the pointer (1.09 step 11 prep, §3) | **IMPLEMENTED (GOV-90)** | `scripts/ai_verification.py::classify` token-grounding compare; reads pointer, flags mismatch — writes NO gating field (verdict in the `ai_verification_results` side table, claim row untouched) |
 | L3-2 | The *verification label* (promotion to reviewed) is a HUMAN action, not Lane-3 automation (1.09 step 11 / G2, 1.11 §5) | **HAVE (rule)** | only a reviewer may set `reviewed_source_linked`/`human_verified`; Lane 3 may only flag |
 | L3-3 | Source-trail completeness check — no orphan claims (1.11 P3) | **HAVE** | export/insert validation; FK-resolving pointer |
 | L3-4 | `sourceChanged` / `source-missing` re-review signals (1.09 §5, `compute_ui_status` rules 3/4) | **HAVE** | `source_changed` column + rules 3/4 |
-| L3-5 | Uncertainty flag surfaced to reviewer only, never auto-promoted (1.09 §5 low-confidence) | **HAVE (posture)** / **GAP (queue)** | stays `unverified`; a reviewer queue view is a later slice |
-| L3-6 | Lane-3 run is auditable (`reviewer_state` on the ledger) (1.11 §6.5) | **GAP** | `ai_extraction_runs.lane='3_verification'` + `reviewer_state` (§3) |
+| L3-5 | Uncertainty flag surfaced to reviewer only, never auto-promoted (1.09 §5 low-confidence) | **IMPLEMENTED (GOV-90)** / **GAP (queue UI)** | `ai_verification_results.uncertainty_flag` + `contested`; a low-confidence claim is capped at `uncertain` (never auto-matched) and stays `unverified`; `latest_verdict()` is the backend read the reviewer-queue UI (a later slice) will consume |
+| L3-6 | Lane-3 run is auditable (`reviewer_state` on the ledger) (1.11 §6.5) | **IMPLEMENTED (GOV-90)** | `ai_verification.run_verification` opens `ai_extraction_runs.lane='3_verification'` with `reviewer_state` + input set / tool version / errors / retry (§3) |
 
 ### 4.3 Lane 4 — Risk layer (privacy / legal / publication / moderation no-go)
 
