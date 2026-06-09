@@ -10,8 +10,13 @@ Covers the Contract 1.07 §2/§1.4 acceptance criteria:
   publication_state=not_publishable and a gated (non-allowlisted) uiStatus;
 - **enum reuse** — the 6-value verificationStatus enum, the publication
   allowlist, and compute_ui_status are imported from publication.py (same object,
-  no shadow copy), produced_by is a strict subset (no 'ai'), and the SQL CHECK
-  literals match the Python enum (no drift).
+  no shadow copy), and the SQL CHECK literals match the Python enum (no drift).
+
+Note (GOV-89, Slice 3 B): the 0007 ``produced_by`` scope lock has been lifted —
+``ai`` is now a permitted producer (widened in migration 0009 + the app-layer set
+in lockstep, CTO D-1). The two tests below were updated from the slice-2
+"no 'ai'" assertions to the slice-3 reality; the comprehensive AI-path coverage
+lives in ``tests/test_ai_extraction.py``.
 
 No AI, no network: pure sqlite + the committed Alpine fixture.
 """
@@ -154,10 +159,11 @@ def test_six_value_enum_is_the_same_object_not_a_copy() -> None:
     assert stmt.pub.compute_ui_status is pub.compute_ui_status
 
 
-def test_produced_by_is_subset_of_ssot_with_no_ai() -> None:
-    assert stmt.ALLOWED_STATEMENT_PRODUCED_BY <= pub.ALLOWED_PRODUCED_BY
-    assert "ai" not in stmt.ALLOWED_STATEMENT_PRODUCED_BY
-    assert stmt.ALLOWED_STATEMENT_PRODUCED_BY == {"automation", "human"}
+def test_produced_by_matches_ssot_and_includes_ai() -> None:
+    # Slice 3 B (GOV-89) widened the app-layer set to the full SSOT producer set.
+    assert stmt.ALLOWED_STATEMENT_PRODUCED_BY == pub.ALLOWED_PRODUCED_BY
+    assert "ai" in stmt.ALLOWED_STATEMENT_PRODUCED_BY
+    assert stmt.ALLOWED_STATEMENT_PRODUCED_BY == {"automation", "ai", "human"}
 
 
 def test_sql_check_matches_python_verification_enum(tmp_path: Path) -> None:
@@ -337,18 +343,30 @@ def test_new_statement_defaults_not_publishable(tmp_path: Path) -> None:
     assert row["ui_status"] == "unverified"
 
 
-def test_ai_produced_by_rejected_this_slice(tmp_path: Path) -> None:
+def test_ai_produced_by_accepted_when_anchored(tmp_path: Path) -> None:
+    # Slice 3 B: 'ai' is now a permitted producer. It still enters fail-closed
+    # (machine_extracted_unreviewed / not_publishable) and still obeys no-orphan.
     with db.open_db(_migrated(tmp_path)) as conn:
         _seed_source(conn)
         seg_id = _seed_segment(conn)
-        with pytest.raises(ValueError, match="ai"):
-            stmt.insert_statement(
-                conn,
-                {"statement_id": "alpine:2026-05-08:ai",
-                 "segment_id": seg_id,
-                 "statement_text": "AI draft.",
-                 "produced_by": "ai"},
-            )
+        result = stmt.insert_statement(
+            conn,
+            {"statement_id": "alpine:2026-05-08:ai",
+             "segment_id": seg_id,
+             "statement_text": "AI paraphrase anchored to a real segment.",
+             "is_verbatim": 0,
+             "layer": "ai_thought_then",
+             "produced_by": "ai"},
+        )
+        row = conn.execute(
+            "SELECT produced_by, verification_status, publication_state "
+            "FROM statements WHERE statement_id = ?",
+            ("alpine:2026-05-08:ai",),
+        ).fetchone()
+    assert result["ui_status"] in pub.ALLOWED_UI_STATUSES
+    assert row["produced_by"] == "ai"
+    assert row["verification_status"] == "machine_extracted_unreviewed"
+    assert row["publication_state"] == "not_publishable"
 
 
 def test_publication_state_check_rejects_bad_value(tmp_path: Path) -> None:

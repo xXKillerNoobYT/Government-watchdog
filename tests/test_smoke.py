@@ -52,6 +52,7 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "made_statement",  # GOV-83: Slice 2 D — 1.07 §3.4 gated person→statement edge
         "outcomes",  # GOV-83: Slice 2 D — 1.07 §4 later-outcome node
         "outcome_updates",  # GOV-83: Slice 2 D — 1.07 §4.2 forward-only update edge
+        "ai_extraction_runs",  # GOV-89: Slice 3 B — Lane 2 AI-gateway run ledger
     }
 
 

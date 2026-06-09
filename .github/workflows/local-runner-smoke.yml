@@ -51,3 +51,14 @@ jobs:
           # Asserts the four Slice-2 invariants; exits non-zero (fails LOUDLY) on
           # any regression. Throwaway sandbox: no real DB / network.
           ./.ci-venv/bin/python scripts/slice2_smoke.py
+      - name: Third-slice AI-gateway smoke — ai-provenance / no-orphan / attribution-safe / run-log / fail-closed (GOV-89 / Lane 2, 1.09+1.11)
+        run: |
+          # End-to-end Lane 2: migrate -> reuse Slice-1 registry -> load the
+          # sanitized fixture -> segment (Lane-1) -> run an OFFLINE deterministic
+          # AI extraction (injected proposer, no model call) -> ledger. Asserts the
+          # five AI-gateway invariants (produced_by=ai + fail-closed defaults +
+          # provenance; no-orphan rejection; uncertain speaker drops the name;
+          # gateway run-log; fail-closed downstream + reviewer gate). Exits
+          # non-zero (fails LOUDLY) on any regression. Throwaway sandbox: no real
+          # DB / AI / network.
+          ./.ci-venv/bin/python scripts/slice3_smoke.py
