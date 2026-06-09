@@ -485,8 +485,14 @@ def test_side_tables_not_web_projected(tmp_path: Path) -> None:
     with db.open_db(_migrated(tmp_path)) as conn:
         risk_cols = _columns(conn, rg.RISK_TABLE)
         dec_cols = _columns(conn, rg.DECISION_TABLE)
-    assert not (risk_cols & pub.WEB_SAFE_FIELD_ALLOWLIST), "risk flag columns must not be web-safe"
-    assert not (dec_cols & pub.WEB_SAFE_FIELD_ALLOWLIST), "decision columns must not be web-safe"
+    # Carve out the web-safe SHARED identifier `statement_id` (the statement's own
+    # id, allowlisted for the GOV-98 read-API; a join key, not risk/decision
+    # content). The guarantee is that no risk-flag or reviewer-decision CONTENT
+    # column (risk_category/severity/reviewer_id/decision/reason/promoted/…) is
+    # web-projectable.
+    safe_shared = {"statement_id"}
+    assert not ((risk_cols & pub.WEB_SAFE_FIELD_ALLOWLIST) - safe_shared), "risk flag content must not be web-safe"
+    assert not ((dec_cols & pub.WEB_SAFE_FIELD_ALLOWLIST) - safe_shared), "decision content must not be web-safe"
 
 
 def test_to_web_safe_drops_risk_and_decision_fields() -> None:

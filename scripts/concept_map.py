@@ -1,0 +1,360 @@
+"""Concept-map type registry (SSOT) — node/edge vocabulary + GOV-98 additions.
+
+Stage 1 Slice 4 Prereq-0 (GOV-98). Contract: GOV-97 plan Part A.1/A.2; the 1.07
+transcript/evidence/statement contract §1.1/§1.2 (the node/edge tables that
+"map 1:1 to ``ALLOWED_NODE_TYPES`` / ``ALLOWED_EDGE_TYPES``"). Source:
+Docs/stage1-slice4-prereq0-read-api-concept-map.md.
+
+The 1.07 contract referenced ``ALLOWED_NODE_TYPES`` / ``ALLOWED_EDGE_TYPES`` as
+living in an export validator that was never committed to this repo (only its
+*status* enum core was ported into :mod:`publication`). This module makes the
+concept-map **type vocabulary** a real in-repo single source of truth: the
+complete 1.07 set PLUS the GOV-98 additions, guarded at import time.
+
+GOV-98 additions (forward-linking only, additive — they never rewrite known-then
+context or touch the fail-closed publication path):
+
+* node ``agenda_thread`` (a durable civic subject recurring across meetings).
+* edges ``agenda_item_in_thread``, ``agenda_item_supersedes``,
+  ``agenda_item_amends``, ``agenda_item_revisits``, ``topic_rollup``.
+
+``topic_groups`` (already in the 1.07 set) is reused for thread-under-topic; the
+topic TREE is carried solely by ``topic_rollup`` so grouping and tree stay
+separate concerns (GOV-36 separate-concepts rule).
+
+Storage (migration 0012): the new edges live in the generic append-only
+``concept_edges`` table; the existing relational-FK spine edges are NOT migrated
+here — this module only *names* them in the registry. Acyclicity for
+``topic_rollup`` is a cross-row invariant enforced by :func:`insert_edge` (insert
+time) and re-validated by :func:`assert_acyclic` / ``read_api.topic_tree``
+(serve time).
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timezone
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Node type registry (1.07 §1.1 + GOV-98 A.1).
+# ---------------------------------------------------------------------------
+
+# The 1.07 typed-concept vocabulary (the node table that "maps 1:1 to
+# ALLOWED_NODE_TYPES"). place_asset / entity are referenced as decision_affects
+# endpoints in §1.2 but not yet given their own record table — they are named
+# here so every edge endpoint resolves to a known node type (no dangling type).
+_NODE_TYPES_1_07 = frozenset({
+    "jurisdiction",
+    "government_body",
+    "meeting",
+    "agenda_item",
+    "transcript_segment",
+    "statement",
+    "person",
+    "role",
+    "source_record",
+    "document",
+    "evidence_link",
+    "vote",
+    "decision",
+    "outcome",
+    "topic",
+    "place_asset",
+    "entity",
+    "card",
+})
+
+# GOV-98 A.1 addition.
+_NODE_TYPES_GOV98 = frozenset({"agenda_thread"})
+
+ALLOWED_NODE_TYPES = _NODE_TYPES_1_07 | _NODE_TYPES_GOV98
+
+# ---------------------------------------------------------------------------
+# Edge type registry (1.07 §1.2 + GOV-98 A.2).
+# ---------------------------------------------------------------------------
+
+_EDGE_TYPES_1_07 = frozenset({
+    "contains_body",
+    "held_meeting",
+    "contains_agenda_item",
+    "references_source",
+    "served_in_role",
+    "role_in_body",
+    "statement_from_segment",
+    "made_statement",
+    "voted_on",
+    "vote_decided",
+    "decision_affects",
+    "source_supports",
+    "document_supersedes",
+    "document_amends",
+    "document_replaces",
+    "outcome_updates",
+    "topic_groups",
+    "card_presents",
+    "card_links_card",
+})
+
+# GOV-98 A.2 additions — forward-linking only.
+_EDGE_TYPES_GOV98 = frozenset({
+    "agenda_item_in_thread",
+    "agenda_item_supersedes",
+    "agenda_item_amends",
+    "agenda_item_revisits",
+    "topic_rollup",
+})
+
+ALLOWED_EDGE_TYPES = _EDGE_TYPES_1_07 | _EDGE_TYPES_GOV98
+
+# Endpoint type contract for the GOV-98 edges (+ topic_groups for thread-under-
+# topic). Each maps edge_type -> ({allowed from_node_types}, {allowed to_node_types}).
+# The generic concept_edges table stores exactly these edge types; insert_edge
+# validates endpoints against this contract. Existing relational-FK spine edges
+# are not stored generically, so they are not listed here.
+EDGE_ENDPOINTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "agenda_item_in_thread":   (frozenset({"agenda_item"}), frozenset({"agenda_thread"})),
+    "agenda_item_supersedes":  (frozenset({"agenda_item"}), frozenset({"agenda_item"})),
+    "agenda_item_amends":      (frozenset({"agenda_item"}), frozenset({"agenda_item"})),
+    "agenda_item_revisits":    (frozenset({"agenda_item"}), frozenset({"agenda_item"})),
+    "topic_rollup":            (frozenset({"topic"}),       frozenset({"topic"})),
+    "topic_groups":            (frozenset({"topic"}),       frozenset({"agenda_thread", "topic", "statement", "agenda_item"})),
+}
+
+# The edge types physically stored in the generic concept_edges table (mirrors
+# the migration-0012 CHECK literal). A parity test asserts the two cannot drift.
+GENERIC_EDGE_TYPES = frozenset(EDGE_ENDPOINTS)
+
+# Forward-linking edges never rewrite/delete the earlier (to_*) node — consistent
+# with outcome_updates and document_* lifecycle. The later node points back.
+FORWARD_LINKING_EDGE_TYPES = frozenset({
+    "agenda_item_supersedes",
+    "agenda_item_amends",
+    "agenda_item_revisits",
+    "agenda_item_in_thread",
+    "topic_rollup",
+})
+
+# The lifecycle edges that render with a typed label (BEH-AGENDA-2). UI never
+# renders an untyped "related".
+AGENDA_LIFECYCLE_EDGE_TYPES = frozenset({
+    "agenda_item_supersedes",
+    "agenda_item_amends",
+    "agenda_item_revisits",
+})
+
+# ---------------------------------------------------------------------------
+# Import-time drift guards (fail at import, not at runtime).
+# ---------------------------------------------------------------------------
+
+# Every edge endpoint type in the contract must be a known node type — no edge
+# may point at a type the registry does not define.
+for _etype, (_froms, _tos) in EDGE_ENDPOINTS.items():
+    assert _etype in ALLOWED_EDGE_TYPES, f"EDGE_ENDPOINTS names unknown edge {_etype!r}"
+    _unknown = (_froms | _tos) - ALLOWED_NODE_TYPES
+    assert not _unknown, f"edge {_etype!r} references unknown node type(s) {_unknown}"
+
+# The GOV-98 additions must actually be additive (present, and not already in the
+# 1.07 set) so a future rename can't silently collide.
+assert _NODE_TYPES_GOV98 <= ALLOWED_NODE_TYPES
+assert _EDGE_TYPES_GOV98 <= ALLOWED_EDGE_TYPES
+assert not (_NODE_TYPES_1_07 & _NODE_TYPES_GOV98), "GOV-98 node collides with 1.07"
+assert not (_EDGE_TYPES_1_07 & _EDGE_TYPES_GOV98), "GOV-98 edge collides with 1.07"
+assert FORWARD_LINKING_EDGE_TYPES <= ALLOWED_EDGE_TYPES
+assert AGENDA_LIFECYCLE_EDGE_TYPES <= ALLOWED_EDGE_TYPES
+
+
+class EdgeError(ValueError):
+    """An edge violates the registry endpoint contract or a node is missing."""
+
+
+class TopicTreeCycleError(ValueError):
+    """A topic_rollup edge would close a cycle (BEH-TOPICTREE-4)."""
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _topic_rollup_parent_map(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """child_topic_id -> [parent_topic_id, ...] over the current topic_rollup edges."""
+    parents: dict[str, list[str]] = {}
+    for row in conn.execute(
+        "SELECT from_node_id, to_node_id FROM concept_edges WHERE edge_type = 'topic_rollup'"
+    ):
+        parents.setdefault(row[0], []).append(row[1])
+    return parents
+
+
+def _would_create_cycle(
+    parents: dict[str, list[str]], child: str, new_parent: str
+) -> bool:
+    """True if adding child -> new_parent closes a cycle (or is a self-loop).
+
+    ``child`` rolls up INTO ``new_parent``; a cycle exists if ``new_parent`` can
+    already reach ``child`` by following parent pointers. Walks the existing
+    parent map (which does not yet contain the candidate edge).
+    """
+    if child == new_parent:
+        return True
+    seen: set[str] = set()
+    frontier = [new_parent]
+    while frontier:
+        node = frontier.pop()
+        if node == child:
+            return True
+        if node in seen:
+            continue
+        seen.add(node)
+        frontier.extend(parents.get(node, ()))
+    return False
+
+
+def assert_acyclic(conn: sqlite3.Connection) -> None:
+    """Validate the whole topic_rollup graph is acyclic (BEH-TOPICTREE-4).
+
+    Serve-time guard, independent of insert-time enforcement: raises
+    :class:`TopicTreeCycleError` if any topic can reach itself by following
+    ``topic_rollup`` parent pointers. ``read_api.topic_tree`` calls this before
+    returning a tree rather than rendering a broken one.
+    """
+    parents = _topic_rollup_parent_map(conn)
+    for start in parents:
+        seen: set[str] = set()
+        frontier = list(parents.get(start, ()))
+        while frontier:
+            node = frontier.pop()
+            if node == start:
+                raise TopicTreeCycleError(
+                    f"topic_rollup cycle detected through topic {start!r}"
+                )
+            if node in seen:
+                continue
+            seen.add(node)
+            frontier.extend(parents.get(node, ()))
+
+
+def insert_edge(
+    conn: sqlite3.Connection,
+    edge_type: str,
+    from_node_id: str,
+    to_node_id: str,
+    *,
+    from_node_type: str | None = None,
+    to_node_type: str | None = None,
+    created_by: str | None = None,
+    note: str | None = None,
+    edge_id: str | None = None,
+    commit: bool = True,
+) -> str:
+    """Insert one typed concept edge under the registry endpoint contract.
+
+    Validates (raising before any write):
+
+    * ``edge_type`` is a generic-table edge type (:data:`GENERIC_EDGE_TYPES`).
+    * the endpoint node types match :data:`EDGE_ENDPOINTS` (defaulting to the
+      edge's canonical from/to types when not given).
+    * for ``topic_rollup``, the edge does not close a cycle / self-loop
+      (:class:`TopicTreeCycleError`).
+
+    ``created_by`` / ``note`` are reviewer-internal provenance and are never
+    web-safe. Returns the ``edge_id``. Idempotent on
+    ``(edge_type, from_node_id, to_node_id)`` via the table's UNIQUE constraint
+    (an ``INSERT OR IGNORE``).
+    """
+    if edge_type not in GENERIC_EDGE_TYPES:
+        raise EdgeError(
+            f"edge_type {edge_type!r} is not stored in concept_edges; "
+            f"expected one of {sorted(GENERIC_EDGE_TYPES)}"
+        )
+    allowed_from, allowed_to = EDGE_ENDPOINTS[edge_type]
+    # Default to the edge's canonical endpoint type when a single type is allowed.
+    from_node_type = from_node_type or (next(iter(allowed_from)) if len(allowed_from) == 1 else None)
+    to_node_type = to_node_type or (next(iter(allowed_to)) if len(allowed_to) == 1 else None)
+    if from_node_type not in allowed_from:
+        raise EdgeError(
+            f"edge {edge_type!r} from_node_type {from_node_type!r} not in {sorted(allowed_from)}"
+        )
+    if to_node_type not in allowed_to:
+        raise EdgeError(
+            f"edge {edge_type!r} to_node_type {to_node_type!r} not in {sorted(allowed_to)}"
+        )
+    if not from_node_id or not to_node_id:
+        raise EdgeError("edge requires non-empty from_node_id and to_node_id")
+
+    if edge_type == "topic_rollup":
+        parents = _topic_rollup_parent_map(conn)
+        if _would_create_cycle(parents, from_node_id, to_node_id):
+            raise TopicTreeCycleError(
+                f"topic_rollup {from_node_id!r} -> {to_node_id!r} would create a cycle"
+            )
+
+    edge_id = edge_id or f"{edge_type}:{from_node_id}->{to_node_id}"
+    conn.execute(
+        "INSERT OR IGNORE INTO concept_edges ("
+        "edge_id, edge_type, from_node_id, from_node_type, to_node_id, to_node_type, "
+        "created_by, created_utc, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            edge_id,
+            edge_type,
+            from_node_id,
+            from_node_type,
+            to_node_id,
+            to_node_type,
+            created_by,
+            _now_utc_iso(),
+            note,
+        ),
+    )
+    if commit:
+        conn.commit()
+    return edge_id
+
+
+def insert_agenda_thread(
+    conn: sqlite3.Connection,
+    agenda_thread_id: str,
+    title: str,
+    jurisdiction_id: str,
+    *,
+    status: str = "open",
+    first_seen_date: str | None = None,
+    last_seen_date: str | None = None,
+    commit: bool = True,
+) -> str:
+    """Insert an ``agenda_thread`` node (GOV-98 A.1). Alpine-locked by caller."""
+    if status not in {"open", "decided", "dormant"}:
+        raise EdgeError(f"agenda_thread status {status!r} invalid")
+    if not (agenda_thread_id and title and jurisdiction_id):
+        raise EdgeError("agenda_thread requires id, title, jurisdiction_id")
+    conn.execute(
+        "INSERT OR IGNORE INTO agenda_threads ("
+        "agenda_thread_id, title, jurisdiction_id, status, first_seen_date, "
+        "last_seen_date, created_utc) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (agenda_thread_id, title, jurisdiction_id, status, first_seen_date,
+         last_seen_date, _now_utc_iso()),
+    )
+    if commit:
+        conn.commit()
+    return agenda_thread_id
+
+
+def insert_topic(
+    conn: sqlite3.Connection,
+    topic_id: str,
+    name: str,
+    *,
+    jurisdiction_id: str | None = None,
+    commit: bool = True,
+) -> str:
+    """Insert a flat ``topic`` node. The tree is carried by topic_rollup edges."""
+    if not (topic_id and name):
+        raise EdgeError("topic requires id and name")
+    conn.execute(
+        "INSERT OR IGNORE INTO topics (topic_id, name, jurisdiction_id, created_utc) "
+        "VALUES (?, ?, ?, ?)",
+        (topic_id, name, jurisdiction_id, _now_utc_iso()),
+    )
+    if commit:
+        conn.commit()
+    return topic_id

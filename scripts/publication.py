@@ -291,6 +291,49 @@ WEB_SAFE_FIELD_ALLOWLIST = frozenset({
     "ui_status",
     "source_changed",
     "publication_state",
+    # --- Stage 1 Slice 4 Prereq-0 (GOV-98) concept-map read-API fields -------
+    # The 1.07 graph + agenda-thread/topic-tree shapes the reviewer-internal
+    # read-API serves. Same fail-closed rule: a field crosses only if named here.
+    # Deliberately EXCLUDES every raw/private locator (transcript_path,
+    # deep_link, segment_id, timestamp_seconds-only raw cues), reviewer identity
+    # (created_by), and free-text notes (note) — see WEB_UNSAFE_FIELDS.
+    # statement (web-safe subset of the record)
+    "statement_id",
+    "statement_text",
+    "layer",
+    "is_verbatim",
+    "confidence",
+    "updates_statement_id",
+    # agenda_item / meeting grouping (slugs + ordinal, no paths)
+    "agenda_item_id",
+    "item_order",
+    "meeting_id",
+    "title",
+    # evidence drawer (citation locators + public URLs only)
+    "relation",
+    "locator_kind",
+    "timestamp_human",
+    "timestamp_seconds",
+    "page",
+    "section",
+    "paragraph",
+    "final_url",
+    "to_source_id",
+    # agenda_thread node
+    "agenda_thread_id",
+    "jurisdiction_id",
+    "status",
+    "first_seen_date",
+    "last_seen_date",
+    # topic node
+    "topic_id",
+    # concept_edge (typed graph edge)
+    "edge_id",
+    "edge_type",
+    "from_node_id",
+    "from_node_type",
+    "to_node_id",
+    "to_node_type",
 })
 
 # Fields that must NEVER cross to the frontend. Enforced implicitly by the
@@ -309,6 +352,15 @@ WEB_UNSAFE_FIELDS = frozenset({
     "robots_policy",
     "local_note_path",
     "registered_utc",
+    # Slice-4 (GOV-98) graph internals that must never cross the boundary:
+    # transcript_path/deep_link = raw/private locators (1.07 §7); segment_id =
+    # vault-segment provenance; created_by = reviewer/agent identity; note =
+    # free-text reviewer/movement note on a concept_edge.
+    "transcript_path",
+    "deep_link",
+    "segment_id",
+    "created_by",
+    "note",
 })
 
 

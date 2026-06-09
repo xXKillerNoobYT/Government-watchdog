@@ -482,8 +482,14 @@ def test_verify_non_ai_statement_rejected(tmp_path: Path) -> None:
 def test_results_table_not_web_projected(tmp_path: Path) -> None:
     with db.open_db(_migrated(tmp_path)) as conn:
         cols = _columns(conn, av.RESULTS_TABLE)
-    leaked = cols & pub.WEB_SAFE_FIELD_ALLOWLIST
-    assert leaked == set(), f"verification-result fields leak to web: {leaked}"
+    # `statement_id` is a web-safe SHARED identifier (the statement's own id,
+    # added to the allowlist for the GOV-98 read-API so the frontend can key
+    # cards / resolve updates_statement_id). It is a join key, NOT AI-verdict
+    # content. The guarantee under test is that no verdict CONTENT column
+    # (verdict/match_method/match_score/uncertainty_flag/contested/detail/…) is
+    # web-projectable — so carve out only the shared id.
+    leaked = (cols & pub.WEB_SAFE_FIELD_ALLOWLIST) - {"statement_id"}
+    assert leaked == set(), f"verification-result content fields leak to web: {leaked}"
 
 
 def test_to_web_safe_drops_verdict_fields() -> None:
