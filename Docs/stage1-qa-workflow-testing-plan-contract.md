@@ -327,6 +327,36 @@ cannot self-review (VSR owns GOV-50, so the CTO lane is primary and the
 SecurityPrivacy lane is consult). Sign-off is recorded as a first-class Paperclip
 comment + status transition, never as an inert note on a closed issue.
 
+### 6.1 Test-environment security caveats — no silent clean pass
+
+Owner/board directive (recorded on GOV-50, 2026-06-10): when a test run or browser
+automation reports an **unsupported or security-reducing command-line flag** — the
+canonical example is `--no-sandbox` on a headless Chromium/Playwright run, but the
+rule applies to any flag/warning that disables a sandbox, certificate check, or
+isolation protection — that warning is a **testing caveat / security finding, not
+harmless noise.** It means browser (or harness) stability and security protections
+may be reduced for that run, so the result is **not** a clean pass on its own.
+
+A QG-1/QG-2 closeout for any run that emitted such a flag/warning **must** record,
+explicitly:
+
+1. **Where it appeared** — the exact command, tool (e.g. Playwright/headless
+   Chrome), and the verbatim flag/warning text.
+2. **Whether it was required only for the local test harness** — i.e. a CI/sandbox
+   accommodation — or whether it leaks into any non-test path.
+3. **Whether it affects production/runtime configuration** — does any shipped
+   config, container, or runtime invoke the same flag? If yes, that is a security
+   finding routed to SecurityPrivacyAgent, not a test caveat.
+4. **Follow-up disposition** — whether work is needed to remove or isolate the
+   flag (e.g. a properly-sandboxed CI image), and who owns it; or an explicit,
+   reviewer-acknowledged exception if it is unavoidable for the local harness.
+
+A run that emitted such a flag may not be reported as a clean/green pass without
+the four points above and an explicit note of the **reduced stability/security
+posture**. Silence is treated as a failed closeout, the same way a skipped test is
+not evidence (§3). This is most likely to surface in the §7.3 browser-automation
+viewport runs; it is not limited to them.
+
 ---
 
 ## 7. Backend ↔ Frontend Test Handoff
@@ -366,7 +396,11 @@ Per the company UI viewport floor: frontend verification of any card/source-draw
 surface must name **desktop 1440×900, tablet 768×1024, and mobile 390×844**. A
 `Pass` verdict for responsive UI requires evidence at all three classes or an
 explicit issue-level exception naming the missing class, the reason, and the next
-owner.
+owner. Browser-automation runs (headless Chromium/Playwright) that emit a
+security-reducing flag such as `--no-sandbox` are subject to the §6.1
+test-environment security-caveat rule: they cannot be reported as a clean pass
+without recording the flag, its scope, any production impact, and the follow-up
+disposition.
 
 ---
 
