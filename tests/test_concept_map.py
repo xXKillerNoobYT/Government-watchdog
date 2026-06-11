@@ -208,3 +208,93 @@ def test_assert_acyclic_catches_a_cycle_written_around_the_guard(conn: sqlite3.C
     conn.commit()
     with pytest.raises(cm.TopicTreeCycleError):
         cm.assert_acyclic(conn)
+
+
+# --- GOV-105: PII guard at the alias/label write boundary -------------------
+
+
+def test_pii_guard_error_subclasses_label_alias_error() -> None:
+    # Subclassing keeps every existing `except LabelAliasError` caller closed.
+    assert issubclass(cm.PiiGuardError, cm.LabelAliasError)
+
+
+def test_alias_term_with_email_rejected(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.PiiGuardError):
+        cm.insert_label_alias(conn, "topic:safety", "topic",
+                              "contact jane.doe@gmail.com", "government_term",
+                              _GOOD_SOURCE_REF)
+
+
+def test_alias_term_with_phone_rejected(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.PiiGuardError):
+        cm.insert_label_alias(conn, "topic:safety", "topic",
+                              "call 307-555-0123", "government_term",
+                              _GOOD_SOURCE_REF)
+
+
+def test_alias_locator_with_street_address_rejected(conn: sqlite3.Connection) -> None:
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.PiiGuardError):
+        cm.insert_label_alias(conn, "topic:safety", "topic", "public safety",
+                              "government_term",
+                              {"source_id": "p", "original_url": "https://x",
+                               "section": "resident at 123 Main Street"})
+
+
+def test_topic_label_with_ssn_rejected(conn: sqlite3.Connection) -> None:
+    with pytest.raises(cm.PiiGuardError):
+        cm.insert_topic(conn, "topic:x", "X", "applicant 123-45-6789")
+
+
+def test_agenda_thread_label_with_email_rejected(conn: sqlite3.Connection) -> None:
+    with pytest.raises(cm.PiiGuardError):
+        cm.insert_agenda_thread(conn, "alpine:thread:z", "Z", "alpine",
+                                "petition from j.smith@example.org")
+
+
+def test_pii_guard_message_does_not_echo_the_value(conn: sqlite3.Connection) -> None:
+    # Non-disclosure: the rejection names the field + kind, never the PII value.
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    with pytest.raises(cm.PiiGuardError) as exc:
+        cm.insert_label_alias(conn, "topic:safety", "topic",
+                              "reach me at 307-555-0123", "government_term",
+                              _GOOD_SOURCE_REF)
+    assert "307-555-0123" not in str(exc.value)
+
+
+@pytest.mark.parametrize("civic_term", [
+    "public safety",
+    "Lincoln Street Bridge",
+    "Drive-through permit application",
+    "Highway 89 repaving",
+    "Resolution 2024-15",
+    "general safety",
+])
+def test_legitimate_civic_terms_accepted(conn: sqlite3.Connection,
+                                         civic_term: str) -> None:
+    # No false positives: real civic vocabulary writes through the guard cleanly.
+    tid = f"topic:{abs(hash(civic_term))}"
+    cm.insert_topic(conn, tid, civic_term, civic_term)
+    cm.insert_label_alias(conn, tid, "topic", civic_term, "government_term",
+                          _GOOD_SOURCE_REF)
+
+
+def test_local_ref_written_but_not_web_projected(conn: sqlite3.Connection) -> None:
+    # GOV-105 acceptance: vault local_ref stays write-allowed but is NEVER in the
+    # web-safe projection (regression on the WRITE path).
+    import read_api as ra  # noqa: E402
+
+    vault = "/Users/IA/Documents/TOA/TownOfAlpine/packet.pdf"
+    cm.insert_topic(conn, "topic:safety", "General safety", "general safety")
+    cm.insert_label_alias(conn, "topic:safety", "topic", "public safety",
+                          "government_term",
+                          {"source_id": "alpine_packet", "local_ref": vault,
+                           "page": 3})
+    rows = cm.aliases_for_node(conn, "topic:safety", "topic")
+    assert rows[0]["source_ref_local_ref"] == vault  # stored, reviewer-internal
+    flat = repr(ra._safe_alias(rows[0]))
+    assert "local_ref" not in flat
+    assert vault not in flat
+    assert "/Users/" not in flat

@@ -32,6 +32,7 @@ time) and re-validated by :func:`assert_acyclic` / ``read_api.topic_tree``
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
@@ -190,6 +191,82 @@ class LabelAliasError(ValueError):
 
 class TopicTreeCycleError(ValueError):
     """A topic_rollup edge would close a cycle (BEH-TOPICTREE-4)."""
+
+
+# ---------------------------------------------------------------------------
+# PII guard at the alias/label write boundary (GOV-105).
+# ---------------------------------------------------------------------------
+#
+# The read-API web-safe layer projects `term`, `canonicalHumanLabel`, and the
+# locator fields (timestampHuman/page/section/paragraph) VERBATIM, and the
+# GOV-34 transport sweep only rejects filesystem/raw PATHS -- not arbitrary
+# non-path PII strings. That was safe while alias/label rows were written only
+# by deterministic civic-term structuring. GOV-126 introduces a volume AI pass
+# over REAL Alpine civic content, whose public-comment transcripts carry
+# private-individual names, home addresses, and phone numbers. This guard is a
+# POSITIVE, fail-closed check AT THE WRITE BOUNDARY so private-identity strings
+# are rejected at submission, never relying on the downstream read-time sweep.
+#
+# Honest scope limit: this rejects ENUMERABLE structured PII (email, phone,
+# SSN-like, residential street address, labelled voter/registration id).
+# Detecting arbitrary *personal names* of non-public individuals by regex is not
+# safe here -- civic terms legitimately contain proper nouns ("Lincoln Street
+# Bridge", "Smith Park") -- so the name residual stays covered by the typed
+# alias-kind/node-type allowlists, schema-scoping, and the reviewer gate.
+
+
+class PiiGuardError(LabelAliasError):
+    """A write-boundary field carries private-individual PII (GOV-105).
+
+    Subclasses :class:`LabelAliasError` so every existing ``except
+    LabelAliasError`` call site keeps failing closed.
+    """
+
+
+# Each pattern targets a private-identity shape that has no legitimate place in
+# a civic concept/agenda label or a source locator. Tuned for high precision so
+# the guard does not reject real civic vocabulary.
+_PII_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("email address",
+     re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
+    ("SSN-like identifier",
+     re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    # Separator-bearing phone (avoids matching bare numeric ids / resolution #s).
+    ("phone number",
+     re.compile(r"(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?!\d)")),
+    # House-number + street-type. The street-type must be a whole word NOT
+    # followed by '-' or another word char, so "Drive-through permit" and
+    # "Highway 89 repaving" (no street suffix) are NOT mistaken for addresses.
+    ("residential street address",
+     re.compile(
+         r"\b\d{1,6}\s+(?:[NSEW]\.?\s+)?(?:[A-Za-z0-9.'-]+\s+){0,3}"
+         r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|"
+         r"Court|Ct|Way|Place|Pl|Terrace|Ter|Circle|Cir)(?![\w-])\.?",
+         re.IGNORECASE)),
+    ("voter/registration identifier",
+     re.compile(
+         r"\b(?:voter|registration|reg|sos)\b[ .]*"
+         r"(?:id|no\.?|num(?:ber)?|#)\b[ .:#]*[A-Za-z0-9-]+", re.IGNORECASE)),
+)
+
+
+def assert_no_pii(value: Any, field: str) -> None:
+    """Reject a write-boundary value that carries private-individual PII.
+
+    Positive, fail-closed guard (GOV-105) for the free-text/locator fields the
+    read-API projects verbatim. Non-string or empty values pass (numeric
+    locators, ``None``). Raises :class:`PiiGuardError` naming the field and the
+    pattern KIND only -- the matched value is never echoed into the message
+    (it would leak the PII into logs/comments).
+    """
+    if not isinstance(value, str) or not value.strip():
+        return
+    for kind, pattern in _PII_PATTERNS:
+        if pattern.search(value):
+            raise PiiGuardError(
+                f"{field} rejected: matches a {kind}; private-individual PII may "
+                f"not be written to a civic label/locator field (GOV-105)"
+            )
 
 
 def _now_utc_iso() -> str:
@@ -355,6 +432,8 @@ def insert_agenda_thread(
         raise EdgeError("agenda_thread requires id, title, jurisdiction_id")
     if not canonical_human_label or not canonical_human_label.strip():
         raise LabelAliasError("agenda_thread requires a non-empty canonical_human_label")
+    assert_no_pii(canonical_human_label, "agenda_thread canonicalHumanLabel")
+    assert_no_pii(title, "agenda_thread title")
     conn.execute(
         "INSERT OR IGNORE INTO agenda_threads ("
         "agenda_thread_id, title, jurisdiction_id, status, first_seen_date, "
@@ -387,6 +466,8 @@ def insert_topic(
         raise EdgeError("topic requires id and name")
     if not canonical_human_label or not canonical_human_label.strip():
         raise LabelAliasError("topic requires a non-empty canonical_human_label")
+    assert_no_pii(canonical_human_label, "topic canonicalHumanLabel")
+    assert_no_pii(name, "topic name")
     conn.execute(
         "INSERT OR IGNORE INTO topics (topic_id, name, jurisdiction_id, "
         "canonical_human_label, created_utc) VALUES (?, ?, ?, ?, ?)",
@@ -462,6 +543,13 @@ def insert_label_alias(
     if not node_id or not term or not term.strip():
         raise LabelAliasError("alias requires a non-empty node_id and term")
     validate_source_ref(source_ref)
+
+    # GOV-105 PII guard: term + the verbatim-projected locators. The vault
+    # local_ref is intentionally NOT guarded here -- it is a controlled path,
+    # never projected, and is covered by the GOV-34 transport sweep.
+    assert_no_pii(term, "alias term")
+    for _locator in _SOURCE_REF_LOCATOR_FIELDS:
+        assert_no_pii(source_ref.get(_locator), f"alias locator {_locator}")
 
     alias_id = alias_id or f"{node_type}:{node_id}:{alias_type}:{term}"
     conn.execute(
