@@ -7,6 +7,9 @@ Database/*.db-wal
 Database/*.db-shm
 Raw-PDFs/
 Transcripts/
+# GOV-124 managed local-corpus raw store — snapshotted raw bytes from the on-disk
+# Alpine corpus (data-publication boundary; raw stays local/vault-only).
+Raw-Corpus/
 # Operational ingest run logs (Lane 1) — local/vault-only, never committed
 # (data-publication boundary; GOV-75 / 1.04-g). Acceptance/verification evidence
 # logs (e.g. Logs/acceptance.log) are deliberately committed and summary-only.
