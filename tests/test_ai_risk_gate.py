@@ -506,3 +506,211 @@ def test_to_web_safe_drops_risk_and_decision_fields() -> None:
     }
     safe = pub.to_web_safe(record)
     assert safe == {"source_id": "alpine:video:2026-05-08-regular"}
+
+
+# ===========================================================================
+# Reviewer-identity registry (GOV-131; migration 0014). Builds subtask A of the
+# GOV-130 ADR: the EMPTY, fail-closed allowlist source-of-truth + its lookup +
+# vault-only admin helpers + the data-boundary guard. No real identity is seeded
+# here (owner decision — GOV-130 subtask B); tests seed synthetic ids only.
+# ===========================================================================
+
+_REVIEWER = "reviewer:isaac"
+
+
+# --- migration 0014: schema shape + idempotency -----------------------------
+
+def test_migration_0014_creates_registry(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (rg.REVIEWER_REGISTRY_TABLE,),
+        ).fetchone() is not None
+        cols = _columns(conn, rg.REVIEWER_REGISTRY_TABLE)
+        # ADR §2 schema, exactly.
+        assert cols == {
+            "reviewer_id", "display_name", "status", "registered_utc",
+            "registered_by", "revoked_utc", "revoked_by", "revoked_reason", "note",
+        }
+        # the status index exists.
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' "
+            "AND name='idx_reviewer_identities_status'"
+        ).fetchone() is not None
+
+
+def test_migration_0014_idempotent(tmp_path: Path) -> None:
+    db_path = _migrated(tmp_path)
+    db.apply_migrations(db_path)  # second run is a no-op, not a raise.
+    with db.open_db(db_path) as conn:
+        assert "reviewer_id" in _columns(conn, rg.REVIEWER_REGISTRY_TABLE)
+        # the registry ships EMPTY — the safe fail-closed default (ADR §6).
+        count = conn.execute(
+            f"SELECT COUNT(*) FROM {rg.REVIEWER_REGISTRY_TABLE}"
+        ).fetchone()[0]
+        assert count == 0
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_registry_status_check_literals(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        sql = _table_sql(conn, rg.REVIEWER_REGISTRY_TABLE)
+    for value in ("active", "revoked"):
+        assert f"'{value}'" in sql, f"status CHECK missing {value!r}"
+
+
+# --- is_registered_reviewer: every fail-closed branch (ADR §3 / acceptance) --
+
+def test_is_registered_reviewer_empty_registry_is_false(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        # empty registry => nobody passes (the safe default).
+        assert rg.is_registered_reviewer(conn, _REVIEWER) is False
+
+
+def test_is_registered_reviewer_empty_and_none_are_false(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        assert rg.is_registered_reviewer(conn, None) is False
+        assert rg.is_registered_reviewer(conn, "") is False
+        assert rg.is_registered_reviewer(conn, "   ") is False
+
+
+def test_register_reviewer_refuses_sentinel(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        # the admin helper itself refuses to seed an automation/AI actor.
+        for bad in ("ai", "automation", "gateway", "system", "bot"):
+            with pytest.raises(rg.ReviewerGateError):
+                rg.register_reviewer(conn, bad, display_name="rogue", registered_by="x")
+
+
+def test_is_registered_reviewer_forbidden_sentinels_are_false(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        # defense in depth: even if an automation/AI sentinel were mis-seeded as
+        # 'active' directly (bypassing the helper), the lookup's fast-reject layer
+        # — folding FORBIDDEN_REVIEWER_IDS in — still refuses it.
+        for bad in ("ai", "automation", "gateway", "system", "bot"):
+            conn.execute(
+                f"INSERT INTO {rg.REVIEWER_REGISTRY_TABLE} "
+                "(reviewer_id, display_name, status, registered_utc, registered_by) "
+                "VALUES (?, 'rogue', 'active', ?, 'mis-seed')",
+                (bad, _now()),
+            )
+        conn.commit()
+        for bad in ("ai", "automation", "gateway", "system", "bot", "AI", "Automation"):
+            assert rg.is_registered_reviewer(conn, bad) is False
+
+
+def test_is_registered_reviewer_missing_row_is_false(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        rg.register_reviewer(conn, _REVIEWER, display_name="Isaac", registered_by="owner")
+        assert rg.is_registered_reviewer(conn, "reviewer:unknown") is False
+
+
+def test_is_registered_reviewer_active_is_true(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        rg.register_reviewer(conn, _REVIEWER, display_name="Isaac", registered_by="owner")
+        assert rg.is_registered_reviewer(conn, _REVIEWER) is True
+        # surrounding whitespace is tolerated (the lookup strips).
+        assert rg.is_registered_reviewer(conn, f"  {_REVIEWER}  ") is True
+
+
+def test_is_registered_reviewer_revoked_is_false(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        rg.register_reviewer(conn, _REVIEWER, display_name="Isaac", registered_by="owner")
+        assert rg.is_registered_reviewer(conn, _REVIEWER) is True
+        rg.revoke_reviewer(conn, _REVIEWER, revoked_by="owner", reason="off-boarded")
+        # revocation takes effect immediately.
+        assert rg.is_registered_reviewer(conn, _REVIEWER) is False
+        # the row is retained (revoke, never DELETE) for the audit trail.
+        row = conn.execute(
+            f"SELECT status, revoked_by, revoked_reason FROM {rg.REVIEWER_REGISTRY_TABLE} "
+            "WHERE reviewer_id = ?", (_REVIEWER,),
+        ).fetchone()
+        assert row["status"] == "revoked"
+        assert row["revoked_by"] == "owner"
+        assert row["revoked_reason"] == "off-boarded"
+
+
+def test_is_registered_reviewer_absent_table_is_false(tmp_path: Path) -> None:
+    # A DB with NO migrations applied: reviewer_identities does not exist.
+    bare = tmp_path / "bare.db"
+    with db.open_db(bare) as conn:
+        # caught OperationalError => False; the allowlist never degrades to allow.
+        assert rg.is_registered_reviewer(conn, _REVIEWER) is False
+
+
+# --- admin helpers: validation + re-activation ------------------------------
+
+def test_register_reviewer_rejects_bad_inputs(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        for bad in ("", "  ", "ai", "automation", "system"):
+            with pytest.raises(rg.ReviewerGateError):
+                rg.register_reviewer(conn, bad, display_name="x", registered_by="owner")
+        with pytest.raises(rg.ReviewerGateError):
+            rg.register_reviewer(conn, _REVIEWER, display_name="", registered_by="owner")
+        with pytest.raises(rg.ReviewerGateError):
+            rg.register_reviewer(conn, _REVIEWER, display_name="Isaac", registered_by="")
+
+
+def test_register_reviewer_reactivates_revoked(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        rg.register_reviewer(conn, _REVIEWER, display_name="Isaac", registered_by="owner")
+        rg.revoke_reviewer(conn, _REVIEWER, revoked_by="owner", reason="temp")
+        assert rg.is_registered_reviewer(conn, _REVIEWER) is False
+        # re-registering re-activates and clears the revoke audit fields.
+        rg.register_reviewer(conn, _REVIEWER, display_name="Isaac (re-added)", registered_by="owner")
+        assert rg.is_registered_reviewer(conn, _REVIEWER) is True
+        row = conn.execute(
+            f"SELECT status, display_name, revoked_utc FROM {rg.REVIEWER_REGISTRY_TABLE} "
+            "WHERE reviewer_id = ?", (_REVIEWER,),
+        ).fetchone()
+        assert row["status"] == "active"
+        assert row["display_name"] == "Isaac (re-added)"
+        assert row["revoked_utc"] is None
+
+
+def test_revoke_reviewer_validation(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        # revoking an unknown id fails closed.
+        with pytest.raises(rg.ReviewerGateError):
+            rg.revoke_reviewer(conn, "reviewer:nobody", revoked_by="owner", reason="x")
+        rg.register_reviewer(conn, _REVIEWER, display_name="Isaac", registered_by="owner")
+        with pytest.raises(rg.ReviewerGateError):
+            rg.revoke_reviewer(conn, _REVIEWER, revoked_by="", reason="x")
+        with pytest.raises(rg.ReviewerGateError):
+            rg.revoke_reviewer(conn, _REVIEWER, revoked_by="owner", reason="")
+
+
+# --- data boundary: registry is never web-projected (ADR §5) ----------------
+
+def test_reviewer_identities_not_web_projected(tmp_path: Path) -> None:
+    with db.open_db(_migrated(tmp_path)) as conn:
+        cols = _columns(conn, rg.REVIEWER_REGISTRY_TABLE)
+    # Carve out the GENERIC `status` field name: it is allowlisted for the GOV-98
+    # agenda_thread/topic concept-NODE lifecycle status, NOT for reviewer state —
+    # a coincidental column-name collision, mirroring the 0011 guard's shared
+    # `statement_id` carve-out. read_api only ever populates `status` from concept
+    # records, never from a reviewer_identities row (the registry is never served).
+    # The guarantee under test: no reviewer-identity-DISTINCTIVE column
+    # (reviewer_id / display_name / registered_by / registered_utc / revoked_* /
+    # note) can ever be web-projected.
+    generic_shared = {"status"}
+    leaked = (cols & pub.WEB_SAFE_FIELD_ALLOWLIST) - generic_shared
+    assert leaked == set(), f"reviewer identity columns must not be web-safe: {leaked}"
+    # the identity-distinctive columns are all absent from the allowlist.
+    distinctive = cols - generic_shared
+    assert not (distinctive & pub.WEB_SAFE_FIELD_ALLOWLIST)
+    # registered_utc + note are additionally named in the explicit unsafe set.
+    assert {"registered_utc", "note"} <= pub.WEB_UNSAFE_FIELDS
+
+
+def test_to_web_safe_drops_reviewer_identity_fields() -> None:
+    record = {
+        "reviewer_id": "reviewer:isaac",
+        "display_name": "Isaac",
+        "registered_by": "owner",
+        "revoked_reason": "off-boarded",
+        "note": "vault-only note",
+        "source_id": "alpine:video:2026-05-08-regular",  # the one allow-listed field
+    }
+    safe = pub.to_web_safe(record)
+    assert safe == {"source_id": "alpine:video:2026-05-08-regular"}
