@@ -375,6 +375,14 @@ def run_smoke(fixture: Path = DEFAULT_FIXTURE, sandbox: Path | None = None,
             )
             post_digest = _statements_digest(conn)
 
+            # GOV-93: the Lane-5 gate is now an allowlist — register the human
+            # reviewer the positive-path checks promote with. Empty/sentinel ids
+            # stay rejected (they are never registered), so the reject check holds.
+            rg.register_reviewer(
+                conn, _REVIEWER,
+                display_name="Isaac (smoke reviewer)", registered_by="slice3d-smoke",
+            )
+
             checks = [
                 _check_risk_flags(conn, risk),
                 _check_no_gating_write(pre_digest, post_digest),

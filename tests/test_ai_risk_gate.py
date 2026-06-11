@@ -177,6 +177,12 @@ def _run_lane2(conn, run_id: str = "r-lane2") -> list[str]:
 def _setup(conn) -> list[str]:
     _seed_source(conn)
     _seed_segments(conn)
+    # GOV-93: the Lane-5 gate is an allowlist — seed the reviewer the positive-path
+    # tests promote with, so a real registered identity exists to admit.
+    rg.register_reviewer(
+        conn, "reviewer:isaac",
+        display_name="Isaac (test reviewer)", registered_by="test:setup",
+    )
     return _run_lane2(conn)
 
 
@@ -372,6 +378,12 @@ def test_failed_gateway_run_blocks_promotion(tmp_path: Path) -> None:
     with db.open_db(_migrated(tmp_path)) as conn:
         _seed_source(conn)
         _seed_segments(conn)
+        # GOV-93: register the reviewer so gate 1 (allowlist) passes and the test
+        # actually exercises gate 3 (failed-run block), not the reviewer gate.
+        rg.register_reviewer(
+            conn, "reviewer:isaac",
+            display_name="Isaac (test reviewer)", registered_by="test:setup",
+        )
         # A Lane-2 run that fails (proposer raises) -> error_status='failed'.
         def _boom(conn, s, g):
             raise RuntimeError("provider exploded")
@@ -468,6 +480,86 @@ def test_terminal_decisions_are_recorded(tmp_path: Path) -> None:
         ).fetchone()
         assert row["verification_status"] == "do_not_publish"
         assert row["ui_status"] == "do-not-publish"
+
+
+# --- GOV-93: Lane-5 gate is an allowlist (denylist -> allowlist hardening) ----
+
+def test_promote_rejects_unregistered_nonsentinel_reviewer(tmp_path: Path) -> None:
+    """The exact GOV-93 gap: a novel actor id that is NOT a known sentinel and is
+    NOT registered is rejected by gate 1, and nothing is written. Under the old
+    denylist this id would have passed gate 1."""
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _setup(conn)  # registers reviewer:isaac, NOT this stranger
+        rg.run_risk(conn, run_id="r-risk", input_statement_ids=[_CLEAN_ID])
+        stranger = "reviewer:mallory"  # plausible human-looking id, never registered
+        assert rg.is_registered_reviewer(conn, stranger) is False
+        with pytest.raises(rg.ReviewerGateError):
+            rg.promote_statement(
+                conn, _CLEAN_ID, reviewer_id=stranger, decision="approved",
+                to_verification_status="reviewed_source_linked", reason="spoof",
+            )
+        # nothing written: claim still unreviewed, no decision row.
+        row = conn.execute(
+            "SELECT verification_status FROM statements WHERE statement_id = ?", (_CLEAN_ID,)
+        ).fetchone()
+        assert row["verification_status"] == "machine_extracted_unreviewed"
+        assert rg.latest_decision(conn, _CLEAN_ID) is None
+
+
+def test_registered_reviewer_promotes_unregistered_does_not(tmp_path: Path) -> None:
+    """Allowlist positive+negative in one: only the registered id promotes."""
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _setup(conn)
+        rg.run_risk(conn, run_id="r-risk", input_statement_ids=[_CLEAN_ID])
+        # unregistered stranger cannot promote
+        with pytest.raises(rg.ReviewerGateError):
+            rg.promote_statement(
+                conn, _CLEAN_ID, reviewer_id="reviewer:stranger", decision="approved",
+                to_verification_status="reviewed_source_linked", reason="x",
+            )
+        # registered reviewer can
+        out = rg.promote_statement(
+            conn, _CLEAN_ID, reviewer_id="reviewer:isaac", decision="approved",
+            to_verification_status="reviewed_source_linked", reason="grounded",
+        )
+        assert out["to_verification_status"] == "reviewed_source_linked"
+
+
+def test_promote_rejects_revoked_reviewer(tmp_path: Path) -> None:
+    """A reviewer revoked between registration and promotion is rejected (gate
+    inherits is_registered_reviewer's immediate-revocation semantics)."""
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _setup(conn)  # reviewer:isaac active
+        rg.run_risk(conn, run_id="r-risk", input_statement_ids=[_CLEAN_ID])
+        rg.revoke_reviewer(conn, "reviewer:isaac",
+                           revoked_by="test:admin", reason="offboarded")
+        with pytest.raises(rg.ReviewerGateError):
+            rg.promote_statement(
+                conn, _CLEAN_ID, reviewer_id="reviewer:isaac", decision="approved",
+                to_verification_status="reviewed_source_linked", reason="should fail",
+            )
+        assert rg.latest_decision(conn, _CLEAN_ID) is None
+
+
+def test_resolve_flag_requires_registered_reviewer(tmp_path: Path) -> None:
+    """resolve_flag is the same human-only allowlist gate: an unregistered,
+    non-sentinel id cannot clear a no-go flag; a registered reviewer can."""
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _setup(conn)  # registers reviewer:isaac
+        rg.run_risk(conn, run_id="r-risk",
+                    input_statement_ids=[_PRIVACY_ID], input_source_ids=[SOURCE_ID])
+        flags = rg.open_risk_flags(conn, _PRIVACY_ID)
+        assert flags
+        # unregistered non-sentinel id is refused
+        with pytest.raises(rg.ReviewerGateError):
+            rg.resolve_flag(conn, flags[0]["flag_id"], reviewer_id="reviewer:nobody",
+                            reason="trying to clear without standing")
+        assert rg.open_risk_flags(conn, _PRIVACY_ID)  # still open, nothing cleared
+        # registered reviewer clears it
+        for flag in rg.open_risk_flags(conn, _PRIVACY_ID):
+            rg.resolve_flag(conn, flag["flag_id"], reviewer_id="reviewer:isaac",
+                            reason="confirmed false positive (synthetic fixture)")
+        assert rg.open_risk_flags(conn, _PRIVACY_ID) == []
 
 
 def test_statement_publication_blocked_failclosed(tmp_path: Path) -> None:

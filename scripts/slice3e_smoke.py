@@ -650,6 +650,14 @@ def run_smoke(fixture: Path = DEFAULT_FIXTURE, sandbox: Path | None = None,
             )
             digest_after_lane4 = _statements_digest(conn)
 
+            # GOV-93: the Lane-5 gate is now an allowlist — register the human
+            # reviewer the positive-path checks promote/resolve with. Empty/sentinel
+            # ids stay rejected (never registered), so the reject check still holds.
+            rg.register_reviewer(
+                conn, _REVIEWER,
+                display_name="Isaac (smoke reviewer)", registered_by="slice3e-smoke",
+            )
+
             # === checks (Lane-5-mutating checks run AFTER the digest checks) ===
             checks = [
                 _check_pipeline_ran(conn, lane2, orphan, segments),

@@ -28,10 +28,14 @@ sanctioned code path that moves a claim's ``verification_status`` to a reviewed
 value (and is the runtime form of 1.09 step 11 / G2 "only a human promotes").
 It is fail-closed:
 
-* **No reviewer decision -> rejected.** A missing/empty ``reviewer_id``, or a
-  known automation/AI actor sentinel, raises :class:`ReviewerGateError` before any
-  write (1.09 §2.5; 1.11 §5 "the AI cannot promote itself"). This is the
-  acceptance test "promoting an AI row without a reviewer decision is rejected".
+* **Not a registered reviewer -> rejected (allowlist).** A ``reviewer_id`` that
+  does not resolve to a registered, active human reviewer
+  (:func:`is_registered_reviewer`) raises :class:`ReviewerGateError` before any
+  write — default-deny, so an *unknown* actor id (not just a known automation
+  sentinel) is rejected (1.09 §2.5; 1.11 §5 "the AI cannot promote itself"). This
+  is the acceptance test "promoting an AI row without a reviewer decision is
+  rejected" plus the GOV-93 hardening "a non-registered, non-sentinel id is
+  rejected".
 * **Failed gateway run blocks downstream.** If the producing
   ``ai_extraction_runs`` row is not ``error_status='ok'``, a promoting decision is
   refused (AI_GATEWAY "failed gateway processing must block downstream").
@@ -122,13 +126,16 @@ def _now_utc_iso() -> str:
 # ===========================================================================
 #
 # The source of truth of REGISTERED, ACTIVE human reviewer identities. Builds
-# subtask A of the GOV-130 ADR (§2 schema; §3 lookup; §5 boundary). Today the
-# Lane-5 gate is a DENYLIST (rejects only FORBIDDEN_REVIEWER_IDS); GOV-93 flips it
-# to an ALLOWLIST (default-deny) by calling is_registered_reviewer() instead. This
-# module provides that lookup + the vault-only admin helpers — but does NOT change
-# the gate's check yet (that is GOV-93). The registry ships EMPTY: the safe
-# fail-closed default is "nobody passes"; WHICH humans are authorized is the
-# owner decision (GOV-130 subtask B), seeded there, not here.
+# subtask A of the GOV-130 ADR (§2 schema; §3 lookup; §5 boundary). The Lane-5
+# gate is now an ALLOWLIST (default-deny): `promote_statement` gate 1 and
+# `resolve_flag` admit a reviewer ONLY if is_registered_reviewer() returns True
+# (GOV-93 flipped it from the former DENYLIST that rejected only
+# FORBIDDEN_REVIEWER_IDS). This module provides that lookup + the vault-only admin
+# helpers. The registry ships EMPTY: the safe fail-closed default is "nobody
+# passes"; WHICH humans are authorized is the owner decision (GOV-130 subtask B /
+# GOV-132), seeded there, not here. FORBIDDEN_REVIEWER_IDS survives as a
+# fast-reject folded inside is_registered_reviewer() so an automation/AI actor can
+# never be allowlisted even if mis-seeded (defense in depth; 1.09 §2.5 / 1.11 §5).
 
 
 def is_registered_reviewer(conn: sqlite3.Connection, reviewer_id: str | None) -> bool:
@@ -534,10 +541,11 @@ def resolve_flag(
     reason: str,
     commit: bool = True,
 ) -> None:
-    """A reviewer clears a Lane-4 flag (audited). Refuses an automation actor."""
-    if (reviewer_id or "").strip().lower() in FORBIDDEN_REVIEWER_IDS:
+    """A reviewer clears a Lane-4 flag (audited). Allowlist: registered humans only."""
+    if not is_registered_reviewer(conn, reviewer_id):
         raise ReviewerGateError(
-            f"reviewer_id {reviewer_id!r} may not resolve a risk flag (human-only gate)"
+            f"reviewer_id {reviewer_id!r} is not a registered, active human reviewer; "
+            "may not resolve a risk flag (human-only allowlist gate, GOV-93)"
         )
     if not (reason or "").strip():
         raise ReviewerGateError("resolving a risk flag requires a non-empty reason")
@@ -645,7 +653,9 @@ def promote_statement(
     ``ui_status``. Fail-closed; raises :class:`ReviewerGateError` (writing
     nothing) when:
 
-    * ``reviewer_id`` is empty or a known automation/AI actor — "promoting an AI
+    * ``reviewer_id`` is not a registered, active human reviewer
+      (:func:`is_registered_reviewer` — allowlist, default-deny; covers empty,
+      automation/AI sentinels, AND any unknown/unregistered id) — "promoting an AI
       row without a reviewer decision is rejected" (1.09 step 11 / G2; acceptance);
     * ``decision`` is not a Lane-5 action, or ``reason`` is empty;
     * a *promoting* decision (approve/correct) names a ``to_verification_status``
@@ -659,12 +669,14 @@ def promote_statement(
     """
     statement = _load_statement(conn, statement_id)
 
-    # --- gate 1: a real human reviewer decision must exist ---
+    # --- gate 1: the reviewer must be a registered, active human (allowlist) ---
     rid = (reviewer_id or "").strip()
-    if rid.lower() in FORBIDDEN_REVIEWER_IDS:
+    if not is_registered_reviewer(conn, rid):
         raise ReviewerGateError(
-            f"reviewer_id {reviewer_id!r} is empty or an automation/AI actor; "
-            "only a human reviewer may promote (1.09 step 11 / G2)"
+            f"reviewer_id {reviewer_id!r} is not a registered, active human "
+            "reviewer; only a registered reviewer may promote (1.09 step 11 / G2, "
+            "GOV-93 allowlist). Empty, automation/AI sentinel, unknown, and revoked "
+            "ids are all rejected by default"
         )
     if decision not in REVIEWER_DECISIONS:
         raise ReviewerGateError(
