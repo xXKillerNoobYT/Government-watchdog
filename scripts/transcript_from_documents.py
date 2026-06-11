@@ -158,9 +158,13 @@ def materialize_transcripts(
                 subject_node_id=str(transcript_id),
                 subject_node_type="transcript",
                 gap_type="missing_timestamps",
+                # B3: anchor detail on the stable doc id + doc_type, NOT the raw
+                # human-readable title (a public-comment-derived title can carry a
+                # member-of-public name). The title is resolvable from the doc id
+                # in the reviewer-internal store; it never lands in the gap field.
                 detail=(
-                    f"transcript document {doc['title']!r} (doc id {doc['id']}) has "
-                    "no parseable MM:SS locators; timestamps left absent (never "
+                    f"transcript document id={doc['id']} (doc_type={doc['doc_type']}) "
+                    "has no parseable MM:SS locators; timestamps left absent (never "
                     "fabricated)"
                 ),
                 source_id=doc["source_id"],

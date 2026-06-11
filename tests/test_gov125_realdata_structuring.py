@@ -36,6 +36,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import completeness  # noqa: E402
 import concept_map as cm  # noqa: E402
+import statements as _st_mod  # noqa: E402  (alias used in B1 test)
 import db  # noqa: E402
 import segment_transcript as seg  # noqa: E402
 import speakers as spk  # noqa: E402
@@ -279,6 +280,59 @@ def test_low_confidence_speaker_never_binds_a_name(tmp_path: Path) -> None:
         assert row["attribution_state"] in {"uncertain", "unattributed"}  # never `attributed`
         assert row["person_id"] is None                    # no person bind
         assert conn.execute("SELECT COUNT(*) FROM made_statement").fetchone()[0] == 0
+
+
+# --- CTO ruling Option B — binding conditions B1 / B2 / B3 ---------------------
+
+def test_b1_untimed_statement_partial_locator_is_orphan(tmp_path: Path) -> None:
+    """B1: an untimed statement's pointer MUST carry a complete locator
+    (source_id + section/paragraph). A partial locator (section missing) is not a
+    valid pointer, so the statement is an orphan and is rejected."""
+    with _migrated(tmp_path) as conn:
+        _seed_source(conn)
+        partial = _complete_pointer()
+        partial.pop("section")  # locator_kind=section but no section -> incomplete
+        with pytest.raises((_st_mod.OrphanClaimError, _st_mod.PointerError)):
+            st.insert_statement(
+                conn,
+                {"statement_id": "alpine:2023-05-10:s-partial",
+                 "statement_text": "tabled, but the locator is incomplete"},
+                [partial],
+            )
+
+
+def test_b2_untimed_segment_gap_type_is_reserved(tmp_path: Path) -> None:
+    """B2: `untimed_segment` is moot under Option B — it stays in the schema/SSOT
+    for parity but `record_gap` refuses to emit it; `missing_timestamps` is the
+    operative untimed label."""
+    assert "untimed_segment" in completeness.GAP_TYPES          # schema parity kept
+    assert "untimed_segment" in completeness.RESERVED_GAP_TYPES
+    assert "missing_timestamps" in completeness.EMITTABLE_GAP_TYPES
+    with _migrated(tmp_path) as conn:
+        with pytest.raises(completeness.GapError):
+            completeness.record_gap(conn, subject_node_id="t1",
+                                    subject_node_type="transcript",
+                                    gap_type="untimed_segment")
+
+
+def test_b3_structured_pii_in_gap_detail_is_rejected(tmp_path: Path) -> None:
+    """B3: the GOV-105 structured-PII guard is wired at the gap-detail write
+    boundary — a phone number in `detail` is rejected fail-closed. (Names are held
+    by the vault-only boundary + id-anchored details, not this guard.)"""
+    with _migrated(tmp_path) as conn:
+        with pytest.raises(cm.PiiGuardError):
+            completeness.record_gap(
+                conn, subject_node_id="2023-05-10", subject_node_type="meeting",
+                gap_type="no_primary_source",
+                detail="call the clerk at 307-555-0142 for the missing record",
+            )
+        # An id/date-anchored detail (no structured PII) passes.
+        gid = completeness.record_gap(
+            conn, subject_node_id="2023-05-10", subject_node_type="meeting",
+            gap_type="no_primary_source",
+            detail="meeting folder 2023-05-10 has only derived (.md) material",
+        )
+        assert gid
 
 
 def test_gap_report_surfaces_counts(tmp_path: Path) -> None:

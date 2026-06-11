@@ -30,8 +30,22 @@ Scope: NO network, NO AI, Alpine-only, local/vault-only.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# GOV-105 structured-PII guard, reused at the gap-`detail` write boundary (CTO
+# ruling B3 + SecurityPrivacy reconciliation). NOTE the guard's documented scope
+# limit: it catches only ENUMERABLE STRUCTURED PII (email/phone/SSN/address/
+# voter-id) and is NAME-BLIND by design. The control for personal NAMES in a gap
+# `detail` is the vault-only/reviewer-internal boundary (gap detail is never
+# projected to a public surface) PLUS callers anchoring `detail` on stable node/
+# doc ids rather than raw human-readable titles — NOT this guard. So this wiring
+# is necessary defense-in-depth, not sufficient on its own.
+from concept_map import assert_no_pii  # noqa: E402
 
 # --- the controlled gap vocabulary (SSOT — mirrors the 0015 CHECK) ----------
 
@@ -44,9 +58,18 @@ GAP_TYPES = frozenset({
     "unresolved_thread",      # an agenda thread is left open across meetings
     "no_primary_source",      # a meeting folder has only derived (.md) material
     "pdf_text_unextracted",   # a PDF source exists but its text is not extracted
-    "untimed_segment",        # a specific segment span has no resolvable timestamp
+    "untimed_segment",        # RESERVED — see RESERVED_GAP_TYPES (moot under Option B)
     "speaker_unattributable",  # a statement's speaker cannot be safely attributed
 })
+
+# CTO ruling B2: under Option B, untimed content creates NO transcript_segments
+# (the bridge records a `missing_timestamps` gap on the transcript instead), so
+# there is never an untimed SEGMENT to flag — `untimed_segment` is moot. It is
+# kept in GAP_TYPES (and the 0015 CHECK) for schema/SSOT parity but is RESERVED:
+# the deterministic structuring run must never emit it. `missing_timestamps` is
+# the operative untimed label.
+RESERVED_GAP_TYPES = frozenset({"untimed_segment"})
+EMITTABLE_GAP_TYPES = GAP_TYPES - RESERVED_GAP_TYPES
 
 SEVERITIES = frozenset({"info", "warn", "blocking"})
 RESOLVED_STATUSES = frozenset({"open", "acknowledged", "resolved", "wontfix"})
@@ -115,6 +138,16 @@ def record_gap(
     """
     if gap_type not in GAP_TYPES:
         raise GapError(f"gap_type {gap_type!r} not in SSOT {sorted(GAP_TYPES)}")
+    if gap_type in RESERVED_GAP_TYPES:
+        raise GapError(
+            f"gap_type {gap_type!r} is RESERVED (not emittable under Option B); "
+            f"use one of {sorted(EMITTABLE_GAP_TYPES)}"
+        )
+    # B3 defense-in-depth: reject STRUCTURED PII in the detail at the write
+    # boundary (name-blind by design — names are held by the vault-only boundary
+    # + callers anchoring detail on ids, not this guard). Raises PiiGuardError.
+    if detail is not None:
+        assert_no_pii(detail, "completeness_gap.detail")
     sev = severity if severity is not None else default_severity(gap_type)
     if sev not in SEVERITIES:
         raise GapError(f"severity {sev!r} not in {sorted(SEVERITIES)}")
