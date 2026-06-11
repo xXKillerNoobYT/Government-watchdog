@@ -96,23 +96,22 @@ FILE_CLASSES: dict[str, FileClass] = {
     ".txt": FileClass(
         source_type="transcript_text",
         source_of_record=True,
-        note="plain-text meeting record (likely transcript)",
-        open_question="Confirm .txt are meeting transcripts vs scratch notes "
-        "(affects source-of-record vs derived).",
+        note="plain-text meeting record — source-of-record; tag "
+        "verification=unverified-transcript (GOV-133: may be machine-generated, "
+        "must not be presented as authoritative quotes without the verify gate)",
     ),
     ".md": FileClass(
         source_type="derived_note",
         source_of_record=False,
-        note="markdown — DEFAULT treat as derived/secondary (record provenance, "
-        "not source-of-record)",
-        open_question="Are any in-folder .md primary source artifacts rather than "
-        "derived notes/digests? Default = derived unless SourceArchivist names specifics.",
+        note="markdown — derived/lead-only; NEVER promoted to a `documents` "
+        "source-of-record row (GOV-133 hard boundary: AI-written summaries are "
+        "not primary sources)",
     ),
     ".json": FileClass(
         source_type="metadata_sidecar",
         source_of_record=False,
-        note="likely metadata sidecar — provenance only, not source-of-record",
-        open_question="Inspect: metadata sidecars vs primary data?",
+        note="metadata sidecar — provenance only, not source-of-record (GOV-133: "
+        "0 found inside meeting folders; excluded)",
     ),
 }
 
@@ -128,6 +127,112 @@ OTHER_CLASS = FileClass(
 def classify_file(path: Path) -> FileClass:
     """Deterministic file-type classification (the adapter imports this)."""
     return FILE_CLASSES.get(path.suffix.lower(), OTHER_CLASS)
+
+
+# Binding out-of-folder allowlist (GOV-133 SourceArchivist sign-off, reconciled
+# 2026-06-11). Exactly one genuine primary source lives OUTSIDE the date-named
+# meeting folders; a folder-only walk would silently drop it. It is placed in the
+# SHARED walk (not the adapter) so the signed selection == the ingested selection,
+# byte-identical — the sign-off condition was explicit: "the fix lands in the walk
+# itself ... not in prose only." The `PRESERVED_media{id}_` prefix marks a captured
+# official record (real provenance); top-level `.docx` briefings carry no such
+# marker and stay excluded as agent-authored/derived. This notice names a person
+# (routine public record) — the GOV-105 PII guard covers the downstream
+# label/alias write boundary.
+ALLOWLIST: dict[str, FileClass] = {
+    "master/PRESERVED_media12251_turley_postponement_notice_2026-03-24.pdf": FileClass(
+        source_type="notice",
+        source_of_record=True,
+        note="public postponement notice (PRESERVED_ media-id capture) — binding "
+        "out-of-folder allowlist (GOV-133); meeting/scan date 2026-03-24",
+    ),
+}
+
+# The settled selection from the SourceArchivist provenance/coverage sign-off
+# (GOV-133, CONDITIONAL PASS, reconciled 2026-06-11). Recorded in the manifest so
+# the artifact documents WHAT was approved, not just open questions.
+SIGN_OFF = {
+    "review_issue": "GOV-133",
+    "verdict": "CONDITIONAL PASS — SourceArchivist provenance/coverage, 2026-06-11",
+    "settled": [
+        ".pdf -> source-of-record (document/agenda/notice).",
+        ".txt -> source-of-record (transcript_text); tag verification=unverified-transcript.",
+        ".md  -> derived/lead-only; NEVER a `documents` source-of-record row.",
+        ".json / .DS_Store / .err -> excluded.",
+        "One corpus-level `sources` row (alpine_local_corpus); meeting grouping -> "
+        "GOV-125 `meetings` table, not flattened away.",
+        "Raw storage = COPY bytes into a managed gitignored raw store + sha256 at "
+        "ingest (reference-in-place REJECTED: TOA is a live agent scratch dir).",
+        "Binding out-of-folder allowlist: "
+        "master/PRESERVED_media12251_turley_postponement_notice_2026-03-24.pdf (notice).",
+        "Excluded as agent-authored/derived: top-level .docx briefings "
+        "(FIREWORKS_RETAILER_NOTICE.docx, NOTE_TO_EDITOR, MASTER_BRIEFING_Bob, "
+        "Apr-18 reports), last-update.txt.",
+    ],
+    "coverage_reality": (
+        "Only 34/124 meeting folders contain primary source (.pdf/.txt); the other "
+        "90 are derived-md-only (earliest primary 2024-10-09). Downstream "
+        "(GOV-125/1.07, GOV-129) MUST render md-only dates with a gap/low-confidence "
+        "label — never 'sourced/verified'."
+    ),
+}
+
+_DATE_IN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+@dataclass(frozen=True)
+class SelectedFile:
+    """One file in the settled ingest set (what the adapter preserves as a row)."""
+
+    path: Path  # absolute path on disk
+    meeting_date: str  # YYYY-MM-DD (folder name, or date parsed from an allowlist name)
+    file_class: FileClass
+    origin: str  # "meeting_folder" | "allowlist"
+
+
+def iter_allowlisted_files(root: Path) -> list[SelectedFile]:
+    """The binding out-of-folder allowlist entries that exist on disk."""
+    out: list[SelectedFile] = []
+    for rel, fc in sorted(ALLOWLIST.items()):
+        p = root / rel
+        if p.is_file():
+            m = _DATE_IN_NAME_RE.search(rel)
+            out.append(
+                SelectedFile(
+                    path=p,
+                    meeting_date=m.group(1) if m else "",
+                    file_class=fc,
+                    origin="allowlist",
+                )
+            )
+    return out
+
+
+def iter_source_of_record_files(root: Path) -> list[SelectedFile]:
+    """The complete, ordered ingest set the adapter consumes (THE signed selection).
+
+    Meeting folders oldest→newest, each folder's source-of-record files in sorted
+    path order, then the binding out-of-folder allowlist. Only source-of-record
+    files are yielded (`.pdf` / `.txt` + allowlisted notices); `.md`/derived,
+    sidecars, and unclassified files are skipped. The adapter MUST drive its
+    ingest from this single function so the run can never drift from what
+    SourceArchivist signed off.
+    """
+    root = Path(root).resolve()
+    selected: list[SelectedFile] = []
+    for date_str, folder in iter_meeting_folders(root):
+        for f in sorted(folder.rglob("*")):
+            if f.is_file() and classify_file(f).source_of_record:
+                selected.append(
+                    SelectedFile(
+                        path=f,
+                        meeting_date=date_str,
+                        file_class=classify_file(f),
+                        origin="meeting_folder",
+                    )
+                )
+    selected.extend(iter_allowlisted_files(root))
+    return selected
 
 
 def iter_meeting_folders(root: Path) -> list[tuple[str, Path]]:
@@ -211,6 +316,21 @@ def build_manifest(root: Path) -> dict:
                 bucket["bytes"] += size
         folder_reports.append(rep)
 
+    # Binding out-of-folder allowlist (GOV-133) — folded into the source-of-record
+    # footprint so the manifest reflects the FULL signed selection (folders + allowlist).
+    allowlist_files: list[dict] = []
+    for sf in iter_allowlisted_files(root):
+        size = sf.path.stat().st_size
+        sor_footprint_bytes += size
+        allowlist_files.append(
+            {
+                "rel_path": str(sf.path.relative_to(root)),
+                "meeting_date": sf.meeting_date,
+                "source_type": sf.file_class.source_type,
+                "bytes": size,
+            }
+        )
+
     excluded = _excluded_top_level(root)
 
     classification = {
@@ -218,43 +338,27 @@ def build_manifest(root: Path) -> dict:
             "source_type": fc.source_type,
             "source_of_record": fc.source_of_record,
             "note": fc.note,
-            "open_question": fc.open_question,
             "files": totals_count.get(ext, 0),
             "bytes": totals_bytes.get(ext, 0),
         }
         for ext, fc in FILE_CLASSES.items()
     }
 
-    open_questions = [
-        f"{ext}: {fc.open_question}"
-        for ext, fc in FILE_CLASSES.items()
-        if fc.open_question
-    ]
+    resolved_notes: list[str] = []
     if unclassified:
         kinds = ", ".join(
             f"{ext}×{v['files']}" for ext, v in sorted(unclassified.items())
         )
-        open_questions.append(
-            f"UNCLASSIFIED in meeting folders ({kinds}): excluded by default — "
-            "confirm none are source-bearing, or name a type to promote."
+        resolved_notes.append(
+            f"Unclassified inside meeting folders ({kinds}) = .DS_Store/.err — "
+            "confirmed not source-bearing, excluded (GOV-133)."
         )
-    # Build-level decisions that also belong to the sign-off (GOV-124 plan §4 step 2/3).
-    open_questions.append(
-        "RAW STORAGE: copy bytes into a managed gitignored raw store (recommended; "
-        "true preservation, ~{} footprint) vs reference-in-place by absolute path "
-        "(no duplication; original already vault-only). raw_preservation.verify works "
-        "for both.".format(_human_bytes(sor_footprint_bytes))
-    )
-    open_questions.append(
-        "SOURCE GRANULARITY: one `sources` row for the whole local corpus "
-        "(`alpine_local_corpus`) vs one per meeting folder. Recommend one corpus-level "
-        "source; meeting grouping is modeled later by the `meetings` table (GOV-125/1.07)."
-    )
 
     return {
         "issue": "GOV-124",
         "corpus_root": str(root),
         "generated_by": "scripts/manifest_local_corpus.py (read-only, sanitized counts)",
+        "sign_off": SIGN_OFF,
         "meeting_folders": {
             "count": len(folders),
             "oldest": folders[0][0] if folders else None,
@@ -268,9 +372,10 @@ def build_manifest(root: Path) -> dict:
             "source_of_record_footprint_human": _human_bytes(sor_footprint_bytes),
         },
         "classification": classification,
+        "allowlisted_out_of_folder": allowlist_files,
         "unclassified_in_meeting_folders": unclassified,
+        "resolved_notes": resolved_notes,
         "excluded_top_level": excluded,
-        "open_questions": open_questions,
         "folders": [
             {
                 "date": r.date,
@@ -298,10 +403,12 @@ def render_markdown(manifest: dict) -> str:
     lines: list[str] = []
     lines.append("# GOV-124 — Town-of-Alpine local corpus selection manifest")
     lines.append("")
+    so = manifest.get("sign_off") or {}
     lines.append(
         "_Generated by `scripts/manifest_local_corpus.py` — read-only, sanitized "
-        "counts only (no raw contents, no bytes published). Awaiting SourceArchivist "
-        "provenance/coverage sign-off before bulk ingest (GOV-124 plan §2)._"
+        "counts only (no raw contents, no bytes published). SELECTION SIGNED OFF: "
+        f"{so.get('verdict', 'pending')} ([{so.get('review_issue','GOV-133')}]"
+        f"(/GOV/issues/{so.get('review_issue','GOV-133')}))._"
     )
     lines.append("")
     lines.append(f"- **Corpus root:** `{manifest['corpus_root']}` (local/vault-only)")
@@ -314,8 +421,22 @@ def render_markdown(manifest: dict) -> str:
         f"{tot['source_of_record_footprint_human']} "
         f"({tot['source_of_record_footprint_bytes']} bytes)"
     )
+    allow = manifest.get("allowlisted_out_of_folder") or []
+    if allow:
+        lines.append(
+            f"- **Binding out-of-folder allowlist:** {len(allow)} file(s) "
+            "(GOV-133 amendment) folded into the footprint above."
+        )
     lines.append("")
-    lines.append("## File-type classification (PROPOSED — confirm/override)")
+    if so:
+        lines.append("## Settled selection (GOV-133 sign-off)")
+        lines.append("")
+        for s in so.get("settled", []):
+            lines.append(f"- {s}")
+        lines.append("")
+        lines.append(f"**Coverage reality:** {so.get('coverage_reality','')}")
+        lines.append("")
+    lines.append("## File-type classification (settled)")
     lines.append("")
     lines.append("| ext | source_type | source-of-record? | files | bytes | note |")
     lines.append("|-----|-------------|-------------------|------:|------:|------|")
@@ -326,20 +447,29 @@ def render_markdown(manifest: dict) -> str:
             f"{c['files']} | {c['bytes']} | {c['note']} |"
         )
     lines.append("")
+    if allow:
+        lines.append("## Allowlisted out-of-folder source (binding, GOV-133)")
+        lines.append("")
+        lines.append("| rel path | meeting date | source_type | bytes |")
+        lines.append("|----------|--------------|-------------|------:|")
+        for a in allow:
+            lines.append(
+                f"| `{a['rel_path']}` | {a['meeting_date']} | "
+                f"{a['source_type']} | {a['bytes']} |"
+            )
+        lines.append("")
     unclassified = manifest.get("unclassified_in_meeting_folders") or {}
     if unclassified:
-        lines.append("## Unclassified files inside meeting folders (excluded by default)")
+        lines.append("## Unclassified files inside meeting folders (excluded)")
         lines.append("")
         lines.append("| ext | files | bytes |")
         lines.append("|-----|------:|------:|")
         for ext, v in sorted(unclassified.items()):
             lines.append(f"| `{ext}` | {v['files']} | {v['bytes']} |")
         lines.append("")
-    lines.append("## Open questions for sign-off")
-    lines.append("")
-    for q in manifest["open_questions"]:
-        lines.append(f"- {q}")
-    lines.append("")
+    for note in manifest.get("resolved_notes") or []:
+        lines.append(f"> {note}")
+        lines.append("")
     lines.append("## Excluded top-level entries (confirm nothing source-bearing dropped)")
     lines.append("")
     lines.append("| entry | dir? | reason |")

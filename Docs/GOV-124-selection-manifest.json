@@ -2,6 +2,21 @@
   "issue": "GOV-124",
   "corpus_root": "/Users/IA/Documents/TOA/TownOfAlpine",
   "generated_by": "scripts/manifest_local_corpus.py (read-only, sanitized counts)",
+  "sign_off": {
+    "review_issue": "GOV-133",
+    "verdict": "CONDITIONAL PASS \u2014 SourceArchivist provenance/coverage, 2026-06-11",
+    "settled": [
+      ".pdf -> source-of-record (document/agenda/notice).",
+      ".txt -> source-of-record (transcript_text); tag verification=unverified-transcript.",
+      ".md  -> derived/lead-only; NEVER a `documents` source-of-record row.",
+      ".json / .DS_Store / .err -> excluded.",
+      "One corpus-level `sources` row (alpine_local_corpus); meeting grouping -> GOV-125 `meetings` table, not flattened away.",
+      "Raw storage = COPY bytes into a managed gitignored raw store + sha256 at ingest (reference-in-place REJECTED: TOA is a live agent scratch dir).",
+      "Binding out-of-folder allowlist: master/PRESERVED_media12251_turley_postponement_notice_2026-03-24.pdf (notice).",
+      "Excluded as agent-authored/derived: top-level .docx briefings (FIREWORKS_RETAILER_NOTICE.docx, NOTE_TO_EDITOR, MASTER_BRIEFING_Bob, Apr-18 reports), last-update.txt."
+    ],
+    "coverage_reality": "Only 34/124 meeting folders contain primary source (.pdf/.txt); the other 90 are derived-md-only (earliest primary 2024-10-09). Downstream (GOV-125/1.07, GOV-129) MUST render md-only dates with a gap/low-confidence label \u2014 never 'sourced/verified'."
+  },
   "meeting_folders": {
     "count": 124,
     "oldest": "2023-04-26",
@@ -23,43 +38,47 @@
       ".pdf": 557289644,
       ".err": 593
     },
-    "source_of_record_footprint_bytes": 559857708,
-    "source_of_record_footprint_human": "533.9MB"
+    "source_of_record_footprint_bytes": 560050018,
+    "source_of_record_footprint_human": "534.1MB"
   },
   "classification": {
     ".pdf": {
       "source_type": "document",
       "source_of_record": true,
       "note": "official document (agenda/minutes/notice/ordinance) \u2014 primary source-of-record",
-      "open_question": null,
       "files": 83,
       "bytes": 557289644
     },
     ".txt": {
       "source_type": "transcript_text",
       "source_of_record": true,
-      "note": "plain-text meeting record (likely transcript)",
-      "open_question": "Confirm .txt are meeting transcripts vs scratch notes (affects source-of-record vs derived).",
+      "note": "plain-text meeting record \u2014 source-of-record; tag verification=unverified-transcript (GOV-133: may be machine-generated, must not be presented as authoritative quotes without the verify gate)",
       "files": 44,
       "bytes": 2568064
     },
     ".md": {
       "source_type": "derived_note",
       "source_of_record": false,
-      "note": "markdown \u2014 DEFAULT treat as derived/secondary (record provenance, not source-of-record)",
-      "open_question": "Are any in-folder .md primary source artifacts rather than derived notes/digests? Default = derived unless SourceArchivist names specifics.",
+      "note": "markdown \u2014 derived/lead-only; NEVER promoted to a `documents` source-of-record row (GOV-133 hard boundary: AI-written summaries are not primary sources)",
       "files": 195,
       "bytes": 649896
     },
     ".json": {
       "source_type": "metadata_sidecar",
       "source_of_record": false,
-      "note": "likely metadata sidecar \u2014 provenance only, not source-of-record",
-      "open_question": "Inspect: metadata sidecars vs primary data?",
+      "note": "metadata sidecar \u2014 provenance only, not source-of-record (GOV-133: 0 found inside meeting folders; excluded)",
       "files": 0,
       "bytes": 0
     }
   },
+  "allowlisted_out_of_folder": [
+    {
+      "rel_path": "master/PRESERVED_media12251_turley_postponement_notice_2026-03-24.pdf",
+      "meeting_date": "2026-03-24",
+      "source_type": "notice",
+      "bytes": 192310
+    }
+  ],
   "unclassified_in_meeting_folders": {
     "<none>": {
       "files": 7,
@@ -70,6 +89,9 @@
       "bytes": 593
     }
   },
+  "resolved_notes": [
+    "Unclassified inside meeting folders (.err\u00d71, <none>\u00d77) = .DS_Store/.err \u2014 confirmed not source-bearing, excluded (GOV-133)."
+  ],
   "excluded_top_level": [
     {
       "name": ".DS_Store",
@@ -526,14 +548,6 @@
       "is_dir": true,
       "reason": "derived \u2014 weekly digests, not a primary source record"
     }
-  ],
-  "open_questions": [
-    ".txt: Confirm .txt are meeting transcripts vs scratch notes (affects source-of-record vs derived).",
-    ".md: Are any in-folder .md primary source artifacts rather than derived notes/digests? Default = derived unless SourceArchivist names specifics.",
-    ".json: Inspect: metadata sidecars vs primary data?",
-    "UNCLASSIFIED in meeting folders (.err\u00d71, <none>\u00d77): excluded by default \u2014 confirm none are source-bearing, or name a type to promote.",
-    "RAW STORAGE: copy bytes into a managed gitignored raw store (recommended; true preservation, ~533.9MB footprint) vs reference-in-place by absolute path (no duplication; original already vault-only). raw_preservation.verify works for both.",
-    "SOURCE GRANULARITY: one `sources` row for the whole local corpus (`alpine_local_corpus`) vs one per meeting folder. Recommend one corpus-level source; meeting grouping is modeled later by the `meetings` table (GOV-125/1.07)."
   ],
   "folders": [
     {
