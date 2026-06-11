@@ -1,0 +1,1587 @@
+{
+  "issue": "GOV-124",
+  "corpus_root": "/Users/IA/Documents/TOA/TownOfAlpine",
+  "generated_by": "scripts/manifest_local_corpus.py (read-only, sanitized counts)",
+  "meeting_folders": {
+    "count": 124,
+    "oldest": "2023-04-26",
+    "newest": "2026-06-09",
+    "order": "oldest->newest (Isaac June-6 directive)"
+  },
+  "totals": {
+    "files_by_type": {
+      ".md": 195,
+      ".txt": 44,
+      "<none>": 7,
+      ".pdf": 83,
+      ".err": 1
+    },
+    "bytes_by_type": {
+      ".md": 649896,
+      ".txt": 2568064,
+      "<none>": 43036,
+      ".pdf": 557289644,
+      ".err": 593
+    },
+    "source_of_record_footprint_bytes": 559857708,
+    "source_of_record_footprint_human": "533.9MB"
+  },
+  "classification": {
+    ".pdf": {
+      "source_type": "document",
+      "source_of_record": true,
+      "note": "official document (agenda/minutes/notice/ordinance) \u2014 primary source-of-record",
+      "open_question": null,
+      "files": 83,
+      "bytes": 557289644
+    },
+    ".txt": {
+      "source_type": "transcript_text",
+      "source_of_record": true,
+      "note": "plain-text meeting record (likely transcript)",
+      "open_question": "Confirm .txt are meeting transcripts vs scratch notes (affects source-of-record vs derived).",
+      "files": 44,
+      "bytes": 2568064
+    },
+    ".md": {
+      "source_type": "derived_note",
+      "source_of_record": false,
+      "note": "markdown \u2014 DEFAULT treat as derived/secondary (record provenance, not source-of-record)",
+      "open_question": "Are any in-folder .md primary source artifacts rather than derived notes/digests? Default = derived unless SourceArchivist names specifics.",
+      "files": 195,
+      "bytes": 649896
+    },
+    ".json": {
+      "source_type": "metadata_sidecar",
+      "source_of_record": false,
+      "note": "likely metadata sidecar \u2014 provenance only, not source-of-record",
+      "open_question": "Inspect: metadata sidecars vs primary data?",
+      "files": 0,
+      "bytes": 0
+    }
+  },
+  "unclassified_in_meeting_folders": {
+    "<none>": {
+      "files": 7,
+      "bytes": 43036
+    },
+    ".err": {
+      "files": 1,
+      "bytes": 593
+    }
+  },
+  "excluded_top_level": [
+    {
+      "name": ".DS_Store",
+      "is_dir": false,
+      "reason": "dot dir/file \u2014 operational/scratch, excluded"
+    },
+    {
+      "name": ".inbox",
+      "is_dir": true,
+      "reason": "dot dir/file \u2014 operational/scratch, excluded"
+    },
+    {
+      "name": ".memory",
+      "is_dir": true,
+      "reason": "dot dir/file \u2014 operational/scratch, excluded"
+    },
+    {
+      "name": ".tmp",
+      "is_dir": true,
+      "reason": "dot dir/file \u2014 operational/scratch, excluded"
+    },
+    {
+      "name": "2026-03-26-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-03-27-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-03-29-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-03-30-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-03-31-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-04-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-05_daily-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-12-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-19-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-20-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-24-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-25-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-26-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-27-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-28-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-29-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-04-30-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-01-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-02-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-03-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-04-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-05-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-06-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-07-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-08-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-09-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-10-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-11-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-12-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-13-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-14-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-15-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-16-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-17-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-18-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-19-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-20-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-21-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-22-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-23-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-24-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-27-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-27-pass73-followup-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-28-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-29-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-30-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-05-31-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-01-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-02-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-03-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-04-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-05-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-06-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-07-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-08-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "2026-06-09-digest.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "3-MONTH_REPORT_Jan18-Apr18_2026.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "AGENT_NOTES.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "ALPINE_BRIEFING_For_Friend_2026-04-18.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "ALPINE_WHATS_HAPPENING_Apr21.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "APR21_MEETING_BRIEFING_2026-04-18.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "BACKFILL_REPORT.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "CURRENTLY_ACTIVE_REPORT_2026-04-18.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "DAILY_REPORT_Pass38_2026-04-18.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "EVERYTHING_REPORT_2026-04-18.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "FIREWORKS_RETAILER_NOTICE.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "MASTER_BRIEFING_Bob_2026-04-18.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "NOTE_TO_EDITOR_Apr21.docx",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "REPORTS_INDEX.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "TODO.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "User Drop if no info move to the right locashion",
+      "is_dir": true,
+      "reason": "non-date top-level dir \u2014 not a meeting record, excluded by default"
+    },
+    {
+      "name": "civic-voice.skill",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "deep-research.skill",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "directives",
+      "is_dir": true,
+      "reason": "operational \u2014 agent directives, not a meeting record"
+    },
+    {
+      "name": "execution",
+      "is_dir": true,
+      "reason": "operational \u2014 execution logs, not a meeting record"
+    },
+    {
+      "name": "last-update.txt",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "legal-guardian.skill",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "master",
+      "is_dir": true,
+      "reason": "operational \u2014 master/index notes, not a meeting record"
+    },
+    {
+      "name": "mayor-investigation",
+      "is_dir": true,
+      "reason": "EXCLUDED (RISK cat 3/4) \u2014 defamation/privacy surface; not ingested as source/fact this pass. Any future inclusion = SecurityPrivacyAgent + CEO gate"
+    },
+    {
+      "name": "notes-for-bill.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "project-intel-tracker.skill",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "questions",
+      "is_dir": true,
+      "reason": "non-date top-level dir \u2014 not a meeting record, excluded by default"
+    },
+    {
+      "name": "reports",
+      "is_dir": true,
+      "reason": "derived \u2014 generated reports, not a primary source record"
+    },
+    {
+      "name": "url-monitor.skill.md",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "violations",
+      "is_dir": true,
+      "reason": "non-date top-level dir \u2014 not a meeting record, excluded by default"
+    },
+    {
+      "name": "violations-tracker.skill",
+      "is_dir": false,
+      "reason": "loose top-level file \u2014 not inside a meeting folder, excluded"
+    },
+    {
+      "name": "weekly-digests",
+      "is_dir": true,
+      "reason": "derived \u2014 weekly digests, not a primary source record"
+    }
+  ],
+  "open_questions": [
+    ".txt: Confirm .txt are meeting transcripts vs scratch notes (affects source-of-record vs derived).",
+    ".md: Are any in-folder .md primary source artifacts rather than derived notes/digests? Default = derived unless SourceArchivist names specifics.",
+    ".json: Inspect: metadata sidecars vs primary data?",
+    "UNCLASSIFIED in meeting folders (.err\u00d71, <none>\u00d77): excluded by default \u2014 confirm none are source-bearing, or name a type to promote.",
+    "RAW STORAGE: copy bytes into a managed gitignored raw store (recommended; true preservation, ~533.9MB footprint) vs reference-in-place by absolute path (no duplication; original already vault-only). raw_preservation.verify works for both.",
+    "SOURCE GRANULARITY: one `sources` row for the whole local corpus (`alpine_local_corpus`) vs one per meeting folder. Recommend one corpus-level source; meeting grouping is modeled later by the `meetings` table (GOV-125/1.07)."
+  ],
+  "folders": [
+    {
+      "date": "2023-04-26",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-02-06",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-02-13",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-05-14",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-06-11",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-06-25",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-08-21",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-09-11",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-09-17",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-09-18",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-10-01",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-10-03",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-10-09",
+      "total_files": 2,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".md": 1,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2024-10-15",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-10-24",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-11-06",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-11-12",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2024-11-19",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-01-07",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-01-21",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-01-29",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-02-11",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-03-18",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-03-25",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-04-08",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-04-15",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-04-30",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-05-06",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-05-13",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-05-14",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-05-15",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-05-20",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-06-03",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-06-06",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-06-10",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-06-17",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-06-24",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-06-26",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-07-05",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-07-08",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-07-15",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-07-23",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-08-05",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-08-13",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-09-03",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-09-10",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-09-11",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-09-16",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-10-07",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-10-22",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-10-23",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-10-30",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-11-04",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-11-05",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-11-18",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-12-02",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-12-10",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2025-12-12",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2025-12-16",
+      "total_files": 8,
+      "source_of_record_files": 3,
+      "type_counts": {
+        "<none>": 1,
+        ".pdf": 3,
+        ".md": 4
+      }
+    },
+    {
+      "date": "2026-01-06",
+      "total_files": 3,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".md": 2,
+        ".pdf": 1
+      }
+    },
+    {
+      "date": "2026-01-20",
+      "total_files": 5,
+      "source_of_record_files": 2,
+      "type_counts": {
+        "<none>": 1,
+        ".md": 2,
+        ".pdf": 1,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-01-26",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-01-30",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-02-03",
+      "total_files": 7,
+      "source_of_record_files": 3,
+      "type_counts": {
+        "<none>": 1,
+        ".md": 3,
+        ".pdf": 2,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-02-08",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-02-10",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-02-17",
+      "total_files": 5,
+      "source_of_record_files": 1,
+      "type_counts": {
+        "<none>": 1,
+        ".md": 3,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-02-18",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-02-19",
+      "total_files": 3,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 3
+      }
+    },
+    {
+      "date": "2026-02-20",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-02-25",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-02-26",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-02-28",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-03-03",
+      "total_files": 9,
+      "source_of_record_files": 5,
+      "type_counts": {
+        "<none>": 1,
+        ".md": 3,
+        ".pdf": 4,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-03-04",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-03-06",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-03-10",
+      "total_files": 9,
+      "source_of_record_files": 4,
+      "type_counts": {
+        "<none>": 1,
+        ".pdf": 4,
+        ".md": 4
+      }
+    },
+    {
+      "date": "2026-03-11",
+      "total_files": 7,
+      "source_of_record_files": 0,
+      "type_counts": {
+        "<none>": 1,
+        ".md": 6
+      }
+    },
+    {
+      "date": "2026-03-14",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-03-16",
+      "total_files": 3,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 3
+      }
+    },
+    {
+      "date": "2026-03-17",
+      "total_files": 19,
+      "source_of_record_files": 9,
+      "type_counts": {
+        ".md": 10,
+        ".pdf": 8,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-03-18",
+      "total_files": 5,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 5
+      }
+    },
+    {
+      "date": "2026-03-19",
+      "total_files": 5,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 5
+      }
+    },
+    {
+      "date": "2026-03-20",
+      "total_files": 6,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 6
+      }
+    },
+    {
+      "date": "2026-03-21",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-03-23",
+      "total_files": 4,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".md": 3,
+        ".pdf": 1
+      }
+    },
+    {
+      "date": "2026-03-24",
+      "total_files": 3,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".md": 2,
+        ".pdf": 1
+      }
+    },
+    {
+      "date": "2026-03-25",
+      "total_files": 5,
+      "source_of_record_files": 3,
+      "type_counts": {
+        ".md": 2,
+        ".pdf": 2,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-03-28",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-03-29",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-03-30",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-03-31",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-04-03",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-04-09",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-04-10",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-04-11",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-04-13",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-04-14",
+      "total_files": 3,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".md": 2,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-04-15",
+      "total_files": 2,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-04-17",
+      "total_files": 21,
+      "source_of_record_files": 21,
+      "type_counts": {
+        ".pdf": 21
+      }
+    },
+    {
+      "date": "2026-04-20",
+      "total_files": 1,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-04-21",
+      "total_files": 4,
+      "source_of_record_files": 4,
+      "type_counts": {
+        ".pdf": 3,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-04-22",
+      "total_files": 1,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-04-28",
+      "total_files": 2,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".txt": 1,
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-04-30",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-05-01",
+      "total_files": 2,
+      "source_of_record_files": 1,
+      "type_counts": {
+        ".md": 1,
+        ".pdf": 1
+      }
+    },
+    {
+      "date": "2026-05-04",
+      "total_files": 3,
+      "source_of_record_files": 2,
+      "type_counts": {
+        ".pdf": 1,
+        ".txt": 1,
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-05-05",
+      "total_files": 11,
+      "source_of_record_files": 8,
+      "type_counts": {
+        ".md": 3,
+        ".pdf": 4,
+        ".txt": 4
+      }
+    },
+    {
+      "date": "2026-05-07",
+      "total_files": 10,
+      "source_of_record_files": 6,
+      "type_counts": {
+        ".pdf": 2,
+        ".txt": 4,
+        ".md": 4
+      }
+    },
+    {
+      "date": "2026-05-08",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-05-12",
+      "total_files": 9,
+      "source_of_record_files": 5,
+      "type_counts": {
+        ".pdf": 2,
+        ".txt": 3,
+        ".md": 3,
+        ".err": 1
+      }
+    },
+    {
+      "date": "2026-05-13",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-05-14",
+      "total_files": 4,
+      "source_of_record_files": 2,
+      "type_counts": {
+        ".pdf": 1,
+        ".txt": 1,
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-05-16",
+      "total_files": 1,
+      "source_of_record_files": 0,
+      "type_counts": {
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-05-19",
+      "total_files": 14,
+      "source_of_record_files": 10,
+      "type_counts": {
+        ".pdf": 4,
+        ".txt": 6,
+        ".md": 4
+      }
+    },
+    {
+      "date": "2026-05-21",
+      "total_files": 3,
+      "source_of_record_files": 2,
+      "type_counts": {
+        ".pdf": 1,
+        ".txt": 1,
+        ".md": 1
+      }
+    },
+    {
+      "date": "2026-05-26",
+      "total_files": 4,
+      "source_of_record_files": 4,
+      "type_counts": {
+        ".pdf": 2,
+        ".txt": 2
+      }
+    },
+    {
+      "date": "2026-05-27",
+      "total_files": 4,
+      "source_of_record_files": 2,
+      "type_counts": {
+        ".pdf": 1,
+        ".txt": 1,
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-05-28",
+      "total_files": 3,
+      "source_of_record_files": 3,
+      "type_counts": {
+        ".pdf": 2,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-06-01",
+      "total_files": 2,
+      "source_of_record_files": 2,
+      "type_counts": {
+        ".pdf": 1,
+        ".txt": 1
+      }
+    },
+    {
+      "date": "2026-06-02",
+      "total_files": 10,
+      "source_of_record_files": 7,
+      "type_counts": {
+        ".pdf": 4,
+        ".txt": 3,
+        ".md": 3
+      }
+    },
+    {
+      "date": "2026-06-03",
+      "total_files": 3,
+      "source_of_record_files": 3,
+      "type_counts": {
+        ".txt": 1,
+        ".pdf": 2
+      }
+    },
+    {
+      "date": "2026-06-05",
+      "total_files": 5,
+      "source_of_record_files": 3,
+      "type_counts": {
+        ".txt": 1,
+        ".pdf": 2,
+        ".md": 2
+      }
+    },
+    {
+      "date": "2026-06-09",
+      "total_files": 5,
+      "source_of_record_files": 4,
+      "type_counts": {
+        ".pdf": 2,
+        ".txt": 2,
+        ".md": 1
+      }
+    }
+  ]
+}
