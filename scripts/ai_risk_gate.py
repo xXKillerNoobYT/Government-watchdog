@@ -70,6 +70,9 @@ import publication as pub
 
 RISK_TABLE = "ai_risk_flags"
 DECISION_TABLE = "reviewer_decisions"
+# The reviewer-identity registry (GOV-131; migration 0014): the source of truth
+# the Lane-5 allowlist consumes via is_registered_reviewer(). Vault-only (ADR §5).
+REVIEWER_REGISTRY_TABLE = "reviewer_identities"
 
 # --- Lane-4 vocabularies (mirror the 0011 CHECK literals; parity-tested) -----
 
@@ -112,6 +115,129 @@ class ReviewerGateError(RuntimeError):
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+# ===========================================================================
+# Reviewer-identity registry (GOV-131; migration 0014 — reviewer_identities)
+# ===========================================================================
+#
+# The source of truth of REGISTERED, ACTIVE human reviewer identities. Builds
+# subtask A of the GOV-130 ADR (§2 schema; §3 lookup; §5 boundary). Today the
+# Lane-5 gate is a DENYLIST (rejects only FORBIDDEN_REVIEWER_IDS); GOV-93 flips it
+# to an ALLOWLIST (default-deny) by calling is_registered_reviewer() instead. This
+# module provides that lookup + the vault-only admin helpers — but does NOT change
+# the gate's check yet (that is GOV-93). The registry ships EMPTY: the safe
+# fail-closed default is "nobody passes"; WHICH humans are authorized is the
+# owner decision (GOV-130 subtask B), seeded there, not here.
+
+
+def is_registered_reviewer(conn: sqlite3.Connection, reviewer_id: str | None) -> bool:
+    """True iff ``reviewer_id`` resolves to a registered, active human reviewer.
+
+    The allowlist primitive the GOV-93 hardening will gate on. Fail-closed on
+    EVERY uncertain path (ADR §3) — the default answer is always False:
+
+    * empty / ``None`` ``reviewer_id`` => False;
+    * a known automation/AI actor sentinel (:data:`FORBIDDEN_REVIEWER_IDS`) =>
+      False, folded in as a fast-reject so an AI actor can never be allowlisted
+      even if mis-seeded (defense in depth; 1.09 §2.5 / 1.11 §5);
+    * no matching row => False (an unknown id never passes);
+    * ``status='revoked'`` => False (revocation takes effect immediately);
+    * empty registry => False (the safe default — nobody passes);
+    * registry table absent (pre-0014, caught :class:`sqlite3.OperationalError`)
+      => False, so the allowlist can never silently degrade to allow.
+    """
+    rid = (reviewer_id or "").strip()
+    if not rid or rid.lower() in FORBIDDEN_REVIEWER_IDS:
+        return False
+    try:
+        row = conn.execute(
+            f"SELECT 1 FROM {REVIEWER_REGISTRY_TABLE} "
+            "WHERE reviewer_id = ? AND status = 'active' LIMIT 1",
+            (rid,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False  # table not yet migrated => nobody passes.
+    return row is not None
+
+
+def register_reviewer(
+    conn: sqlite3.Connection,
+    reviewer_id: str,
+    *,
+    display_name: str,
+    registered_by: str,
+    note: str | None = None,
+    commit: bool = True,
+) -> None:
+    """Vault-only admin helper: add (or re-activate) a reviewer identity.
+
+    NOT a web/API surface — this is an operational/seeding helper invoked from a
+    trusted local context (and from tests). An owner-approved ``registered_by``
+    must be named (the audit of who admitted this identity). Re-registering an
+    existing id re-activates it and clears the revoked_* audit fields, recording
+    the new registration; ``reviewer_id`` itself is immutable (PK).
+
+    Refuses an empty id or a known automation/AI actor sentinel — an AI actor can
+    never be seeded into the allowlist (1.09 §2.5 / 1.11 §5).
+    """
+    rid = (reviewer_id or "").strip()
+    if not rid or rid.lower() in FORBIDDEN_REVIEWER_IDS:
+        raise ReviewerGateError(
+            f"reviewer_id {reviewer_id!r} is empty or an automation/AI actor; "
+            "it may not be registered as a human reviewer"
+        )
+    if not (display_name or "").strip():
+        raise ReviewerGateError("register_reviewer requires a non-empty display_name")
+    if not (registered_by or "").strip():
+        raise ReviewerGateError("register_reviewer requires a non-empty registered_by")
+    now = _now_utc_iso()
+    # Upsert: an explicit re-registration re-activates and clears the revoke audit.
+    conn.execute(
+        f"INSERT INTO {REVIEWER_REGISTRY_TABLE} ("
+        "reviewer_id, display_name, status, registered_utc, registered_by, "
+        "revoked_utc, revoked_by, revoked_reason, note"
+        ") VALUES (?, ?, 'active', ?, ?, NULL, NULL, NULL, ?) "
+        "ON CONFLICT(reviewer_id) DO UPDATE SET "
+        "display_name = excluded.display_name, status = 'active', "
+        "registered_utc = excluded.registered_utc, registered_by = excluded.registered_by, "
+        "revoked_utc = NULL, revoked_by = NULL, revoked_reason = NULL, note = excluded.note",
+        (rid, display_name, now, registered_by, note),
+    )
+    if commit:
+        conn.commit()
+
+
+def revoke_reviewer(
+    conn: sqlite3.Connection,
+    reviewer_id: str,
+    *,
+    revoked_by: str,
+    reason: str,
+    commit: bool = True,
+) -> None:
+    """Vault-only admin helper: revoke a reviewer identity (never DELETE).
+
+    Sets ``status='revoked'`` and stamps the revoke audit (who/when/why). The row
+    is retained so the registry stays its own audit trail (ADR §2); a revoked
+    identity is excluded by :func:`is_registered_reviewer` immediately. Raises
+    :class:`ReviewerGateError` if the id does not resolve, or with an empty
+    ``revoked_by`` / ``reason`` (a revocation must be attributable + justified).
+    """
+    rid = (reviewer_id or "").strip()
+    if not (revoked_by or "").strip():
+        raise ReviewerGateError("revoke_reviewer requires a non-empty revoked_by")
+    if not (reason or "").strip():
+        raise ReviewerGateError("revoke_reviewer requires a non-empty reason")
+    cur = conn.execute(
+        f"UPDATE {REVIEWER_REGISTRY_TABLE} SET status = 'revoked', "
+        "revoked_utc = ?, revoked_by = ?, revoked_reason = ? WHERE reviewer_id = ?",
+        (_now_utc_iso(), revoked_by, reason, rid),
+    )
+    if cur.rowcount == 0:
+        raise ReviewerGateError(f"reviewer_id {reviewer_id!r} is not registered")
+    if commit:
+        conn.commit()
 
 
 # ===========================================================================
