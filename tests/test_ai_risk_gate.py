@@ -255,6 +255,47 @@ def test_scan_text_flags_privacy() -> None:
     assert "privacy" in found
 
 
+def test_street_address_year_in_prose_is_not_flagged() -> None:
+    """GOV-142 F-1: a bare year + prose ending in a street word is NOT an address.
+
+    The Lane-4 detector used to read the year 2026 as a house number and
+    "to improve" as a street name, raising a spurious privacy no_go. Precision
+    tune: a connective word in the street-name slot disqualifies the match.
+    """
+    cats = {f["category"] for f in rg.scan_text(
+        "the council met June 4 and 5, 2026 to improve road conditions on the east side"
+    )}
+    assert "privacy" not in cats
+    # No address signal at all -> the screen returns nothing for this text.
+    assert rg.scan_text("June 4 and 5, 2026 to improve road conditions") == []
+
+
+def test_street_address_true_positive_still_flags() -> None:
+    """The precision tune must not remove any real premises-address match."""
+    # Single-word and multi-word street names, with/without a leading clause.
+    for text in (
+        "a resident at 742 Evergreen Terrace asked a question",
+        "the notice gave 123 Oak Ridge Road as the parcel",
+        "mail it to 100 Martin Luther King Boulevard",
+    ):
+        cats = {f["category"] for f in rg.scan_text(text)}
+        assert "privacy" in cats, text
+
+
+def test_street_name_without_premises_number_is_not_flagged() -> None:
+    """A street name with no house number stays un-flagged (GOV-142 done-bar).
+
+    "Trail Drive" / the "Stoor Drive" advisory area name a street, not a private
+    residence — there is no premises number to expose, so no privacy hit.
+    """
+    for text in (
+        "crews closed the Trail Drive intersection",
+        "the Stoor Drive advisory area was discussed",
+    ):
+        cats = {f["category"] for f in rg.scan_text(text)}
+        assert "privacy" not in cats, text
+
+
 def test_scan_text_flags_legal_and_moderation() -> None:
     legal = {f["category"] for f in rg.scan_text("the mayor committed fraud at the meeting")}
     assert "legal" in legal

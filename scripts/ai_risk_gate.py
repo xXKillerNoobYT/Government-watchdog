@@ -251,6 +251,27 @@ def revoke_reviewer(
 # Lane 4 — risk layer (deterministic screen; a flag, never a gating write)
 # ===========================================================================
 
+# Function/connective words that never sit in a real street-name slot directly
+# after a house number. A genuine premises address is "<number> <street-name…>
+# <street-type>", where the street-name words are proper nouns / directionals
+# (Evergreen, Oak Ridge, Martin Luther King) — never English connectives like
+# "to"/"and"/"of". Excluding these from the name slot is what stops a bare year +
+# prose being misread as an address: the GOV-142 F-1 false positive
+# "…June 4 and 5, 2026 to improve road conditions…" matched because the year 2026
+# filled the house-number slot and "to improve" filled the (unconstrained) name
+# slot before "road". This is precision-only / fail-closed — a true address never
+# carries a function word in its name slot, so this can only *remove* false hits,
+# never drop a real address match. The trailing \b keeps "Andrew"/"Onyx"/"Forest"
+# from being read as "and"/"on"/"for".
+_ADDR_NON_NAME_WORDS = (
+    "to", "and", "or", "the", "of", "a", "an", "for", "in", "on", "at",
+    "by", "from", "with", "as", "is", "are", "was", "were", "be", "been",
+    "we", "they", "it", "that", "this", "into", "onto", "over", "under",
+    "about", "after", "before", "than", "then", "but", "so", "if",
+)
+# One street-name token: any word that is NOT one of the connectives above.
+_STREET_NAME_WORD = r"(?!(?:" + "|".join(_ADDR_NON_NAME_WORDS) + r")\b)\w+"
+
 # Privacy / PII patterns (1.11 §2.1 never-collect/never-publish). Deterministic,
 # conservative: a hit is a no_go that a reviewer must clear. These screen the AI
 # DRAFT text (a Lane-2 paraphrase) — the real defence is privacy-by-schema-absence
@@ -263,11 +284,15 @@ _PRIVACY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("email", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")),
     # SSN-like (###-##-####).
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-    # street address (number + street word + a street-type suffix).
+    # street address (house number + 1+ street-name words + a street-type suffix).
+    # The name slot excludes connectives (_STREET_NAME_WORD) so a bare year + prose
+    # ("2026 to improve road") no longer satisfies the house-number+name slots
+    # (GOV-142 F-1); a real premises address ("742 Evergreen Terrace") still hits.
     (
         "street_address",
         re.compile(
-            r"\b\d{1,6}\s+\w+(?:\s+\w+)*\s+"
+            r"\b\d{1,6}\s+"
+            r"(?:" + _STREET_NAME_WORD + r"\s+)+"
             r"(?:st|street|ave|avenue|rd|road|dr|drive|ln|lane|blvd|boulevard|ct|court|"
             r"way|cir|circle|ter|terrace|pl|place|trl|trail|loop|pkwy|parkway|hwy|highway|"
             r"sq|square|pt|point)\b",
