@@ -52,7 +52,10 @@ ALLOWED_EVIDENCE_RELATIONS = frozenset(
 )
 
 # §2.2 locator_kind — selects which locator field on the pointer is authoritative.
-ALLOWED_LOCATOR_KINDS = frozenset({"timestamp", "page", "section", "paragraph"})
+# GOV-137 adds 'char_span': an untimed-prose anchor = to_source_id + a half-open
+# [char_start, char_end) offset into the preserved source text + the verbatim
+# quoted_text those offsets select (migration 0016). No timed-segment required.
+ALLOWED_LOCATOR_KINDS = frozenset({"timestamp", "page", "section", "paragraph", "char_span"})
 
 # The locator field(s) that MUST be present (non-null) for each locator_kind.
 LOCATOR_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
@@ -60,6 +63,7 @@ LOCATOR_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "page": ("page",),
     "section": ("section",),
     "paragraph": ("paragraph",),
+    "char_span": ("char_start", "char_end", "quoted_text"),
 }
 
 # §4 append-only layer enum (shared by statements + evidence_links).
@@ -143,6 +147,26 @@ def validate_pointer(pointer: dict[str, Any], *, conn: sqlite3.Connection | None
         if _is_missing(pointer.get(field)):
             raise PointerError(
                 f"locator_kind={locator_kind!r} requires non-null {field!r}: {pointer!r}"
+            )
+
+    # §2.3 (GOV-137) char-span integrity: the offsets must be a well-formed
+    # half-open span AND their length must equal the quoted_text length. This is
+    # the invariant that makes a char-span anchor reproducible — quoted_text must
+    # be exactly source_text[char_start:char_end]. The proposer guarantees this by
+    # DERIVING the offsets from a verbatim substring search; the validator is the
+    # belt-and-braces gate so a malformed span never lands.
+    if locator_kind == "char_span":
+        start, end, quote = pointer["char_start"], pointer["char_end"], pointer["quoted_text"]
+        if not isinstance(start, int) or not isinstance(end, int) or isinstance(start, bool) or isinstance(end, bool):
+            raise PointerError(f"char_span requires integer char_start/char_end: {pointer!r}")
+        if start < 0 or end <= start:
+            raise PointerError(
+                f"char_span requires 0 <= char_start < char_end (got {start}, {end})"
+            )
+        if not isinstance(quote, str) or len(quote) != (end - start):
+            raise PointerError(
+                f"char_span quoted_text length {len(quote) if isinstance(quote, str) else 'n/a'} "
+                f"!= char_end-char_start {end - start} — offsets must select the exact quote"
             )
 
     if pointer["archive_status"] not in ALLOWED_ARCHIVE_STATUSES:
@@ -337,8 +361,8 @@ def insert_statement(
             "paragraph, original_url, final_url, archive_url, archive_status, scan_date, "
             "captured_at_utc, agenda_item_id, is_verbatim, verification_status, "
             "correction_status, confidence, transcript_path, deep_link, "
-            "ai_extraction_run_id, created_utc"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "ai_extraction_run_id, created_utc, char_start, char_end, quoted_text"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 link_id,
                 link.get("from_node_id", statement_id),
@@ -367,6 +391,9 @@ def insert_statement(
                 link.get("deep_link"),
                 link.get("ai_extraction_run_id", run_id),
                 now,
+                link.get("char_start"),
+                link.get("char_end"),
+                link.get("quoted_text"),
             ),
         )
 

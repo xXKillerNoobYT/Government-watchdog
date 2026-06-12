@@ -66,6 +66,9 @@ from typing import Any, Callable
 import publication as pub
 import speakers as spk
 import statements as st
+# GOV-105 positive PII guard, enforced at THIS write boundary (GOV-137): an AI
+# claim whose text/quote carries private-individual PII is dropped fail-closed.
+from concept_map import assert_no_pii, PiiGuardError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -340,6 +343,30 @@ def _bind_ai_fields(claim: dict[str, Any], run_id: str) -> dict[str, Any]:
     }
 
 
+def _assert_claim_pii_free(ai_statement: dict[str, Any], links: list[dict[str, Any]]) -> None:
+    """Fail-closed PII guard at the AI write boundary (GOV-105 / GOV-137).
+
+    Raises :class:`PiiGuardError` if any evidence-link ``quoted_text`` matches a
+    private-individual PII pattern (street address, voter/registration id, ...).
+    ``quoted_text`` is the VERBATIM source span GOV-137 introduces — an AI proposer
+    copies it character-for-character from the source, so a literal address/voter-id
+    in the source would otherwise be written verbatim. The caller counts the raised
+    claim as a rejection and never writes it (fail-closed; no name > wrong name).
+    The guard message names only the pattern KIND, never the matched value, so the
+    rejection that lands in the run ledger's ``error_detail`` cannot itself leak it.
+
+    SCOPING (deliberate, flagged to VSR/SecurityPrivacy): this guards the NEW
+    verbatim field only. It does NOT guard the paraphrased ``statement_text`` — a
+    paraphrase that surfaces private PII remains the domain of the Lane-4 RISK layer
+    (``ai_risk_gate`` privacy flag + Lane-5 block), the established contract. Adding
+    a hard Lane-2 drop on ``statement_text`` would pre-empt and silence that
+    risk-flagging path. Whether to ALSO hard-drop at Lane 2 is an owner/architecture
+    call for the review lane, not a unilateral change here.
+    """
+    for index, link in enumerate(links):
+        assert_no_pii(link.get("quoted_text"), f"ai evidence_link[{index}] quoted_text")
+
+
 def run_extraction(
     conn: sqlite3.Connection,
     *,
@@ -433,10 +460,15 @@ def run_extraction(
             link.setdefault("ai_extraction_run_id", run_id)
         ai_statement = _bind_ai_fields(claim, run_id)
         try:
+            # Write boundary, in order: PII guard (GOV-105/GOV-137) THEN the 1.07
+            # orphan/pointer invariants. Both reject fail-closed — the claim is
+            # dropped and counted, never written.
+            _assert_claim_pii_free(ai_statement, links)
             result = st.insert_statement(conn, ai_statement, links, commit=False)
-        except (st.OrphanClaimError, st.PointerError, ValueError) as exc:
-            # No-orphan-claims (1.07 §2.3) inherited unchanged: an AI claim with no
-            # resolving pointer/segment is rejected and NOT written.
+        except (st.OrphanClaimError, st.PointerError, PiiGuardError, ValueError) as exc:
+            # No-orphan-claims (1.07 §2.3) + PII guard inherited fail-closed: an AI
+            # claim with no resolving pointer/segment, or one carrying private PII,
+            # is rejected and NOT written.
             rejected.append({"statement_id": statement_id, "error": f"{type(exc).__name__}: {exc}"})
             continue
 
@@ -461,7 +493,12 @@ def run_extraction(
         )
     elif rejected and not written_statements:
         error_status = "failed"
-        error_detail = f"all {len(rejected)} claim(s) rejected; nothing written"
+        # Carry the per-claim rejection reasons into the ledger (auditable WHY).
+        # Each reason names only an error type + contract text (the PII guard names
+        # the pattern KIND, never the matched value), so this leaks no PII.
+        error_detail = f"all {len(rejected)} claim(s) rejected; nothing written: " + "; ".join(
+            f"{r['statement_id']}={r['error']}" for r in rejected
+        )
 
     finalize_run(
         conn,
