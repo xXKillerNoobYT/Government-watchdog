@@ -24,10 +24,13 @@ Invariants asserted:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -209,3 +212,94 @@ def test_human_approved_row_is_still_not_published(tmp_path: Path) -> None:
     # nothing. Promotion advances review; it never publishes.
     assert row["publication_state"] == "not_publishable"
     assert served == []
+
+
+# ===========================================================================
+# Agent-inline model seam (GOV-141 Option B): the executing agent IS the client
+# ===========================================================================
+
+# Wrapped prose: the same words as PROSE but line-wrapped + double-spaced, like
+# the real PDF/ASR corpus. An agent authors a NORMALIZED quote; the client must
+# recover the exact stored span across the irregular whitespace.
+WRAPPED_PROSE = (
+    "Staff explained that the reserve fund\nhad fallen below  the target level "
+    "for the coming\nfiscal year."
+)
+
+
+def _write_claims(tmp_path: Path, claims: list[dict]) -> Path:
+    p = tmp_path / "claims.json"
+    p.write_text(json.dumps({"claims": claims}), encoding="utf-8")
+    return p
+
+
+def test_resolve_exact_span_recovers_whitespace_and_returns_literal_substring() -> None:
+    # normalized phrase (single spaces) must match across newline + double space,
+    # and the RETURNED span is a verbatim substring of the source (grounding precond).
+    phrase = "the reserve fund had fallen below the target level"
+    span = vr._resolve_exact_span(WRAPPED_PROSE, phrase)
+    assert span is not None
+    assert span in WRAPPED_PROSE          # literal substring -> str.find will anchor it
+    assert WRAPPED_PROSE.find(span) >= 0
+    # special-regex chars in a quote are escaped (no regex injection / crash).
+    assert vr._resolve_exact_span("cost is $5 (approx).", "is $5 (approx).") == "is $5 (approx)."
+    # a phrase absent from the source resolves to None (dropped, fail-closed).
+    assert vr._resolve_exact_span(WRAPPED_PROSE, "a secret backroom deal") is None
+
+
+def test_agent_inline_client_grounds_real_quote_drops_unresolvable_never_names(tmp_path: Path) -> None:
+    claims = [
+        {"statement_text": "The reserve fund was below target.",
+         "quote_phrase": "the reserve fund had fallen below the target level",
+         "confidence": "high", "speaker_name": "Mayor Green"},  # name must be ignored
+        {"statement_text": "There was a backroom deal.",
+         "quote_phrase": "a secret backroom deal was struck", "confidence": "low"},
+    ]
+    client = vr._AgentInlineModelClient(_write_claims(tmp_path, claims))
+    raw = client.extract(WRAPPED_PROSE, source_id=SOURCE_ID)
+    assert len(raw) == 1                                   # unresolvable claim dropped
+    assert raw[0]["quoted_text"] in WRAPPED_PROSE          # exact stored span
+    assert raw[0]["speaker_name"] == ""                    # client never carries a name
+    assert raw[0]["confidence"] == "high"
+
+
+def test_agent_inline_volume_run_records_mechanism_marker_in_ledger(tmp_path: Path) -> None:
+    db_path = _migrated(tmp_path)
+    claims_path = _write_claims(tmp_path, [
+        {"statement_text": "Staff said the reserve fund was below target.",
+         "quote_phrase": "the reserve fund had fallen below the target level",
+         "confidence": "high"},
+    ])
+    client = vr._AgentInlineModelClient(claims_path)
+    with db.open_db(db_path) as conn:
+        _seed_source(conn)
+        _seed_transcript(conn, full_text=WRAPPED_PROSE)
+        _seed_reviewer(conn)
+        report = vr.run_volume(
+            conn, model_client=client, source_id=SOURCE_ID,
+            extraction_mechanism="agent_inline", commit=True,
+        )
+        run = conn.execute(
+            "SELECT model_name, tool_version FROM ai_extraction_runs WHERE lane='2_extraction'"
+        ).fetchone()
+    # B2: true runtime model_name + a visible, honest mechanism marker on the ledger.
+    assert report["extraction_mechanism"] == "agent_inline"
+    assert "agent_inline" in report["tool_version"]
+    assert run["model_name"] == "claude-opus-4-8"
+    assert "agent_inline(not-externally-re-derivable)" in run["tool_version"]
+    # the real authored claim grounded into an AI row, fail-closed not_publishable.
+    assert report["lanes"]["lane2_extraction"]["output_count"] == 1
+    assert report["evidence"]["nothing_publishable_sweep"]["holds"] is True
+
+
+def test_build_model_client_modes_and_mutual_exclusion(tmp_path: Path) -> None:
+    claims_path = _write_claims(tmp_path, [])
+    # offline default
+    client, mech = vr._build_model_client(live=False, agent_inline_claims=None)
+    assert mech == "offline" and isinstance(client, vr._NullModelClient)
+    # agent-inline selected
+    client, mech = vr._build_model_client(live=False, agent_inline_claims=claims_path)
+    assert mech == "agent_inline" and isinstance(client, vr._AgentInlineModelClient)
+    # both at once is rejected (cannot run two mechanisms)
+    with pytest.raises(SystemExit):
+        vr._build_model_client(live=True, agent_inline_claims=claims_path)

@@ -19,6 +19,12 @@ Logs/crawl-*.log
 # ai_extraction_runs ledger lives in Database/*.db (already ignored above).
 Database/ai_provider.local.json
 Logs/ai-extract-*.log
+# GOV-138 Option-B (GOV-141): agent-inline claims file holds REAL verbatim Alpine
+# quotes; the volume-run logs/reports replay real quoted_text. Reviewer/vault-only,
+# never committed (C1/B3). Only the harness CODE (no real data) is committed.
+Database/gov138_agent_inline_claims*.json
+Logs/gov138-*.log
+Database/gov138-run-report*.json
 Clone/
 .DS_Store
 .ci-venv/

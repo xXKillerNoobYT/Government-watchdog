@@ -21,23 +21,34 @@ Binding bounds (owner-accepted GOV-126 plan rev e9435b55, confirmation bb425bf7)
 - Conservative attribution: the proposer drops every speaker name (no name >
   wrong name). The mayor-investigation corpus stays excluded upstream.
 
-Model seam (why this is safe to run offline):
+Model seam (three injectable :class:`production_proposer.ModelClient` impls):
 - ``--live`` injects :class:`production_proposer.AnthropicModelClient`, the real
   billable Claude call (lazy Anthropic SDK; reads ``ANTHROPIC_API_KEY`` from the
-  env, never logged). This is the AUTHORIZED model-backed pass.
-- The default (no ``--live``) injects :class:`_NullModelClient`, which returns
-  zero claims. That exercises the FULL chain + ledger + the publishable sweep
-  over the real DB while fabricating nothing — a zero-spend wiring proof. It is
-  even safe with ``--apply`` (it only records empty Lane-2/3/4 ledger rows).
+  env, never logged). Option A — not available in this run env (no SDK/key).
+- ``--agent-inline --claims <path>`` injects :class:`_AgentInlineModelClient`,
+  which returns claims the executing agent (claude-opus-4-8) authored by READING
+  the preserved prose, loaded from a vault-only claims file. This is the
+  CTO-authorized Option B mechanism for this bounded pass (GOV-141 decision).
+  The client performs NO grounding/offset math and drops NO speaker — it only
+  recovers each authored quote's exact stored whitespace against the live source
+  so the DOWNSTREAM ``str.find`` grounding seam in ``build_claude_proposer`` can
+  anchor it (B1: guard seam intact). The ledger records the true ``model_name``
+  plus an ``agent_inline`` mechanism marker (B2: audit trade-off visible).
+- The default (no flag) injects :class:`_NullModelClient`, which returns zero
+  claims. That exercises the FULL chain + ledger + the publishable sweep over
+  the real DB while fabricating nothing — a zero-spend wiring proof. It is even
+  safe with ``--apply`` (it only records empty Lane-2/3/4 ledger rows).
 
 Default is ``--dry-run`` (no commit). ``--apply`` commits the ledger rows. Per
-BACKEND_CRAWLER_WORKFLOWS, the first live ``--apply`` is a CTO-escalation gate.
+BACKEND_CRAWLER_WORKFLOWS, the first live ``--apply`` is a CTO-escalation gate
+(cleared for the Option-B pass by the GOV-141 decision).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -72,6 +83,73 @@ class _NullModelClient:
 
     def extract(self, source_text: str, *, source_id: str) -> list[dict[str, Any]]:
         return []
+
+
+def _resolve_exact_span(source_text: str, phrase: str) -> str | None:
+    """Recover the EXACT stored substring for an agent-authored quote ``phrase``.
+
+    The preserved prose is line-wrapped / irregularly spaced (ASR + PDF-extracted
+    text), so an agent-authored quote is normalized on whitespace. This locates the
+    first contiguous occurrence of the phrase's word tokens separated by ANY run of
+    whitespace, and returns the verbatim matched span from ``source_text`` (or
+    ``None`` if it does not occur). This is pure whitespace recovery — it does NOT
+    invent text, change words, or compute char offsets; the returned string is a
+    literal substring of ``source_text``, which the downstream grounding seam
+    (:func:`production_proposer._ground_claim`) then independently anchors with
+    ``str.find`` and from which IT derives ``char_start``/``char_end``. A phrase
+    that does not occur verbatim resolves to ``None`` and the claim is dropped —
+    fail-closed, the same outcome the grounding seam would reach.
+    """
+    tokens = phrase.split()
+    if not tokens:
+        return None
+    pattern = re.compile(r"\s+".join(re.escape(t) for t in tokens))
+    m = pattern.search(source_text)
+    return m.group(0) if m else None
+
+
+class _AgentInlineModelClient:
+    """Option-B model seam (GOV-141): the executing agent IS the model client.
+
+    Returns RAW claims the agent (claude-opus-4-8) authored by reading the
+    preserved Alpine prose, loaded from a vault-only JSON file. Each claim carries
+    a ``statement_text`` (neutral paraphrase) and a ``quote_phrase`` (a real,
+    contiguous quote from the source, normalized on whitespace). ``extract`` resolves
+    each quote to its exact stored span against the source it is handed and emits the
+    proposer's raw-claim shape — ``speaker_name`` is always empty (conservative
+    attribution; the proposer drops it regardless). The client does NO grounding,
+    NO char-offset math, and NO PII screening — every guard stays downstream in
+    ``build_claude_proposer`` + the Lane-2 write boundary (B1). An authored quote
+    that does not occur verbatim in the source is dropped here, fail-closed.
+
+    The claims file (real civic text) is vault-only / git-ignored — never committed
+    (B3 / C1). Only this client class (which contains no real data) is committed.
+    """
+
+    def __init__(self, claims_path: Path) -> None:
+        data = json.loads(Path(claims_path).read_text(encoding="utf-8"))
+        claims = data.get("claims", data) if isinstance(data, dict) else data
+        self._claims: list[dict[str, Any]] = list(claims) if isinstance(claims, list) else []
+
+    def extract(self, source_text: str, *, source_id: str) -> list[dict[str, Any]]:
+        raw: list[dict[str, Any]] = []
+        for c in self._claims:
+            statement_text = (c.get("statement_text") or "").strip()
+            phrase = c.get("quote_phrase") or c.get("quoted_text") or ""
+            if not statement_text or not phrase.strip():
+                continue
+            span = _resolve_exact_span(source_text, phrase)
+            if span is None:
+                continue  # unresolvable quote -> agent drops it (fail-closed)
+            raw.append(
+                {
+                    "statement_text": statement_text,
+                    "quoted_text": span,  # exact substring; proposer re-grounds via str.find
+                    "confidence": c.get("confidence", "low"),
+                    "speaker_name": "",  # conservative attribution: never name a speaker
+                }
+            )
+        return raw
 
 
 def _stamp(conn: sqlite3.Connection) -> str:
@@ -144,6 +222,7 @@ def run_volume(
     model_name: str = DEFAULT_MODEL_NAME,
     model_version: str = "untimed-prose-v1",
     tool_version: str = "gov138-volume-run@local",
+    extraction_mechanism: str = "offline",
     max_claims_per_source: int | None = None,
     reviewer_id: str = DEFAULT_REVIEWER_ID,
     commit: bool = False,
@@ -153,9 +232,18 @@ def run_volume(
     Never promotes: there is no ``promote_statement`` call here. The reviewer
     allowlist is only INSPECTED (Lane-5 readiness) — the gate's enforcement is
     proven by the aggregate sweep showing nothing was served despite real AI rows.
+
+    ``extraction_mechanism`` (B2): when not ``"offline"`` it is recorded INTO the
+    ``ai_extraction_runs`` ledger ``tool_version`` (e.g. ``...+agent_inline(not-
+    externally-re-derivable)``) so the audit trade-off of a non-SDK mechanism is
+    visibly persisted, not hidden. The true runtime ``model_name`` is recorded
+    unchanged.
     """
     dry_run = not commit
     stamp = _stamp(conn)
+    # B2 — make the extraction mechanism visible in the ledger's tool_version.
+    if extraction_mechanism and extraction_mechanism != "offline":
+        tool_version = f"{tool_version}+{extraction_mechanism}(not-externally-re-derivable)"
     proposer = build_claude_proposer(model_client, max_claims_per_source=max_claims_per_source)
 
     # Lane 2 — source-grounded AI extraction (the only lane that can WRITE claims).
@@ -208,6 +296,15 @@ def run_volume(
         "model_name": model_name,
         "model_version": model_version,
         "tool_version": tool_version,
+        "extraction_mechanism": extraction_mechanism,
+        "reproducibility_note": (
+            "agent_inline: extraction authored by the executing agent (claude-opus-4-8) "
+            "reading preserved prose; not externally re-derivable from an API call. "
+            "Integrity is carried by the mechanism-blind Lane-3 verification + char_span "
+            "grounding, not by byte-reproducibility (AI_GATEWAY §; GOV-141 B2)."
+            if extraction_mechanism == "agent_inline"
+            else f"mechanism={extraction_mechanism}"
+        ),
         "lanes": {
             "lane2_extraction": {
                 "run_id": lane2.get("run_id"),
@@ -231,12 +328,23 @@ def run_volume(
     }
 
 
-def _build_model_client(live: bool) -> Any:
-    if not live:
-        return _NullModelClient()
-    from production_proposer import AnthropicModelClient
+def _build_model_client(
+    *, live: bool, agent_inline_claims: Path | None
+) -> tuple[Any, str]:
+    """Resolve the (model_client, extraction_mechanism) for the run.
 
-    return AnthropicModelClient()  # reads ANTHROPIC_API_KEY from env (never logged)
+    Exactly one non-offline mechanism may be selected. Returns the offline null
+    client when neither ``--live`` nor ``--agent-inline`` is requested.
+    """
+    if live and agent_inline_claims is not None:
+        raise SystemExit("choose at most one of --live (Option A) / --agent-inline (Option B)")
+    if agent_inline_claims is not None:
+        return _AgentInlineModelClient(agent_inline_claims), "agent_inline"
+    if live:
+        from production_proposer import AnthropicModelClient
+
+        return AnthropicModelClient(), "anthropic_sdk"  # reads ANTHROPIC_API_KEY from env
+    return _NullModelClient(), "offline"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -248,8 +356,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--live",
         action="store_true",
-        help="use the real Claude proposer (needs anthropic SDK + ANTHROPIC_API_KEY); "
-        "FIRST live --apply is a CTO-escalation gate",
+        help="Option A: use the real Claude proposer (needs anthropic SDK + "
+        "ANTHROPIC_API_KEY); FIRST live --apply is a CTO-escalation gate",
+    )
+    ap.add_argument(
+        "--agent-inline",
+        metavar="CLAIMS_JSON",
+        default=None,
+        help="Option B (GOV-141): use agent-authored claims from this vault-only "
+        "JSON file as the model seam (claude-opus-4-8). Mutually exclusive with --live.",
     )
     ap.add_argument("--apply", action="store_true", help="commit ledger rows (default: dry-run)")
     ap.add_argument("--log-dir", default=str(_SCRIPTS.parent / "Logs"))
@@ -261,12 +376,18 @@ def main(argv: list[str] | None = None) -> int:
     # connection explicitly and rollback when not applying. The lanes only commit
     # internally when commit=True; a dry-run leaves writes uncommitted and we drop
     # them here.
+    agent_inline_claims = Path(args.agent_inline) if args.agent_inline else None
+    model_client, mechanism = _build_model_client(
+        live=args.live, agent_inline_claims=agent_inline_claims
+    )
+
     conn = open_db(Path(args.db))
     try:
         report = run_volume(
             conn,
-            model_client=_build_model_client(args.live),
+            model_client=model_client,
             source_id=args.source_id,
+            extraction_mechanism=mechanism,
             max_claims_per_source=args.max_claims_per_source,
             reviewer_id=args.reviewer_id,
             commit=args.apply,
@@ -276,7 +397,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    report["mode"] = "live" if args.live else "offline-null-model"
+    report["mode"] = {
+        "anthropic_sdk": "live-anthropic-sdk",
+        "agent_inline": "live-agent-inline",
+        "offline": "offline-null-model",
+    }[mechanism]
     text = json.dumps(report, indent=2, sort_keys=True)
     print(text)
 
