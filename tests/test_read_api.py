@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import ai_risk_gate as gate  # noqa: E402
 import concept_map as cm  # noqa: E402
 import db  # noqa: E402
 import publication as pub  # noqa: E402
@@ -256,6 +257,122 @@ def test_build_response_raises_if_a_field_leaks(conn: sqlite3.Connection) -> Non
     bad = {"records": [{"statement_id": "x", "url": "/Volumes/secret/raw"}]}
     with pytest.raises(read_api.RawPathLeak):
         read_api.assert_no_raw_paths(bad)
+
+
+# --- GOV-146 hardening: file:// vault URI is not a "public URL" exemption -----
+
+
+def test_assert_no_raw_paths_rejects_file_uri_with_marker() -> None:
+    # A file:// URI carrying a vault marker must NOT be exempted as a "URL":
+    # it is a local filesystem locator, so the raw-marker scan still fires.
+    with pytest.raises(read_api.RawPathLeak):
+        read_api.assert_no_raw_paths(
+            {"original_url": "file:///Users/IA/Documents/TOA/TownOfAlpine/x.txt"}
+        )
+
+
+def test_assert_no_raw_paths_still_allows_https() -> None:
+    # The exemption is narrowed to public http(s) only — those still pass.
+    read_api.assert_no_raw_paths({"archive_url": "https://web.archive.org/web/2026/x"})
+
+
+# --- GOV-146 reviewer-internal serve (reviewer-cleared, owner-publish-pending) -
+
+
+def _seed_reviewer_internal(conn: sqlite3.Connection) -> str:
+    """Promote one AI statement under reviewer:isaac, mirroring the real data shape.
+
+    The evidence link carries a ``file://`` vault provenance URI (as the real
+    GOV-126 rows do) so the test proves it is stripped from the served drawer.
+    """
+    statement_id = "stmt-ai-reviewer-internal"
+    st.insert_statement(
+        conn,
+        {
+            "statement_id": statement_id,
+            "agenda_item_id": "alpine:2026-05-08:item-7",
+            "statement_text": "A Town Council special meeting was convened on Oct 9, 2024.",
+            "produced_by": "ai",
+            "layer": "ai_thought_then",
+            # default machine_extracted_unreviewed + not_publishable (pre-review).
+        },
+        [
+            {
+                "to_source_id": "alpine_packet",
+                "relation": "references",
+                # the vault provenance URI that must NOT cross the boundary:
+                "original_url": "file:///Users/IA/Documents/TOA/TownOfAlpine/2024-10-09/x.txt",
+                "archive_status": "not_checked",
+                "scan_date": "2026-06-12",
+                "captured_at_utc": "2026-06-12T03:23:24Z",
+                "locator_kind": "page",
+                "page": 1,
+                "verification_status": "machine_extracted_unreviewed",
+                "confidence": "high",
+            }
+        ],
+    )
+    gate.register_reviewer(
+        conn,
+        "reviewer:isaac",
+        display_name="Isaac",
+        registered_by="owner:isaac",
+        note="GOV-146 reviewer-internal seed test",
+    )
+    gate.promote_statement(
+        conn,
+        statement_id,
+        reviewer_id="reviewer:isaac",
+        decision="approved",
+        reason="reviewer-internal source-grounded civic announcement (GOV-146)",
+        to_verification_status="reviewed_source_linked",
+    )
+    return statement_id
+
+
+def test_reviewer_internal_serves_promoted_row(conn: sqlite3.Connection) -> None:
+    statement_id = _seed_reviewer_internal(conn)
+    served = read_api.reviewer_internal_records(conn)
+    served_ids = {r["statement_id"] for r in served}
+    assert statement_id in served_ids
+    record = next(r for r in served if r["statement_id"] == statement_id)
+    # correct trust label + publication_state travel with the record.
+    assert record["ui_status"] == "source-backed"
+    assert record["verification_status"] == "reviewed_source_linked"
+    assert record["publication_state"] == "not_publishable"
+
+
+def test_reviewer_internal_row_stays_out_of_public_lane(conn: sqlite3.Connection) -> None:
+    statement_id = _seed_reviewer_internal(conn)
+    # The public lane requires the owner publishable flip — never serves it.
+    public_ids = {r["statement_id"] for r in read_api.published_records(conn)}
+    assert statement_id not in public_ids
+
+
+def test_reviewer_internal_unpromoted_not_served(conn: sqlite3.Connection) -> None:
+    # The base fixture's unreviewed / reviewed-not-promoted rows never appear.
+    served_ids = {r["statement_id"] for r in read_api.reviewer_internal_records(conn)}
+    assert "stmt-unreviewed" not in served_ids
+    # stmt-reviewed-not-published is human_verified but has NO promoting decision.
+    assert "stmt-reviewed-not-published" not in served_ids
+
+
+def test_reviewer_internal_drawer_has_no_vault_uri(conn: sqlite3.Connection) -> None:
+    statement_id = _seed_reviewer_internal(conn)
+    body = read_api.build_response(
+        conn, include_records=False, include_reviewer_internal=True
+    )
+    blob = json.dumps(body)
+    # the served body transport-asserts clean AND the file:// vault URI is gone.
+    assert "/Users/" not in blob
+    assert "TownOfAlpine" not in blob
+    assert "file://" not in blob
+    served = body["reviewer_internal_records"]
+    assert any(r["statement_id"] == statement_id for r in served)
+    drawer = next(r for r in served if r["statement_id"] == statement_id)["evidence"]
+    # source identity still travels via to_source_id; the raw URI does not.
+    assert drawer and all("original_url" not in link for link in drawer)
+    assert all(link.get("to_source_id") == "alpine_packet" for link in drawer)
 
 
 # --- agenda thread exposed (members chronological + typed lifecycle) --------
