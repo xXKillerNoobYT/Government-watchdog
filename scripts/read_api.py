@@ -38,6 +38,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import ai_extraction as ai  # noqa: E402
+import ai_risk_gate as gate  # noqa: E402
 import concept_map as cm  # noqa: E402
 import db  # noqa: E402
 import publication as pub  # noqa: E402
@@ -67,7 +69,20 @@ RAW_PATH_MARKERS = (
 )
 
 _URL_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+# A *public* web URL — the only scheme family exempt from the raw-marker scan.
+# Deliberately NOT any ``scheme://``: a ``file://`` URI is a local filesystem
+# locator, not a citable web URL, so it must still be marker-scanned (a
+# ``file:///Users/…TownOfAlpine/…`` provenance URI would otherwise ride across the
+# boundary disguised as a "URL"). GOV-146 hardening of the GOV-34 transport guard.
+_WEB_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _WIN_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+# URL-bearing fields the web-safe allowlist passes through by name. Their value
+# must be a public web URL to cross the boundary; a non-web value (e.g. a
+# ``file://`` vault URI on a locally-ingested source) is reviewer-internal
+# provenance and is dropped at serialization (the source identity still travels
+# via ``to_source_id``). See :func:`_strip_non_web_urls`.
+_PUBLIC_URL_FIELDS = ("url", "original_url", "final_url", "archive_url")
 
 
 class RawPathLeak(ValueError):
@@ -76,6 +91,11 @@ class RawPathLeak(ValueError):
 
 def _looks_like_url(value: str) -> bool:
     return bool(_URL_RE.match(value.strip()))
+
+
+def _is_web_url(value: str) -> bool:
+    """True only for a public ``http(s)://`` URL (the marker-scan exemption)."""
+    return bool(_WEB_URL_RE.match(value.strip()))
 
 
 def _is_filesystem_path(value: str) -> bool:
@@ -111,7 +131,10 @@ def assert_no_raw_paths(body: Any) -> Any:
     for text in _iter_strings(body):
         if _is_filesystem_path(text):
             raise RawPathLeak(f"absolute/filesystem path in response body: {text!r}")
-        if not _looks_like_url(text):
+        # Only a public http(s) URL is exempt from the raw-marker scan. A non-web
+        # scheme (notably file://) is scanned, so a vault URI can't cross disguised
+        # as a URL (GOV-146 hardening).
+        if not _is_web_url(text):
             for marker in RAW_PATH_MARKERS:
                 if marker in text:
                     raise RawPathLeak(
@@ -163,6 +186,28 @@ def _eligible_ui_status(record: dict[str, Any], links: list[dict[str, Any]]) -> 
     )
 
 
+def _strip_non_web_urls(safe: dict[str, Any]) -> dict[str, Any]:
+    """Drop URL-typed fields whose value is not a public ``http(s)://`` URL.
+
+    The web-safe allowlist passes ``original_url`` / ``archive_url`` / ``final_url``
+    through by name, but a locally-ingested source carries a ``file:///…vault…``
+    provenance URI that is reviewer-internal, never a citable web URL. Drop those
+    here so only genuinely public locators cross the boundary; the source identity
+    still travels via ``to_source_id``. The (file://-aware) transport sweep in
+    :func:`assert_no_raw_paths` is the backstop that proves this ran.
+    """
+    for field in _PUBLIC_URL_FIELDS:
+        value = safe.get(field)
+        if isinstance(value, str) and not _is_web_url(value):
+            safe.pop(field)
+    return safe
+
+
+def _web_safe_evidence(link: dict[str, Any]) -> dict[str, Any]:
+    """One evidence-drawer entry: web-safe allowlist + non-web URL strip."""
+    return _strip_non_web_urls(pub.to_web_safe(link))
+
+
 def _serialize_statement(
     conn: sqlite3.Connection, record: dict[str, Any], ui_status: str
 ) -> dict[str, Any]:
@@ -174,8 +219,10 @@ def _serialize_statement(
     """
     flat = dict(record)
     flat["ui_status"] = ui_status
-    safe = pub.to_web_safe(flat)
-    safe["evidence"] = [pub.to_web_safe(link) for link in _evidence_links_for(conn, record["statement_id"])]
+    safe = _strip_non_web_urls(pub.to_web_safe(flat))
+    safe["evidence"] = [
+        _web_safe_evidence(link) for link in _evidence_links_for(conn, record["statement_id"])
+    ]
     return safe
 
 
@@ -194,6 +241,82 @@ def published_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         if ui_status not in pub.PUBLICATION_ELIGIBLE_UI_STATUSES:
             continue
         if record.get("publication_state") != "publishable":
+            continue
+        # No orphan claim served (1.07 §2.3): segment edge OR ≥1 evidence pointer.
+        if not (_segment_resolves(conn, record.get("segment_id")) or links):
+            continue
+        served.append(_serialize_statement(conn, record, ui_status))
+    return served
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-internal serve (GOV-146) — reviewer-cleared, owner-publish-pending.
+# ---------------------------------------------------------------------------
+
+
+def _producing_run_ok(conn: sqlite3.Connection, record: dict[str, Any]) -> bool:
+    """True iff the statement's producing gateway run is healthy (or none exists).
+
+    Fail-closed mirror of the Lane-5 gate (``ai_risk_gate``): a failed/partial
+    producing run blocks the row from the reviewer-internal serve, and a missing
+    run row is treated as a block (never silently served). A row with no AI run
+    (human/automation origin) has nothing to block on.
+    """
+    run_id = record.get("ai_extraction_run_id")
+    if not run_id:
+        return True
+    try:
+        run = ai.get_run(conn, run_id)
+    except ValueError:
+        return False  # run id present but unresolved => fail closed.
+    return run.get("error_status") == "ok"
+
+
+def reviewer_internal_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Web-safe reviewer-internal served statements: reviewer-cleared, NOT published.
+
+    The vault-only reviewer view GOV-146 adds so the reviewer-internal read serve
+    returns a non-empty real reviewed set even though nothing is owner-published.
+    A row is served only when EVERY clause holds (fail-closed, default not served)
+    — the same gate as the public lane minus the owner ``publishable`` flip:
+
+    * ``verification_status`` is a reviewed value (a human moved it off the
+      machine-extracted default);
+    * a *promoting* reviewer decision exists in the Lane-5 audit ledger
+      (:func:`ai_risk_gate.latest_decision` — never trust a bare status column);
+    * no unresolved no-go Lane-4 risk flag remains
+      (:func:`ai_risk_gate.open_risk_flags`);
+    * the producing gateway run (if any) is ``error_status='ok'``;
+    * the re-derived ``ui_status`` is publication-eligible (source-backed); and
+    * the row is **not** orphaned (a segment edge OR ≥1 evidence pointer).
+
+    Crucially it serves ONLY rows whose ``publication_state`` is still
+    ``not_publishable`` — a publishable row belongs to :func:`published_records`,
+    never here — so this view can never become a back-door public surface, and the
+    public lane stays 0 until the separate owner publish gate (1.11 P8) is flipped.
+    Every record is web-safe (``to_web_safe`` + non-web-URL strip); the whole body
+    is transport-swept by :func:`build_response`.
+    """
+    served: list[dict[str, Any]] = []
+    for row in conn.execute("SELECT * FROM statements ORDER BY statement_id"):
+        record = dict(row)
+        statement_id = record["statement_id"]
+        # Reviewer-internal is strictly the not-yet-published set; a publishable row
+        # is the public lane's, never duplicated into the reviewer view.
+        if record.get("publication_state") == "publishable":
+            continue
+        if record.get("verification_status") not in pub.REVIEWED_VERIFICATION_STATUSES:
+            continue
+        decision = gate.latest_decision(conn, statement_id)
+        if not decision or not decision.get("promoted"):
+            continue
+        if gate.open_risk_flags(conn, statement_id):
+            continue
+        if not _producing_run_ok(conn, record):
+            continue
+        links = _evidence_links_for(conn, statement_id)
+        ui_status = _eligible_ui_status(record, links)
+        if ui_status not in pub.PUBLICATION_ELIGIBLE_UI_STATUSES:
             continue
         # No orphan claim served (1.07 §2.3): segment edge OR ≥1 evidence pointer.
         if not (_segment_resolves(conn, record.get("segment_id")) or links):
@@ -414,16 +537,25 @@ def build_response(
     thread_id: str | None = None,
     topic_root: str | None = None,
     include_records: bool = True,
+    include_reviewer_internal: bool = False,
 ) -> dict[str, Any]:
     """Assemble the reviewer-internal read response and transport-assert it.
 
     Every leaf record is already web-safe (projected via ``to_web_safe``); the
     whole assembled body is then swept by :func:`assert_no_raw_paths` before
     return so a leak fails LOUDLY at the boundary, not silently downstream.
+
+    ``records`` carries the owner-published set (:func:`published_records`).
+    ``reviewer_internal_records`` (opt-in via ``include_reviewer_internal``) carries
+    the reviewer-cleared-but-owner-publish-pending set (GOV-146) the frontend
+    renders behind the beta gate — kept under a distinct key so the two states can
+    never be conflated.
     """
     response: dict[str, Any] = {"scope": "alpine", "access": "reviewer_internal"}
     if include_records:
         response["records"] = published_records(conn)
+    if include_reviewer_internal:
+        response["reviewer_internal_records"] = reviewer_internal_records(conn)
     if thread_id is not None:
         response["agenda_thread"] = agenda_thread(conn, thread_id)
     if topic_root is not None:
@@ -437,6 +569,12 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--thread", dest="thread_id", default=None)
     parser.add_argument("--topic-root", dest="topic_root", default=None)
     parser.add_argument("--no-records", dest="include_records", action="store_false")
+    parser.add_argument(
+        "--reviewer-internal",
+        dest="include_reviewer_internal",
+        action="store_true",
+        help="include the reviewer-cleared, owner-publish-pending set (GOV-146)",
+    )
     args = parser.parse_args(argv)
 
     with db.open_db(args.db) as conn:
@@ -445,6 +583,7 @@ def _main(argv: list[str] | None = None) -> int:
             thread_id=args.thread_id,
             topic_root=args.topic_root,
             include_records=args.include_records,
+            include_reviewer_internal=args.include_reviewer_internal,
         )
     print(json.dumps(response, indent=2, sort_keys=True))
     return 0
