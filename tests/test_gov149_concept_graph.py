@@ -49,7 +49,13 @@ def conn(tmp_path: Path):
 
 
 def _promote_ai_statement(conn: sqlite3.Connection, statement_id: str, page: int) -> None:
-    """Insert one AI statement with a file:// vault provenance link and promote it."""
+    """Insert one AI statement with a file:// vault provenance link and promote it.
+
+    Mirrors the REAL GOV-138 reviewer-internal rows: the locator is a
+    ``char_span`` (the GOV-137 untimed-extraction contract), NOT a page — the 28
+    real Alpine transcripts are untimed ASR, so char offsets are the only honest
+    anchor. ``page`` is reused only as a deterministic per-row offset seed.
+    """
     st.insert_statement(
         conn,
         {
@@ -68,8 +74,11 @@ def _promote_ai_statement(conn: sqlite3.Connection, statement_id: str, page: int
                 "archive_status": "not_checked",
                 "scan_date": "2026-06-13",
                 "captured_at_utc": "2026-06-13T00:00:00Z",
-                "locator_kind": "page",
-                "page": page,
+                "locator_kind": "char_span",
+                "char_start": page * 1000,
+                # char_end - char_start must equal len(quoted_text) (GOV-137).
+                "char_end": page * 1000 + len("A grounded civic announcement from the Alpine record."),
+                "quoted_text": "A grounded civic announcement from the Alpine record.",
                 "verification_status": "machine_extracted_unreviewed",
                 "confidence": "high",
             }
@@ -134,7 +143,10 @@ def test_seed_builds_real_topic_tree(conn: sqlite3.Connection) -> None:
         alias = node["sourceAliases"][0]
         assert alias["term"] == topic.alias_term
         assert alias["sourceRef"]["sourceId"] == "alpine_local"
-        assert "locator" in alias["sourceRef"]
+        # the real-data locator is a char span; it must project web-safe.
+        locator = alias["sourceRef"]["locator"]
+        assert "charStart" in locator and "charEnd" in locator
+        assert isinstance(locator["charStart"], int)
 
 
 def test_seed_caps_and_acyclic(conn: sqlite3.Connection) -> None:

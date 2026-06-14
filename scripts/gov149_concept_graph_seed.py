@@ -178,16 +178,20 @@ def _grounding_source_ref(conn: sqlite3.Connection, statement_id: str) -> dict[s
     if isinstance(archive_url, str) and archive_url.lower().startswith(("http://", "https://")):
         ref["archive_url"] = archive_url
 
-    # A usable web-safe locator must exist (timestamp_human / page / section / paragraph).
-    for key in ("timestamp_human", "page", "section", "paragraph"):
+    # A usable web-safe locator must exist. char_start/char_end are the GOV-137
+    # char-span anchor (offsets into the preserved source text) — the honest
+    # locator for the real untimed Alpine prose; timed/page/section/paragraph
+    # remain supported for any future timed source.
+    locator_keys = ("timestamp_human", "page", "section", "paragraph",
+                    "char_start", "char_end")
+    for key in locator_keys:
         value = ev.get(key)
         if value not in (None, ""):
             ref[key] = value
-    if not any(ref.get(k) not in (None, "") for k in
-               ("timestamp_human", "page", "section", "paragraph")):
+    if not any(ref.get(k) not in (None, "") for k in locator_keys):
         raise SeedError(
             f"statement {statement_id!r} evidence link has no web-safe locator "
-            "(timestamp_human/page/section/paragraph); refusing to ground a topic on it"
+            "(timestamp_human/page/section/paragraph/char_span); refusing to ground a topic on it"
         )
     return ref
 

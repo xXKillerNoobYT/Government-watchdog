@@ -479,8 +479,12 @@ def insert_topic(
 
 
 # Pointer keys consumed from a sourceRef dict (the MANDATORY provenance object).
+# char_start/char_end are the GOV-137/0016 char-span anchor (offsets into the
+# preserved source text) — the honest locator for untimed prose (GOV-149).
 _SOURCE_REF_REF_FIELDS = ("original_url", "archive_url", "local_ref")
-_SOURCE_REF_LOCATOR_FIELDS = ("timestamp_human", "page", "section", "paragraph")
+_SOURCE_REF_LOCATOR_FIELDS = (
+    "timestamp_human", "page", "section", "paragraph", "char_start", "char_end",
+)
 
 
 def validate_source_ref(source_ref: dict[str, Any] | None) -> None:
@@ -489,8 +493,9 @@ def validate_source_ref(source_ref: dict[str, Any] | None) -> None:
     Owner rule "an alias may not exist without a source trail". A valid sourceRef
     carries, at minimum: a ``source_id`` (source/doc id), at least one ref
     (``original_url`` / ``archive_url`` / ``local_ref``), and at least one locator
-    (``timestamp_human`` / ``page`` / ``section`` / ``paragraph``). Fail-closed:
-    a missing or incomplete sourceRef is rejected, never silently accepted.
+    (``timestamp_human`` / ``page`` / ``section`` / ``paragraph`` / ``char_start`` /
+    ``char_end``). Fail-closed: a missing or incomplete sourceRef is rejected,
+    never silently accepted.
     """
     if not isinstance(source_ref, dict):
         raise LabelAliasError("alias sourceRef is required (missing provenance object)")
@@ -504,7 +509,7 @@ def validate_source_ref(source_ref: dict[str, Any] | None) -> None:
     if not any(source_ref.get(f) not in (None, "") for f in _SOURCE_REF_LOCATOR_FIELDS):
         raise LabelAliasError(
             "alias sourceRef requires at least one locator "
-            f"{_SOURCE_REF_LOCATOR_FIELDS} (timestamp/page/section/paragraph)"
+            f"{_SOURCE_REF_LOCATOR_FIELDS} (timestamp/page/section/paragraph/char_span)"
         )
 
 
@@ -557,9 +562,10 @@ def insert_label_alias(
         "alias_id, node_id, node_type, term, alias_type, source_ref_source_id, "
         "source_ref_original_url, source_ref_archive_url, source_ref_local_ref, "
         "source_ref_locator_kind, source_ref_timestamp_human, source_ref_page, "
-        "source_ref_section, source_ref_paragraph, first_seen_meeting_id, "
+        "source_ref_section, source_ref_paragraph, source_ref_char_start, "
+        "source_ref_char_end, first_seen_meeting_id, "
         "first_seen_date, created_by, created_utc) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             alias_id, node_id, node_type, term, alias_type,
             source_ref.get("source_id"),
@@ -571,6 +577,8 @@ def insert_label_alias(
             source_ref.get("page"),
             source_ref.get("section"),
             source_ref.get("paragraph"),
+            source_ref.get("char_start"),
+            source_ref.get("char_end"),
             first_seen_meeting_id,
             first_seen_date,
             created_by,
