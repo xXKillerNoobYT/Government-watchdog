@@ -29,6 +29,9 @@ Database/gov138-run-report*.json
 # offsets + served topic_tree over the real Alpine corpus. Reviewer/vault-only,
 # never committed. Only the seed CODE + tests (no real data) are committed.
 Logs/gov149-*.log
+# GOV-162 batch-2 agent-inline claims: real verbatim Alpine quotes, vault-only.
+Docs/gov162-claims-batch2.json
+Logs/gov162-*.log
 Clone/
 .DS_Store
 .ci-venv/
