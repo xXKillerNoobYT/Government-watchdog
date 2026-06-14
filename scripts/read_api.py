@@ -349,6 +349,10 @@ def _safe_alias(row: dict[str, Any]) -> dict[str, Any]:
         ("source_ref_page", "page"),
         ("source_ref_section", "section"),
         ("source_ref_paragraph", "paragraph"),
+        # char-span anchor (GOV-149/0017): integer offsets into the preserved
+        # source text — positionally like `page`, web-safe (no path).
+        ("source_ref_char_start", "charStart"),
+        ("source_ref_char_end", "charEnd"),
     ):
         value = row.get(db_key)
         if value not in (None, ""):
