@@ -25,6 +25,10 @@ Logs/ai-extract-*.log
 Database/gov138_agent_inline_claims*.json
 Logs/gov138-*.log
 Database/gov138-run-report*.json
+# GOV-149 reviewer-internal concept-graph seed run logs: replay real char-span
+# offsets + served topic_tree over the real Alpine corpus. Reviewer/vault-only,
+# never committed. Only the seed CODE + tests (no real data) are committed.
+Logs/gov149-*.log
 Clone/
 .DS_Store
 .ci-venv/
