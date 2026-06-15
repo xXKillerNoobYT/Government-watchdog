@@ -35,6 +35,10 @@ Logs/gov162-*.log
 # GOV-161 P&Z Board body→topic seed run logs: replay real topic_tree + grounding
 # over the real Alpine corpus. Reviewer/vault-only, never committed.
 Logs/gov161-*.log
+# GOV-192 batch-3 agent-inline claims + promotion run logs: real verbatim Alpine
+# quotes and char-span offsets. Reviewer/vault-only, never committed.
+Database/gov192_batch3_claims.json
+Logs/gov192-*.log
 Clone/
 .DS_Store
 .ci-venv/
