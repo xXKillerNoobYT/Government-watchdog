@@ -43,6 +43,10 @@ Logs/gov192-*.log
 # quotes and char-span offsets. Reviewer/vault-only, never committed.
 Database/gov195_batch4_claims.json
 Logs/gov195-*.log
+# GOV-200 batch-5 agent-inline claims + promotion run logs: real verbatim Alpine
+# quotes and char-span offsets. Reviewer/vault-only, never committed.
+Database/gov200_batch5_claims.json
+Logs/gov200-*.log
 Clone/
 .DS_Store
 .ci-venv/
