@@ -32,6 +32,9 @@ Logs/gov149-*.log
 # GOV-162 batch-2 agent-inline claims: real verbatim Alpine quotes, vault-only.
 Docs/gov162-claims-batch2.json
 Logs/gov162-*.log
+# GOV-161 P&Z Board body→topic seed run logs: replay real topic_tree + grounding
+# over the real Alpine corpus. Reviewer/vault-only, never committed.
+Logs/gov161-*.log
 Clone/
 .DS_Store
 .ci-venv/
