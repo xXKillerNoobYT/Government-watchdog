@@ -47,6 +47,13 @@ Logs/gov195-*.log
 # quotes and char-span offsets. Reviewer/vault-only, never committed.
 Database/gov200_batch5_claims.json
 Logs/gov200-*.log
+# Post-merge cleanup run logs — operational, local-only (data-publication boundary).
+Logs/post-merge-cleanup-*.log
+# Prior cleanup tool logs — also operational, local-only.
+Logs/cleanup-*.log
+# GOV-215 evidence captures (post-merge cleanup wiring) — operational, local-only.
+Logs/gov215-evidence/
+Logs/post-merge-cleanup-*.json
 Clone/
 .DS_Store
 .ci-venv/

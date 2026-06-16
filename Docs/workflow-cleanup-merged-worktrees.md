@@ -13,8 +13,70 @@ Find per-issue git worktrees and merged local branches that are safe to remove a
 
 ## Trigger
 
-- On-demand: `python3 scripts/cleanup_merged_worktrees.py`
-- Future: can be wired into daily cleanup schedule or post-merge hooks (GOV-211 Child B, CTO-owned)
+The cleanup script is invoked from three integration points. All three call
+the same script with the same default (`--dry-run`), so the safety quad-gate
+in `cleanup_merged_worktrees.py` is enforced uniformly. There is no
+duplicate cleanup logic in any trigger.
+
+### Trigger A — Event-driven: GitHub Actions post-merge hook (DRY-RUN ONLY)
+
+Defined per-repo in `.github/workflows/post-merge-cleanup.yml`:
+
+| Repo | Workflow path | Runner labels |
+|---|---|---|
+| Backend (`xXKillerNoobYT/Government-watchdog`) | `.github/workflows/post-merge-cleanup.yml` | `self-hosted, macOS, ARM64, government-watchdog, gov-backend` |
+| Website (`xXKillerNoobYT/Government-watchdog-website`) | `.github/workflows/post-merge-cleanup.yml` | `self-hosted, macOS, ARM64, government-watchdog, gov-website` |
+
+- **Fires on:** `push` to `main` (which is the moment a PR merges on GitHub) plus `workflow_dispatch`.
+- **Runs:** `python3 scripts/cleanup_merged_worktrees.py --api-url http://127.0.0.1:3100 --json` (Backend); Website invokes the same script at its absolute Backend path because both checkouts live on the same self-hosted Mac runner host.
+- **Mode:** dry-run only. CI MUST NOT pass `--apply`. The per-job artifact (`Logs/post-merge-cleanup-<ts>.json`) is uploaded for review.
+- **Cross-repo coverage:** the script's `KNOWN_REPO_ROOTS` sweeps both repos in a single invocation, so either repo's merge event fully covers both checkouts. Duplicate runs from near-simultaneous merges are serialised via the `concurrency: post-merge-cleanup` group.
+- **Why dry-run only:** per `CTO_WORKFLOWS.md` hard stop, no `--apply` from automation without a CEO-approved plan.
+
+### Trigger B — Cadence-driven: Paperclip daily routine (GATED APPLY LANE)
+
+Owned by the existing Paperclip routine `804d7f7c-89c4-47a1-9146-32245c31ae6a`
+(*Daily GOV local data cleanup review*), assignee
+**AutomationOpsEngineer** (`b9611d2e-d5d0-438e-9081-99f94cd65f06`).
+
+The routine description is extended to add a **post-merge cleanup lane**
+after the existing junk-cleanup steps:
+
+1. Dry-run: `python3 /Users/IA/Code/Government-watchdog/scripts/cleanup_merged_worktrees.py --json`
+2. Review preserved candidates and any failed removals.
+3. If review confirms safety, run `--apply` once per day; otherwise leave preserved candidates as review-only.
+4. Comment the day's outcome on the routine's execution issue.
+
+- **Fires on:** daily routine cadence.
+- **Mode:** dry-run → human review → optional `--apply` by the assignee.
+- **Why this is the apply lane:** the assignee already reviews the daily junk-cleanup output before applying. Reusing that reviewer-gated lane keeps `--apply` inside a CEO-approved, AutomationOps-owned process and out of CI.
+
+### Trigger C — Coding-process awareness: post-`done` agent expectation
+
+When a coder agent moves an issue to `done` after a merged PR, no manual
+cleanup step is required. The combination of Trigger A (immediate dry-run
+visibility on the post-merge push) and Trigger B (daily reviewer-gated
+apply) covers the cleanup automatically. Agents must NOT call the cleanup
+script themselves during normal issue close-out — that would bypass the
+reviewer gate and the concurrency group.
+
+### Which fires when
+
+| Event | A (CI dry-run) | B (daily apply lane) | C (agent close-out) |
+|---|---|---|---|
+| Agent closes issue without a merged PR | n/a | preserves (gate 2 fails) | no script call |
+| PR merges to `main` | fires immediately, dry-run only | swept on next daily run | no script call |
+| Manual local merge (no PR) | does not fire | swept on next daily run | no script call |
+| Orphan branch (no Paperclip issue) | dry-run flags review-only | preserved (gate 1 fails), threshold may create issue | no script call |
+| Worktree lock / dirty / unsafe path | preserved at any trigger (gate 3 or 4) | preserved at any trigger | no script call |
+
+### Safety quad-gate enforcement at integration
+
+Every trigger calls the same script binary. The script is the sole owner of
+gate evaluation (Issue done, Branch merged, Worktree clean, Safe path). No
+trigger may pre-filter, bypass, or rewrite the gates. CI cannot pass
+`--apply`. Trigger B's `--apply` invocation is the only place removals
+occur, and only after AutomationOpsEngineer review.
 
 ## Input contract
 
@@ -67,6 +129,16 @@ All four gates must pass for any candidate to be eligible for removal:
 | Branch delete fails (`-d` safety) | `git branch -d` refuses unmerged branches as a second safety layer. Logged. No retry — investigate manually. |
 | Missing repo root | Logged as warning, skipped. Coverage-reduced alert in output. |
 
+### Failure handling at integration points
+
+| Failure | Trigger A (CI) | Trigger B (daily routine) |
+|---|---|---|
+| Paperclip API unreachable from runner host | Job still succeeds (gate 1 preserves all); artifact records zero candidates eligible for removal | Routine continues; assignee notes degraded run and does not run `--apply` |
+| Cleanup script exits non-zero | CI job fails LOUDLY; artifact still uploaded if produced; CTO is notified via the standard CI-failure path | Routine outputs the error; assignee files a `routine-execution` issue if the failure repeats |
+| GitHub Actions runner offline | Workflow queues until runner returns; cadence trigger (B) still covers the gap on the next daily run | Routine fires regardless of CI availability |
+| Concurrency collision (two near-simultaneous merges) | Serialised by the `post-merge-cleanup` concurrency group — second run waits, then re-evaluates with fresh state | Daily routine runs at a fixed time; no collision |
+| `--apply` accidentally added to CI | Workflow is reviewed at PR time; reviewer must block any change that introduces `--apply` to `.github/workflows/post-merge-cleanup.yml` | n/a |
+
 ## Issue-creation threshold
 
 Create a Paperclip issue when:
@@ -77,12 +149,20 @@ Create a Paperclip issue when:
 ## Review cadence
 
 - After each on-demand run: operator reviews stdout/log
+- **After each Trigger A run (per merge):** AutomationOpsEngineer skims the GitHub Actions step summary; if `failed_count > 0` or `would_remove_branches > 0`, they note it for the next daily routine review. CI-only inspection of the artifact does not authorise `--apply`.
+- **Daily (Trigger B):** AutomationOpsEngineer reviews dry-run output before optional `--apply`. Comments outcome on the routine's execution issue.
 - Weekly during active development: check `Logs/cleanup-merged-worktrees.log` for accumulating preserved candidates
-- Before wiring into automated schedule: CTO reviews dry-run output
+- **First `--apply` run (one-time gate):** CTO reviews dry-run output and confirms before AutomationOpsEngineer first issues `--apply` in the daily routine. After that one-time gate, daily reviewer-gated `--apply` is the steady-state.
 
 ## Named owner
 
-AutomationOpsEngineer (GOV-213). CTO coordinates trigger integration (GOV-211 Child B).
+| Role | Owner | Scope |
+|---|---|---|
+| Script + tests + tool maintenance | AutomationOpsEngineer (`b9611d2e-d5d0-438e-9081-99f94cd65f06`) | `scripts/cleanup_merged_worktrees.py`, `tests/test_cleanup_merged_worktrees.py`, this workflow doc |
+| Daily routine (Trigger B, the apply lane) | AutomationOpsEngineer via Paperclip routine `804d7f7c-89c4-47a1-9146-32245c31ae6a` | Daily dry-run review → reviewer-gated `--apply` |
+| CI workflows (Trigger A, dry-run only) | CTO (`24fddc65-edca-462b-8647-61b596c8a46f`) | `.github/workflows/post-merge-cleanup.yml` in both Backend and Website repos |
+| First `--apply` one-time gate | CTO | One-time review before AutomationOpsEngineer first issues `--apply` |
+| Owner-level scope/policy changes | CEO (`e618342a-fd40-46f9-918a-b562e8948b87`) | Anything that loosens the quad-gate or enables automated `--apply` outside Trigger B |
 
 ## Verification command + evidence path
 
