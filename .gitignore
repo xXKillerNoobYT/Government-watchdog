@@ -51,6 +51,9 @@ Logs/gov200-*.log
 Logs/post-merge-cleanup-*.log
 # Prior cleanup tool logs — also operational, local-only.
 Logs/cleanup-*.log
+# GOV-215 evidence captures (post-merge cleanup wiring) — operational, local-only.
+Logs/gov215-evidence/
+Logs/post-merge-cleanup-*.json
 Clone/
 .DS_Store
 .ci-venv/
