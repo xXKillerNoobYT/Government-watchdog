@@ -60,8 +60,14 @@ Future backend/tooling issues may consume only source records that satisfy the S
 - retained Lincoln County material is explicitly Alpine-relevant
 - source class is approved for the stage
 - source record includes original URL, current URL, scan date, source type/class, jurisdiction, authority level, verification status, correction status, archive status, and owner role
+- source record includes explicit accountability fields: `owner_agent` and `reviewer_agent`
+- source record includes gate-state fields for verification, correction, review, publication eligibility, and UI readiness; missing or ambiguous state is not passable by default
+- source record includes lifecycle/replacement fields: `lifecycle_state`, `replaces_source_id`, and `replacement_reason` when a source changed, disappeared, moved, or superseded another source
+- source record includes archive/Wayback status and link or a reviewer-visible reason why archive evidence is unavailable
+- source record includes fail-closed `public_safety_status`; missing public-safety status means local/private only until reviewed
 - seed-only sources are labeled with `raw_preservation_status: seed_only_pending_crawl_preservation`
 - fetched raw or semi-raw artifacts include local path and SHA-256 when available
+- raw preservation, hash, and local-note fields remain private/local unless a reviewer approves a sanitized evidence reference
 
 Future scripts must reject or quarantine:
 
@@ -70,6 +76,18 @@ Future scripts must reject or quarantine:
 - unsupported accusation/legal/campaign content
 - sources with no provenance trail
 - sources that try to become public-facing evidence without review
+
+The repaired Stage 0.03 contract from GOV-242 added adversarial registry gates that Stage 0.05 tooling must inherit. Future tooling must fail closed, quarantine, or route for SourceArchivist/Security/Verification review when it encounters:
+
+- missing pages or disappeared sources
+- changed pages whose old/new facts, timestamps, hashes, or archive references cannot be separated
+- duplicate sources whose canonical source and duplicate disposition are ambiguous
+- ambiguous names, titles, bodies, jurisdictions, authorities, or Alpine relevance
+- broken archive or Wayback lookups when archive evidence is required for the source class
+- private data, identity/address/voter/credential material, or sensitive local notes
+- unsupported claims, accusation-risk summaries, legal conclusions, or campaign/political content
+- stale outputs that could be mistaken for current civic evidence
+- secrets or raw/local paths appearing in logs, manifests, fixtures, or generated evidence bundles
 
 ## GitHub-Safe And Local-Only Outputs
 
@@ -151,6 +169,16 @@ Crawler or automation runs must write a manifest or equivalent run summary with:
 - `archive_checked_count`
 - `archive_available_count`
 - `validation_passed`
+- `owner_agent`
+- `reviewer_agent`
+- `public_safety_status`
+- `review_status`
+- `publication_eligibility`
+- `ui_readiness_status`
+- `lifecycle_state`
+- `replacement_source_count` or equivalent replacement/rebaseline summary
+- `quarantine_count`
+- `adversarial_case_count` grouped by missing, changed, duplicate, ambiguous, archive, private-data, unsupported-claim, stale-output, and secrets/log-exposure classes
 - `next_owner_action`
 
 The manifest must not include secrets or raw private data.
@@ -188,6 +216,11 @@ Future implementation issues must treat these as failures unless the issue expli
 - script output would be published publicly by default
 - source data leaks into GitHub-safe fixture paths
 - credentials, private identity data, or unsupported accusations appear in output
+- `owner_agent`, `reviewer_agent`, review/publication/UI state, lifecycle/replacement fields, archive/Wayback state, or `public_safety_status` is missing when a source record is used for downstream tooling
+- duplicate or ambiguous sources are silently merged without canonical-source/replacement evidence
+- changed, missing, or disappeared pages are treated as current without old/new separation and reviewer-visible archive evidence
+- stale outputs are presented as current civic evidence
+- secrets, raw local paths, or sensitive local notes appear in logs, manifests, fixtures, Paperclip comments, or generated evidence bundles
 
 Warnings may include:
 
@@ -280,6 +313,10 @@ Website-facing contracts must preserve:
 - archive status/link when available
 - verification status
 - correction status
+- owner/reviewer accountability state
+- review/publication/UI readiness state
+- lifecycle/replacement state when a source moved, changed, disappeared, or superseded another source
+- public-safety status that defaults to private/local when absent or unresolved
 - known-then versus corrected-later separation
 - AI/unverified/disputed labels
 
@@ -359,7 +396,8 @@ Smallest useful verification for this contract:
 
 ```bash
 wc -l Docs/stage0-backend-tooling-implementation-contract.md
-python -m pytest tests/test_source_inventory.py tests/test_crawl_summary.py tests/test_validate_sources.py tests/test_data_boundary_check.py -q
+python -m pytest tests/test_source_inventory.py tests/test_publication.py -q
+python -m pytest -q
 ```
 
-The pytest command checks the current deterministic surfaces that this contract references. It does not prove future implementation is complete.
+The focused pytest command checks the repaired Stage 0.03 registry/publication gates. The full-suite command checks all deterministic surfaces available in the checked-out repo, including any Stage 0.05-adjacent tests present in that workspace. These commands do not prove future implementation is complete.
