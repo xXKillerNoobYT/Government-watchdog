@@ -365,6 +365,12 @@ WEB_UNSAFE_FIELDS = frozenset({
     # reviewer-internal provenance only. read_api builds the web-safe sourceRef
     # from the public source id + original/archive URL + locator and omits this.
     "source_ref_local_ref",
+    # GOV-275 (Stage 2.05): the transcript-row `transcript_class` is a
+    # reviewer-internal confidence/provenance property (GOV-230 rule). It is NOT a
+    # card label and never determines publication state, so it must never cross to
+    # a web-safe surface. Named here explicitly in addition to being absent from
+    # the allowlist (defense-in-depth over the fail-closed default).
+    "transcript_class",
 })
 
 
