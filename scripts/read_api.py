@@ -43,6 +43,7 @@ import ai_risk_gate as gate  # noqa: E402
 import concept_map as cm  # noqa: E402
 import db  # noqa: E402
 import publication as pub  # noqa: E402
+import transcript_class as tc  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Transport-level raw/absolute-path guard (GOV-34). Independent of to_web_safe.
@@ -186,6 +187,62 @@ def _eligible_ui_status(record: dict[str, Any], links: list[dict[str, Any]]) -> 
     )
 
 
+# ---------------------------------------------------------------------------
+# Derived confidence label (GOV-283, Stage 2.07) — read-time, fail-closed.
+# ---------------------------------------------------------------------------
+
+# The most conservative (lowest-confidence) label, derived from the SSOT
+# fail-closed default class. Any break in the source-class resolution chain
+# collapses to this value — a statement is NEVER projected at a higher
+# confidence label than its resolvable source class permits (GOV-230 §default).
+_CONSERVATIVE_CONFIDENCE_LABEL = tc.CONFIDENCE_LABEL_BY_CLASS[tc.DEFAULT_TRANSCRIPT_CLASS]
+
+
+def _confidence_label_for(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
+    """Read-time, fail-closed confidence label derived from the source class.
+
+    Activates the dormant :data:`transcript_class.CONFIDENCE_LABEL_BY_CLASS` SSOT
+    (GOV-283): resolves a served statement's source transcript class via the
+    documented join ``statement -> segment_id -> transcript_segments.transcript_id
+    -> transcripts.transcript_class`` and maps it through the SSOT.
+
+    Fail-closed (mirrors :func:`speakers.safe_speaker_label` / the GOV-275
+    default): every break in the chain yields :data:`_CONSERVATIVE_CONFIDENCE_LABEL`
+    (the ``auto_caption_untimed`` mapping, lowest confidence) —
+    no ``segment_id``; a ``segment_id`` that resolves to no segment row; a segment
+    with no parent transcript; a NULL/absent ``transcript_class``; or a class with
+    no SSOT label (``no_transcript``). A statement that is anchored only via a
+    non-transcript ``evidence_link`` (e.g. a PDF) has no resolvable transcript
+    class and so stays conservative — never upgraded. Pure function of stored
+    fields: same DB -> byte-identical label. No mutation, no AI, no network.
+
+    The derived label is reviewer-internal-safe (an enum string, no raw locator)
+    and is attached as an API-envelope key AFTER ``to_web_safe`` — the raw
+    ``transcript_class`` itself never crosses the web-safe boundary (it is absent
+    from ``WEB_SAFE_FIELD_ALLOWLIST`` and named in ``WEB_UNSAFE_FIELDS``).
+    """
+    segment_id = record.get("segment_id")
+    if not segment_id:
+        return _CONSERVATIVE_CONFIDENCE_LABEL
+    row = conn.execute(
+        "SELECT t.transcript_class AS transcript_class "
+        "FROM transcript_segments ts "
+        "JOIN transcripts t ON t.id = ts.transcript_id "
+        "WHERE ts.segment_id = ?",
+        (segment_id,),
+    ).fetchone()
+    if row is None:
+        return _CONSERVATIVE_CONFIDENCE_LABEL
+    transcript_class = row["transcript_class"]
+    if transcript_class is None:
+        return _CONSERVATIVE_CONFIDENCE_LABEL
+    # `.get(..., conservative)` makes an off-map class (e.g. `no_transcript`, which
+    # produces no statement and so has no label) fail closed rather than KeyError.
+    return tc.CONFIDENCE_LABEL_BY_CLASS.get(
+        transcript_class, _CONSERVATIVE_CONFIDENCE_LABEL
+    )
+
+
 def _strip_non_web_urls(safe: dict[str, Any]) -> dict[str, Any]:
     """Drop URL-typed fields whose value is not a public ``http(s)://`` URL.
 
@@ -216,6 +273,9 @@ def _serialize_statement(
     The flat record fields go through ``to_web_safe``; the ``evidence`` list is an
     API-envelope key holding already-web-safe drawer entries. ``ui_status`` is the
     re-derived eligible value (the label the frontend consumes verbatim).
+    ``confidence_label`` (GOV-283) is the fail-closed, read-time label derived from
+    the source transcript class — attached as an envelope key (not via the
+    allowlist) so the raw ``transcript_class`` never crosses the boundary.
     """
     flat = dict(record)
     flat["ui_status"] = ui_status
@@ -223,6 +283,7 @@ def _serialize_statement(
     safe["evidence"] = [
         _web_safe_evidence(link) for link in _evidence_links_for(conn, record["statement_id"])
     ]
+    safe["confidence_label"] = _confidence_label_for(conn, record)
     return safe
 
 
