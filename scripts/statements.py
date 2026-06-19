@@ -109,12 +109,49 @@ class OrphanClaimError(ValueError):
     """A statement has neither a segment edge nor a complete source pointer (§2.3)."""
 
 
+class AiProvenanceError(ValueError):
+    """An AI-produced row lacks a valid, ``ok`` gateway-run binding.
+
+    Stage 2.05 AI-provenance rule (GOV-233 §2.05, inheriting GOV-230; implemented
+    in GOV-278 as the successor half of the slice). A statement written with
+    ``produced_by='ai'`` MUST name a non-NULL ``ai_extraction_runs.run_id`` that
+    resolves to a real ledger row whose ``error_status='ok'``. This is enforced at
+    write time and is fail-closed: an AI row that cannot prove its provenance is
+    rejected (raised) before anything is written, never silently persisted.
+    """
+
+
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _is_missing(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def resolve_ok_run(conn: sqlite3.Connection, run_id: Any) -> bool:
+    """True iff ``run_id`` names an ``ai_extraction_runs`` row with ``error_status='ok'``.
+
+    The cross-table half of the Stage 2.05 AI-provenance binding (GOV-278). A
+    single-row SQL CHECK cannot reach into ``ai_extraction_runs.error_status``, so
+    the rule lives in the write path — exactly like the "no orphan claims"
+    disjunction in :func:`is_orphan`. Fail-closed: a missing run id, an
+    unresolvable run id, or a ledger table that does not exist yet (a pre-0009 DB)
+    all return ``False`` so the AI write is rejected rather than guessed.
+
+    Indexed column access (``row[0]``) keeps this agnostic to ``conn.row_factory``.
+    """
+    if _is_missing(run_id):
+        return False
+    try:
+        row = conn.execute(
+            "SELECT error_status FROM ai_extraction_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # ai_extraction_runs absent (pre-0009 schema): cannot prove provenance.
+        return False
+    return row is not None and row[0] == "ok"
 
 
 def validate_pointer(pointer: dict[str, Any], *, conn: sqlite3.Connection | None = None) -> None:
@@ -269,6 +306,18 @@ def insert_statement(
             f"produced_by {produced_by!r} not in {sorted(ALLOWED_STATEMENT_PRODUCED_BY)}"
         )
 
+    # Stage 2.05 AI-provenance binding (GOV-233 §2.05 / GOV-278): an AI-produced
+    # row MUST name a non-NULL ai_extraction_runs.run_id that resolves to an `ok`
+    # ledger row. Enforced here, before any write — fail-closed.
+    run_id = statement.get("ai_extraction_run_id")
+    if produced_by == "ai" and not resolve_ok_run(conn, run_id):
+        raise AiProvenanceError(
+            f"statement {statement_id!r} is produced_by='ai' but its "
+            f"ai_extraction_run_id={run_id!r} does not resolve to an "
+            f"ai_extraction_runs row with error_status='ok' — AI-provenance "
+            f"binding rejected at write time (GOV-233 §2.05; GOV-278)"
+        )
+
     verification_status = statement.get("verification_status", "machine_extracted_unreviewed")
     if verification_status not in pub.ALLOWED_VERIFICATION_STATUSES:
         raise ValueError(
@@ -317,11 +366,9 @@ def insert_statement(
         }
     )
 
-    # Per-record gateway-run provenance (0009): an AI-produced row names the run
-    # that produced it; every evidence_link inherits the same run id unless it
-    # carries its own. NULL for automation/human rows.
-    run_id = statement.get("ai_extraction_run_id")
-
+    # Per-record gateway-run provenance (0009): ``run_id`` (resolved + validated
+    # above for AI rows) is written onto the statement and inherited by every
+    # evidence_link unless the link carries its own. NULL for automation/human.
     now = _now_utc_iso()
     conn.execute(
         "INSERT INTO statements ("

@@ -34,6 +34,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import ai_extraction as ai  # noqa: E402
 import db  # noqa: E402
 import publication as pub  # noqa: E402
 import segment_transcript as seg  # noqa: E402
@@ -349,6 +350,8 @@ def test_ai_produced_by_accepted_when_anchored(tmp_path: Path) -> None:
     with db.open_db(_migrated(tmp_path)) as conn:
         _seed_source(conn)
         seg_id = _seed_segment(conn)
+        # GOV-278: an AI row must name an `ok` gateway run (write-time binding).
+        ai.create_run(conn, run_id="alpine:ai:run", input_source_ids=[SOURCE_ID])
         result = stmt.insert_statement(
             conn,
             {"statement_id": "alpine:2026-05-08:ai",
@@ -356,7 +359,8 @@ def test_ai_produced_by_accepted_when_anchored(tmp_path: Path) -> None:
              "statement_text": "AI paraphrase anchored to a real segment.",
              "is_verbatim": 0,
              "layer": "ai_thought_then",
-             "produced_by": "ai"},
+             "produced_by": "ai",
+             "ai_extraction_run_id": "alpine:ai:run"},
         )
         row = conn.execute(
             "SELECT produced_by, verification_status, publication_state "

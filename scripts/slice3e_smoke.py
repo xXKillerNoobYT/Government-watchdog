@@ -612,12 +612,15 @@ def run_smoke(fixture: Path = DEFAULT_FIXTURE, sandbox: Path | None = None,
                 model_name="offline-deterministic", model_version="smoke",
             )
 
-            # A failed Lane-2 run + a row naming it as producer (downstream-block).
-            def _boom(c, s, sg):
-                raise RuntimeError("offline provider unavailable (smoke)")
-            ai.run_extraction(
+            # A row whose producing Lane-2 run finalizes FAILED (downstream-block).
+            # GOV-278: the AI-provenance write-time gate requires an *ok* run at
+            # write, so the row is written while the run is still open/ok and the
+            # run is THEN finalized failed — the realistic ordering (a run emits a
+            # row, then fails) and the only one compatible with the fail-closed
+            # binding. Downstream still sees error_status='failed'.
+            ai.create_run(
                 conn, run_id=_LANE2_FAIL_RUN, input_source_ids=[_VIDEO_SOURCE_ID],
-                input_segment_ids=anchored_seg_ids, proposer=_boom,
+                input_segment_ids=anchored_seg_ids,
                 tool_version="gov-lane2-3e-smoke@local",
             )
             fin = _segment_for(segments, _FINANCING_SEGMENT_INDEX)
@@ -630,6 +633,12 @@ def run_smoke(fixture: Path = DEFAULT_FIXTURE, sandbox: Path | None = None,
                     "ai_extraction_run_id": _LANE2_FAIL_RUN,
                 },
                 [_pointer(fin, video_url)],
+            )
+            ai.finalize_run(
+                conn, _LANE2_FAIL_RUN, output_statement_ids=[],
+                output_evidence_link_ids=[], orphan_rejected_count=0,
+                error_status="failed",
+                error_detail="offline provider unavailable (smoke)",
             )
 
             digest_after_lane2 = _statements_digest(conn)

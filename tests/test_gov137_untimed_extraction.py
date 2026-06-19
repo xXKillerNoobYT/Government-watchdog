@@ -176,6 +176,8 @@ def test_char_span_statement_is_not_orphan(tmp_path: Path) -> None:
     # A statement with NO segment but a valid char-span pointer is grounded.
     with db.open_db(_migrated(tmp_path)) as conn:
         _seed_source(conn)
+        # GOV-278: an AI row must name an `ok` gateway run (write-time binding).
+        ai.create_run(conn, run_id="alpine:ai:cs-run", input_source_ids=[])
         quote = "reserve fund"
         start = UNTIMED_PROSE.find(quote)
         result = stmt.insert_statement(
@@ -185,6 +187,7 @@ def test_char_span_statement_is_not_orphan(tmp_path: Path) -> None:
                 "statement_text": "Staff noted the reserve fund issue.",
                 "is_verbatim": 0,
                 "produced_by": "ai",
+                "ai_extraction_run_id": "alpine:ai:cs-run",
             },
             [_char_span_pointer(quote, start)],
         )

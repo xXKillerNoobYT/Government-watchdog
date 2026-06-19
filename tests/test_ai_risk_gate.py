@@ -425,14 +425,15 @@ def test_failed_gateway_run_blocks_promotion(tmp_path: Path) -> None:
             conn, "reviewer:isaac",
             display_name="Isaac (test reviewer)", registered_by="test:setup",
         )
-        # A Lane-2 run that fails (proposer raises) -> error_status='failed'.
-        def _boom(conn, s, g):
-            raise RuntimeError("provider exploded")
-        ai.run_extraction(
+        # Land an AI row, then finalize its producing run FAILED. GOV-278: the
+        # write-time AI-provenance gate requires an `ok` run at write, so the row
+        # is written while the run is open/ok and the run is THEN finalized failed
+        # (the realistic ordering — a run emits a row, then fails). gate 3 still
+        # sees error_status='failed' and blocks promotion.
+        ai.create_run(
             conn, run_id="r-fail", input_source_ids=[SOURCE_ID],
-            input_segment_ids=[SEG_FINANCING], proposer=_boom,
+            input_segment_ids=[SEG_FINANCING],
         )
-        # Manually land an AI row that names the failed run as its producer.
         stmt.insert_statement(
             conn,
             {
@@ -445,6 +446,11 @@ def test_failed_gateway_run_blocks_promotion(tmp_path: Path) -> None:
                 "ai_extraction_run_id": "r-fail",
             },
             [_pointer(93, "00:01:33")],
+        )
+        ai.finalize_run(
+            conn, "r-fail", output_statement_ids=[], output_evidence_link_ids=[],
+            orphan_rejected_count=0, error_status="failed",
+            error_detail="provider exploded",
         )
         with pytest.raises(rg.ReviewerGateError):
             rg.promote_statement(
