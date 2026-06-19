@@ -43,6 +43,7 @@ import ai_risk_gate as gate  # noqa: E402
 import concept_map as cm  # noqa: E402
 import db  # noqa: E402
 import publication as pub  # noqa: E402
+import speakers as sp  # noqa: E402
 import transcript_class as tc  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -243,6 +244,77 @@ def _confidence_label_for(conn: sqlite3.Connection, record: dict[str, Any]) -> s
     )
 
 
+# ---------------------------------------------------------------------------
+# Derived safe speaker label (GOV-290, Stage 2.07) — read-time, fail-closed.
+# ---------------------------------------------------------------------------
+
+# The most conservative, provably name-free speaker label. Every break in the
+# attribution-resolution chain — and every non-safely-named row — collapses to
+# this SSOT value (imported, never re-declared). A statement is NEVER projected
+# with a name unless its attribution row clears the exact write-time naming gate.
+_SAFE_SPEAKER_LABEL = sp.SAFE_GENERIC_LABEL
+
+
+def _speaker_label_for(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
+    """Read-time, fail-closed SAFE speaker label for a served statement (GOV-290).
+
+    Joins ``statements.speaker_attribution_id -> speaker_attributions`` and derives
+    a renderable label that is **provably name-free unless the row is safely
+    named** — exactly mirroring the write-time gate in
+    :func:`speakers.safe_speaker_label`: a name may surface ONLY when
+    ``attribution_state == 'attributed'`` AND ``speaker_class`` is in
+    :data:`speakers.AUTO_NAMEABLE_CLASSES`. In that one gate the write invariant
+    guarantees the persisted ``display_label`` is the safe ``"Name, Role"`` string,
+    so it is surfaced verbatim (re-deriving the name would require the ``persons``
+    join, which is the named successor — out of scope here).
+
+    **Re-guarded — never trusts storage to fail open.** For ANY other row
+    (``uncertain`` / ``unattributed`` / ``private-context`` / a non-nameable
+    ``speaker_class``) the stored ``display_label`` is **never consulted** — it
+    could hold a name poisoned in past the write guard — and the label is derived
+    purely from ``speaker_class``: :data:`speakers.SAFE_COMMUNITY_LABEL` for an
+    ``on-record-public`` speaker, else :data:`speakers.SAFE_GENERIC_LABEL`. A
+    poisoned name on a non-attributed row therefore cannot reach the envelope.
+
+    **Fail-closed:** no ``speaker_attribution_id``; an id resolving to no row; or a
+    NULL/empty ``display_label`` even inside the naming gate → the conservative
+    :data:`_SAFE_SPEAKER_LABEL`. Never ``None``, never a candidate name.
+
+    Pure function of stored fields: same DB -> byte-identical label. No mutation,
+    no AI, no network. Attached as an API-envelope key AFTER ``to_web_safe`` — the
+    raw attribution columns (``display_label`` / ``speaker_attribution_id`` /
+    ``person_id`` / ``candidate_person_id`` / ``attribution_state`` /
+    ``speaker_class``) never cross the web-safe boundary.
+    """
+    attribution_id = record.get("speaker_attribution_id")
+    if not attribution_id:
+        return _SAFE_SPEAKER_LABEL
+    row = conn.execute(
+        "SELECT attribution_state, speaker_class, display_label "
+        "FROM speaker_attributions WHERE speaker_attribution_id = ?",
+        (attribution_id,),
+    ).fetchone()
+    if row is None:
+        return _SAFE_SPEAKER_LABEL
+
+    state = row["attribution_state"]
+    speaker_class = row["speaker_class"]
+
+    # Proven-safe naming gate (identical to speakers.safe_speaker_label): only here
+    # may the persisted, write-time-computed safe label ("Name, Role") surface.
+    if state == "attributed" and speaker_class in sp.AUTO_NAMEABLE_CLASSES:
+        label = row["display_label"]
+        if label is not None and str(label).strip():
+            return str(label)
+        return _SAFE_SPEAKER_LABEL  # attributed but no stored label -> fail closed
+
+    # Any non-safely-named row: derive from speaker_class ALONE — the free-text
+    # display_label is never read, so a poisoned name cannot leak.
+    if speaker_class == "on-record-public":
+        return sp.SAFE_COMMUNITY_LABEL
+    return _SAFE_SPEAKER_LABEL
+
+
 def _strip_non_web_urls(safe: dict[str, Any]) -> dict[str, Any]:
     """Drop URL-typed fields whose value is not a public ``http(s)://`` URL.
 
@@ -276,6 +348,9 @@ def _serialize_statement(
     ``confidence_label`` (GOV-283) is the fail-closed, read-time label derived from
     the source transcript class — attached as an envelope key (not via the
     allowlist) so the raw ``transcript_class`` never crosses the boundary.
+    ``speaker_label`` (GOV-290) is the fail-closed, read-time SAFE speaker label
+    derived from the joined ``speaker_attributions`` row — also an envelope key, so
+    the raw attribution columns never cross the boundary.
     """
     flat = dict(record)
     flat["ui_status"] = ui_status
@@ -284,6 +359,7 @@ def _serialize_statement(
         _web_safe_evidence(link) for link in _evidence_links_for(conn, record["statement_id"])
     ]
     safe["confidence_label"] = _confidence_label_for(conn, record)
+    safe["speaker_label"] = _speaker_label_for(conn, record)
     return safe
 
 
