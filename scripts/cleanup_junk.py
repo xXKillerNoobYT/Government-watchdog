@@ -93,6 +93,20 @@ PROTECTED_DIR_NAMES = {
     "Database/migrations",
 }
 
+# Owner-retained-artifact guard (GOV-272), mirroring cleanup_merged_worktrees.py
+# gate-4. cleanup_junk keys its safety on git-*tracked* status, but a deliberately
+# git-*ignored* retained-evidence dir (e.g. Logs/gov215-evidence/, .gitignore'd)
+# is "untracked" to git and would otherwise be deleted by a blanket --apply.
+# A path is treated as owner-retained — preserved, never deleted, even with
+# --include-tracked — when EITHER:
+#   1. any path segment contains a retained substring (e.g. "evidence"), or
+#   2. a keep-marker file sits in the path or any ancestor up to the repo root.
+# NOTE: being git-ignored is deliberately NOT sufficient to retain — this tool's
+# whole job is to clean git-ignored junk (logs, caches, local DBs are all
+# git-ignored). Only the explicit "evidence" segment or a keep-marker retains.
+RETAINED_SEGMENT_SUBSTRINGS = ("evidence",)
+KEEP_MARKER_NAMES = {".cleanup-keep"}
+
 @dataclass
 class Candidate:
     path: Path
@@ -100,6 +114,7 @@ class Candidate:
     age_days: float
     tracked: bool
     size_bytes: int
+    retained: bool = False
 
 
 def is_under(path: Path, root: Path) -> bool:
@@ -176,6 +191,39 @@ def tracked(path: Path, tracked_set: set[Path]) -> bool:
     return False
 
 
+def retained_evidence(path: Path, repo_root: Path) -> tuple[bool, str]:
+    """Owner-retained-artifact guard (GOV-272), mirroring cleanup_merged_worktrees
+    gate-4. Returns (is_retained, reason). A retained path must never be deleted.
+
+    Retained when EITHER a path segment contains a retained substring
+    (e.g. 'evidence'), OR a keep-marker file sits in the path or any ancestor
+    directory up to (and including) the repo root.
+    """
+    resolved = path.resolve()
+    root = repo_root.resolve()
+    # Only scan segments the tool actually governs — those relative to repo_root.
+    # Scanning the whole absolute path would let an unrelated ancestor dir (e.g.
+    # ~/evidence-backups/) protect everything under it.
+    try:
+        scan_parts = resolved.relative_to(root).parts
+    except ValueError:
+        scan_parts = resolved.parts
+    for part in scan_parts:
+        low = part.lower()
+        for needle in RETAINED_SEGMENT_SUBSTRINGS:
+            if needle in low:
+                return True, f"retained owner evidence: path segment '{part}' contains '{needle}'"
+    cur = resolved if resolved.is_dir() else resolved.parent
+    while is_under(cur, root):
+        for marker in KEEP_MARKER_NAMES:
+            if (cur / marker).exists():
+                return True, f"retained owner evidence: keep-marker '{marker}' present in {cur}"
+        if cur == root:
+            break
+        cur = cur.parent
+    return False, ""
+
+
 def iter_candidates(scan_roots: Iterable[Path], retention_days: int, include_tracked: bool) -> list[Candidate]:
     now = datetime.now(timezone.utc).timestamp()
     tracked_set = git_tracked_files(REPO_ROOT)
@@ -201,12 +249,20 @@ def iter_candidates(scan_roots: Iterable[Path], retention_days: int, include_tra
             is_tracked = tracked(path, tracked_set)
             if is_tracked and not include_tracked:
                 reason += " (git-tracked; report-only unless --include-tracked)"
-            candidates.append(Candidate(path, reason, days, is_tracked, file_size(path)))
+            is_retained, retained_reason = retained_evidence(path, REPO_ROOT)
+            if is_retained:
+                reason += f" ({retained_reason}; preserved, never deleted)"
+            candidates.append(Candidate(path, reason, days, is_tracked, file_size(path), retained=is_retained))
     # Delete children before parents.
     return sorted(candidates, key=lambda c: len(c.path.parts), reverse=True)
 
 
 def remove_candidate(candidate: Candidate, include_tracked: bool, include_databases: bool, include_markdown_logs: bool) -> bool:
+    # Owner-retained-evidence guard (GOV-272): never delete, not even with
+    # --include-tracked. Re-derive at delete time so a directly-passed Candidate
+    # is also protected, mirroring the cleanup_merged_worktrees gate-4 contract.
+    if candidate.retained or retained_evidence(candidate.path, REPO_ROOT)[0]:
+        return False
     if candidate.tracked and not include_tracked:
         return False
     db_suffixes = {".sqlite", ".sqlite3", ".db", ".duckdb", ".wal", ".db-journal", ".db-wal", ".db-shm"}
@@ -215,8 +271,14 @@ def remove_candidate(candidate: Candidate, include_tracked: bool, include_databa
     if candidate.path.is_file() and candidate.path.suffix == ".md" and any(part in CLEAN_DIR_NAMES for part in candidate.path.parts) and not include_markdown_logs:
         return False
     if candidate.path.is_dir():
-        # Do not delete a directory if it still contains review-only markdown/database files.
+        # Do not delete a directory if it still contains review-only markdown/
+        # database files, or any owner-retained evidence (GOV-272). Without the
+        # evidence check, wholesale rmtree of a parent (e.g. Logs/) would nuke a
+        # retained subdir (e.g. Logs/gov215-evidence/) that survives as its own
+        # candidate but lives under a deletable parent.
         for child in candidate.path.rglob("*"):
+            if retained_evidence(child, REPO_ROOT)[0]:
+                return False
             if child.is_file():
                 if child.suffix in db_suffixes and not include_databases:
                     return False
@@ -284,6 +346,7 @@ def main() -> int:
         "candidate_count": len(candidates),
         "deleted_count": len(deleted),
         "skipped_or_reported_count": len(skipped),
+        "retained_evidence_count": sum(1 for c in candidates if c.retained),
         "deleted_bytes": sum(x["size_bytes"] for x in deleted),
         "reported_bytes": sum(x["size_bytes"] for x in skipped),
         "deleted": deleted,
