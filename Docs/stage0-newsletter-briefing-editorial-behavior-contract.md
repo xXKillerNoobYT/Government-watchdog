@@ -16,11 +16,13 @@ The immediate goal is to prevent orphan claims, unsupported editorial framing, u
 
 ## Supporting Inputs
 
-- Paperclip issue: `GOV-17` / `fa182b32-0248-4536-bcbe-a4c47ff6a5b4`
+- Original Paperclip issue: `GOV-17` / `fa182b32-0248-4536-bcbe-a4c47ff6a5b4`
+- Gate-refresh issue: `GOV-251` / `e3c3345a-d440-42a7-84af-b702b8963342`
 - Paperclip goal: `5821e35c-3e21-4629-8e38-b82db85d22aa` / Stage 0.08 Newsletter/briefing/editorial behavior
 - Parent goal: `51bc7f65-1276-4707-87a5-89fe1eb5a612` / Stage 0 governance foundation
-- Predecessor issue: `GOV-16` / `41226990-9f5b-4270-ab1e-869b69cb70be` / Stage 0.07 Transcript/evidence/statement model
-- Predecessor contract: `Docs/stage0-transcript-evidence-statement-model-contract.md`
+- Historical predecessor issue: `GOV-16` / `41226990-9f5b-4270-ab1e-869b69cb70be` / Stage 0.07 Transcript/evidence/statement model
+- Repaired/current predecessor issue: `GOV-250` / `15af4b5e-8c09-4e02-8c99-7501d8f10270` / Stage 0.07 Transcript/evidence/statement model after Stage 0.06 gate refresh
+- Repaired/current predecessor contract: `Docs/stage0-transcript-evidence-statement-model-contract.md`
 - Source/data inventory contract: `Docs/stage0-source-data-inventory-contract.md`
 - Backend/tooling contract: `Docs/stage0-backend-tooling-implementation-contract.md`
 - Concept-map/card model reference: `Docs/government-concept-map-card-model.md`
@@ -389,7 +391,34 @@ Evidence:
 - final comment with pass/fail against acceptance criteria
 - GitHub sync note if repo files are changed
 
-## Acceptance Checklist For GOV-17
+## GOV-251 Gate Refresh Against Repaired GOV-250 Stage 0.07 Contract
+
+Decision: PASS after smallest contract refresh.
+
+GOV-251 re-read the repaired/current Stage 0.07 model from GOV-250 and reconciled this Stage 0.08 editorial behavior contract against it. The original GOV-17 contract already required reviewed source-linked records, evidence citations, statement records, safe speaker labels, known-then/corrected-later separation, visible AI/unverified/corrected labels, public/private publication states, and no-orphan-claim behavior. This refresh makes the inheritance explicit and imports the current GOV-250 predecessor artifact into this branch so future reviewers do not accidentally rely on the older GOV-16-era Stage 0.07 text.
+
+Required GOV-250 inheritance for Stage 0.08 editorial items:
+
+- Editorial items must originate from typed GOV-250 records: `source_record`, `meeting`, `agenda_item`, `transcript_record`, `transcript_segment`, `statement_record`, `evidence_citation`, `speaker_reference`, and `correction_record`.
+- Editorial copy must preserve statement kinds: `direct_quote`, `paraphrase`, `ai_extracted_claim`, `minutes_attribution`, and `reviewer_note_claim`.
+- Direct quotes require exact locator evidence: timestamp, page, section, paragraph/text offset, and exact quote text when available. A deep link alone is not evidence.
+- Paraphrases and summaries may not add facts outside the cited evidence and must keep the underlying statement/evidence records traceable.
+- AI-extracted or AI-presented claims remain private/review-only until human review promotes them; AI output must stay visibly labeled as AI-assisted before review.
+- Speaker handling must follow GOV-250 speaker states and classes: `attributed`, `uncertain`, `unattributed`, `withheld`; `on_record_official`, `on_record_public`, `unidentified`, `private_context`.
+- On-record public speaker names require CEO approval before public naming. Uncertain, unattributed, and withheld speakers must render as generic ordinary-user labels, not candidate names.
+- Editorial surfaces must preserve layers: `known_then`, `presented_then`, `ai_thought_then`, `corrected_later`, and `actual_later`.
+- Correction, supersession, dispute, source-change, and later-outcome records link forward without rewriting prior known-then records.
+- Product handoff must preserve `verification_status`, `correction_status`, `review_state`, `publication_state`, `ui_status`, `public_safety_status`, `lifecycle_state`, replacement, archive/Wayback, duplicate, unsupported-claim, stale-output, and private/raw exclusion states inherited from GOV-250 and its repaired Stage 0.05/0.06 inputs.
+- Website-safe or newsletter-safe exports must exclude raw/local paths, raw hashes unless sanitized approval exists, raw transcripts/media, private reviewer rationale, private speaker candidates, private identity/address/voter-registry/account-validation data, credentials, secrets, unsupported accusations, legal conclusions, official-contact automation outputs, and campaign/public-pressure messaging.
+- Any missing required source, evidence locator, status family, review owner, publication gate, ambiguous duplicate, source-change, missing source/archive, unsupported claim, stale-output, or private-data warning fails closed to private review or `do_not_publish`.
+
+Stage 0.09 inheritance after this refresh:
+
+- Stage 0.09 may inherit this refreshed Stage 0.08 contract only for planning/contract work around correction/trust/publication gates.
+- Stage 0.09 may not treat newsletter/editorial content as source authority; it must continue to treat Stage 0.07 GOV-250 typed evidence records as claim authority.
+- Stage 0.09 may not unlock public launch, public newsletter sends, public website publication, API/database/crawler/UI implementation, legal/campaign/budget decisions, official contact, or expansion beyond Alpine without separate owner-approved gates.
+
+## Acceptance Checklist For GOV-17 / GOV-251
 
 - Alpine-only scope is explicit.
 - Historical digest and pre-meeting briefing behavior are distinct.
