@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import ai_extraction as ai  # noqa: E402
 import ai_risk_gate as gate  # noqa: E402
 import concept_map as cm  # noqa: E402
 import db  # noqa: E402
@@ -286,6 +287,13 @@ def _seed_reviewer_internal(conn: sqlite3.Connection) -> str:
     GOV-126 rows do) so the test proves it is stripped from the served drawer.
     """
     statement_id = "stmt-ai-reviewer-internal"
+    # GOV-278: an AI row must name an `ok` gateway run (write-time binding); the
+    # real GOV-126 rows this mirrors came from such a run.
+    run_id = "read-api:ai-run"
+    if conn.execute(
+        "SELECT 1 FROM ai_extraction_runs WHERE run_id=?", (run_id,)
+    ).fetchone() is None:
+        ai.create_run(conn, run_id=run_id, input_source_ids=[])
     st.insert_statement(
         conn,
         {
@@ -294,6 +302,7 @@ def _seed_reviewer_internal(conn: sqlite3.Connection) -> str:
             "statement_text": "A Town Council special meeting was convened on Oct 9, 2024.",
             "produced_by": "ai",
             "layer": "ai_thought_then",
+            "ai_extraction_run_id": run_id,
             # default machine_extracted_unreviewed + not_publishable (pre-review).
         },
         [

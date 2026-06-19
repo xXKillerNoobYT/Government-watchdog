@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import ai_extraction as ai  # noqa: E402
 import ai_risk_gate as gate  # noqa: E402
 import concept_map as cm  # noqa: E402
 import db  # noqa: E402
@@ -56,6 +57,13 @@ def _promote_ai_statement(conn: sqlite3.Connection, statement_id: str, page: int
     real Alpine transcripts are untimed ASR, so char offsets are the only honest
     anchor. ``page`` is reused only as a deterministic per-row offset seed.
     """
+    # GOV-278: an AI row must name an `ok` gateway run (write-time binding). The
+    # real GOV-138 rows this mirrors came from such a run; bind one idempotently.
+    run_id = "gov149:ai-run"
+    if conn.execute(
+        "SELECT 1 FROM ai_extraction_runs WHERE run_id=?", (run_id,)
+    ).fetchone() is None:
+        ai.create_run(conn, run_id=run_id, input_source_ids=[])
     st.insert_statement(
         conn,
         {
@@ -64,6 +72,7 @@ def _promote_ai_statement(conn: sqlite3.Connection, statement_id: str, page: int
             "statement_text": "A grounded civic announcement from the Alpine record.",
             "produced_by": "ai",
             "layer": "ai_thought_then",
+            "ai_extraction_run_id": run_id,
         },
         [
             {
