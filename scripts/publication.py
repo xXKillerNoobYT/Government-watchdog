@@ -371,6 +371,19 @@ WEB_UNSAFE_FIELDS = frozenset({
     # a web-safe surface. Named here explicitly in addition to being absent from
     # the allowlist (defense-in-depth over the fail-closed default).
     "transcript_class",
+    # GOV-290 (Stage 2.07): the speaker-attribution columns are reviewer-internal.
+    # Only the read-time DERIVED, fail-closed `speaker_label` envelope key (built by
+    # read_api._speaker_label_for) ever crosses — the raw attribution row, and in
+    # particular any (candidate) identity, must never reach a web-safe surface.
+    # `person_id`/`candidate_person_id` could carry an unconfirmed identity;
+    # `display_label` is free text that read_api re-guards rather than trusts. Named
+    # explicitly (defense-in-depth) in addition to being absent from the allowlist.
+    "speaker_attribution_id",
+    "display_label",
+    "attribution_state",
+    "speaker_class",
+    "person_id",
+    "candidate_person_id",
 })
 
 
