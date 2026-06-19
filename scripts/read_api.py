@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ai_extraction as ai  # noqa: E402
 import ai_risk_gate as gate  # noqa: E402
+import completeness as comp  # noqa: E402
 import concept_map as cm  # noqa: E402
 import db  # noqa: E402
 import publication as pub  # noqa: E402
@@ -463,6 +464,130 @@ def reviewer_internal_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Completeness-gap cards (GOV-298, Stage 2) — read-time, web-safe, never hidden.
+# ---------------------------------------------------------------------------
+
+# Conservative fallbacks for an off-SSOT gap row (drift / value poisoned in past
+# the 0015 CHECK). The row is ALWAYS surfaced (a gap is never hidden — GOV-125's
+# "never silently dropped" rule), but a value that is not in the frozen SSOT
+# vocabulary is never trusted: it collapses to a safe placeholder instead.
+_UNKNOWN_GAP_TYPE = "unknown"          # not a real gap_type — clearly flags drift
+_CONSERVATIVE_GAP_SEVERITY = "warn"    # completeness.default_severity fail-closed value
+_CONSERVATIVE_RESOLVED_STATUS = "open"  # never silently present a drifted row as resolved
+
+# The exact web-safe gap-card key set. Named so the no-leak test can assert the
+# projected body is a SUBSET of this — and so a future field add is a conscious,
+# reviewed change, not an accidental column leak.
+GAP_CARD_FIELDS = frozenset({
+    "gap_id",
+    "subject_id",
+    "subject_node_type",
+    "gap_type",
+    "severity",
+    "resolved_status",
+    "detail",  # optional — present ONLY when it clears the read-time leak guards
+})
+
+
+def _safe_gap_detail(detail: str | None) -> str | None:
+    """Return ``detail`` only if it clears the raw-path + structured-PII guards.
+
+    The free-text ``detail`` is the one PII / raw-path risk on a gap row. It is
+    RE-guarded at read time (defense-in-depth over the write-time
+    ``completeness.record_gap`` PII guard): a leak-prone detail is OMITTED — the
+    ``detail`` field is simply absent — but the gap ROW itself is still emitted
+    (the gap is never hidden). Returns ``None`` to signal "omit the field".
+    """
+    if not detail:
+        return None
+    try:
+        assert_no_raw_paths(detail)
+    except RawPathLeak:
+        return None
+    try:
+        cm.assert_no_pii(detail, "completeness_gap_card.detail")
+    except cm.PiiGuardError:
+        return None
+    return detail
+
+
+def completeness_gap_cards(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Web-safe completeness-gap cards (GOV-298): fail-closed, but never hidden.
+
+    Projects the first-class ``completeness_gaps`` table (migration ``0015``,
+    GOV-125) — populated with the ~90 ``no_primary_source`` Alpine meetings — onto
+    the web-safe gap-card shape the Stage 2.06 frontend "completeness gap card"
+    surface consumes. Today ``scripts/completeness.py`` only offers raw reads
+    (``gaps_for`` / ``gap_report``) that never cross a web-safe boundary; this is
+    the read surface that closes that gap.
+
+    **Only web-safe fields are projected** — ``gap_type``, ``severity``,
+    ``subject_node_type``, ``resolved_status``, and a web-safe ``subject_id`` (the
+    stable node id). These are NOT routed through ``pub.to_web_safe``: that
+    serializer is a *name* allowlist that would both strip the controlled-vocab
+    gap fields AND (because ``source_id`` is allowlisted for ``sources`` records)
+    pass the gap's internal provenance ``source_id`` straight through. Instead the
+    card is built explicitly, and the internal/provenance columns
+    (``source_id`` / ``detected_run_id`` / ``detected_utc``) are **never SELECTed**
+    — so they cannot appear in any projected body (the strongest no-leak posture).
+
+    **Fail-closed, but gaps are never hidden** (reconciles GOV-125 "always
+    serveable" with web-safety): a ``gap_type`` / ``severity`` / ``resolved_status``
+    not in the frozen SSOT vocabulary collapses to a conservative placeholder
+    (:data:`_UNKNOWN_GAP_TYPE` / :data:`_CONSERVATIVE_GAP_SEVERITY` /
+    :data:`_CONSERVATIVE_RESOLVED_STATUS`) rather than being trusted, and a
+    leak-prone ``detail`` is omitted — but the gap ROW is ALWAYS emitted, so the
+    ~90 ``no_primary_source`` rows stay countable in the projected output.
+
+    **SSOT parity**: the accepted vocabularies are consumed from the
+    :mod:`completeness` frozensets (``GAP_TYPES`` / ``SEVERITIES`` /
+    ``RESOLVED_STATUSES``), never re-hardcoded — mirroring the existing parity
+    discipline vs the ``0015`` CHECK. Pure function of stored fields: same DB ->
+    byte-identical cards. No mutation, no AI, no network.
+
+    The whole assembled body is transport-swept by :func:`assert_no_raw_paths` in
+    :func:`build_response` (the GOV-34 backstop) — same as every other surface.
+    """
+    cards: list[dict[str, Any]] = []
+    # Deliberately SELECT only web-safe columns: source_id / detected_run_id /
+    # detected_utc are never read, so they can never reach a projected body.
+    for row in conn.execute(
+        "SELECT gap_id, subject_node_id, subject_node_type, gap_type, severity, "
+        "detail, resolved_status FROM completeness_gaps "
+        "ORDER BY gap_type, subject_node_id"
+    ):
+        record = dict(row)
+        gap_type = (
+            record["gap_type"]
+            if record["gap_type"] in comp.GAP_TYPES
+            else _UNKNOWN_GAP_TYPE
+        )
+        severity = (
+            record["severity"]
+            if record["severity"] in comp.SEVERITIES
+            else _CONSERVATIVE_GAP_SEVERITY
+        )
+        resolved_status = (
+            record["resolved_status"]
+            if record["resolved_status"] in comp.RESOLVED_STATUSES
+            else _CONSERVATIVE_RESOLVED_STATUS
+        )
+        card: dict[str, Any] = {
+            "gap_id": record["gap_id"],
+            "subject_id": record["subject_node_id"],
+            "subject_node_type": record["subject_node_type"],
+            "gap_type": gap_type,
+            "severity": severity,
+            "resolved_status": resolved_status,
+        }
+        detail = _safe_gap_detail(record["detail"])
+        if detail is not None:
+            card["detail"] = detail
+        cards.append(card)
+    return cards
+
+
+# ---------------------------------------------------------------------------
 # Plain-language label layer (owner addendum / §A.7) — web-safe projection.
 # ---------------------------------------------------------------------------
 
@@ -679,6 +804,7 @@ def build_response(
     topic_root: str | None = None,
     include_records: bool = True,
     include_reviewer_internal: bool = False,
+    include_completeness_gaps: bool = False,
 ) -> dict[str, Any]:
     """Assemble the reviewer-internal read response and transport-assert it.
 
@@ -691,12 +817,19 @@ def build_response(
     the reviewer-cleared-but-owner-publish-pending set (GOV-146) the frontend
     renders behind the beta gate — kept under a distinct key so the two states can
     never be conflated.
+
+    ``completeness_gaps`` (opt-in via ``include_completeness_gaps``) carries the
+    web-safe gap cards (GOV-298) the Stage 2.06 "completeness gap card" surface
+    renders — the ~90 ``no_primary_source`` Alpine meetings, fail-closed but never
+    hidden — again under a distinct key, with no internal-provenance columns.
     """
     response: dict[str, Any] = {"scope": "alpine", "access": "reviewer_internal"}
     if include_records:
         response["records"] = published_records(conn)
     if include_reviewer_internal:
         response["reviewer_internal_records"] = reviewer_internal_records(conn)
+    if include_completeness_gaps:
+        response["completeness_gaps"] = completeness_gap_cards(conn)
     if thread_id is not None:
         response["agenda_thread"] = agenda_thread(conn, thread_id)
     if topic_root is not None:
@@ -716,6 +849,12 @@ def _main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="include the reviewer-cleared, owner-publish-pending set (GOV-146)",
     )
+    parser.add_argument(
+        "--completeness-gaps",
+        dest="include_completeness_gaps",
+        action="store_true",
+        help="include the web-safe completeness-gap cards (GOV-298)",
+    )
     args = parser.parse_args(argv)
 
     with db.open_db(args.db) as conn:
@@ -725,6 +864,7 @@ def _main(argv: list[str] | None = None) -> int:
             topic_root=args.topic_root,
             include_records=args.include_records,
             include_reviewer_internal=args.include_reviewer_internal,
+            include_completeness_gaps=args.include_completeness_gaps,
         )
     print(json.dumps(response, indent=2, sort_keys=True))
     return 0
