@@ -316,6 +316,91 @@ def _speaker_label_for(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
     return _SAFE_SPEAKER_LABEL
 
 
+# ---------------------------------------------------------------------------
+# Derived per-record provenance / trust indicator (GOV-311, Stage 2.12 surface)
+# — read-time, fail-closed. The serving-lane companion to the GOV-306 auditor.
+# ---------------------------------------------------------------------------
+
+# Frozen SSOT vocabulary (mirrors the GAP_CARD_FIELDS pattern): a `frozenset` so
+# any future value is a conscious, reviewed change — never an accidental drift.
+# `"grounded"` is earned (grounded AND raw-preserved AND ai-ok-if-ai); the
+# fail-closed default for ANY break is the conservative `"unverified"`. Optimistic
+# "grounded" is NEVER the default (GOV-230 §default; GOV-306 surface successor).
+PROVENANCE_GROUNDED = "grounded"
+PROVENANCE_UNVERIFIED = "unverified"
+PROVENANCE_STATUS_VALUES = frozenset({PROVENANCE_GROUNDED, PROVENANCE_UNVERIFIED})
+
+
+def _ai_provenance_ok(conn: sqlite3.Connection, record: dict[str, Any]) -> bool:
+    """Fail-closed AI leg: a ``produced_by='ai'`` row needs a resolvable ok run.
+
+    Mirrors the per-row semantics of the GOV-278 ``ai_provenance.audit_ai_provenance``
+    auditor (an AI row whose run is NULL/blank, unresolvable, or non-``ok`` is an
+    integrity break). A non-AI row (human/automation origin) has no AI run to verify
+    and passes. STRICTER than :func:`_producing_run_ok` on purpose: that serving gate
+    passes an AI row with no run id, but for a *trust indicator* an AI row missing its
+    producing run must read ``unverified`` — never silently trusted.
+    """
+    if record.get("produced_by") != "ai":
+        return True
+    run_id = record.get("ai_extraction_run_id")
+    if not run_id or not str(run_id).strip():
+        return False  # AI row must name a producing run (GOV-278) -> fail closed
+    # Reuse the resolvable-AND-ok check verbatim (no fork): a missing/non-ok run
+    # already collapses to False there.
+    return _producing_run_ok(conn, record)
+
+
+def _provenance_status_for(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
+    """Read-time, fail-closed per-record provenance / trust indicator (GOV-311).
+
+    The serving-lane projection of the GOV-306 whole-DB traceability auditor: where
+    :mod:`stage2_traceability` emits a single ``clean=True/False`` verdict over the
+    corpus, this surfaces a per-record label the reviewer-internal timeline can render
+    as a "provenance / audit-passed" trust badge. A record is :data:`PROVENANCE_GROUNDED`
+    only when ALL three canonical legs pass — recomputed from the canonical columns the
+    served body no longer carries (``to_web_safe`` strips ``segment_id`` /
+    ``transcript_class`` / ``speaker_attribution_id`` / the raw ``to_source_id``), never
+    a stored flag:
+
+    * :func:`stage2_traceability.statement_grounded` — the FULL canonical chain
+      resolves (segment->transcript, OR an evidence link whose ``to_source_id`` still
+      resolves to a ``sources`` row); a served orphan is caught here.
+    * :func:`stage2_traceability.raw_linked` — the grounding unit has a preserved raw
+      predecessor (GOV-262): a hashed transcript, or an evidence source in a preserved
+      state / with a hashed ``documents`` child — so the citation is reproducible.
+    * :func:`_ai_provenance_ok` — if ``produced_by='ai'``, the producing run resolves
+      and is ``error_status='ok'`` (GOV-278).
+
+    The GOV-306 per-row predicates are REUSED verbatim (mirror, never fork). Because
+    ``stage2_traceability`` imports ``read_api`` at module top, importing it at top
+    level here would be circular — so it is imported lazily/locally inside this helper;
+    by call time both modules are fully loaded. ANY break — a missing canonical row, a
+    dangling chain, an unpreserved raw, a failed/absent AI run — collapses to the
+    fail-closed :data:`PROVENANCE_UNVERIFIED`. The returned value is always a member of
+    the frozen :data:`PROVENANCE_STATUS_VALUES`.
+
+    The label is a derived **envelope key** (like ``confidence_label`` /
+    ``speaker_label``), attached AFTER ``to_web_safe`` — it adds NO raw provenance id
+    (``segment_id`` / ``to_source_id`` / run ids), FS path, or PII to the served body.
+    Pure function of stored fields: same DB -> byte-identical label. No mutation, no
+    AI, no network.
+    """
+    # Lazy/local import to break the read_api<->stage2_traceability cycle (the auditor
+    # imports read_api at module top). Kept minimal and additive (GOV-311).
+    import stage2_traceability as trace  # noqa: PLC0415
+
+    statement_id = record.get("statement_id")
+    if not statement_id:
+        return PROVENANCE_UNVERIFIED
+    grounded = (
+        trace.statement_grounded(conn, statement_id)
+        and trace.raw_linked(conn, statement_id)
+        and _ai_provenance_ok(conn, record)
+    )
+    return PROVENANCE_GROUNDED if grounded else PROVENANCE_UNVERIFIED
+
+
 def _strip_non_web_urls(safe: dict[str, Any]) -> dict[str, Any]:
     """Drop URL-typed fields whose value is not a public ``http(s)://`` URL.
 
@@ -339,7 +424,11 @@ def _web_safe_evidence(link: dict[str, Any]) -> dict[str, Any]:
 
 
 def _serialize_statement(
-    conn: sqlite3.Connection, record: dict[str, Any], ui_status: str
+    conn: sqlite3.Connection,
+    record: dict[str, Any],
+    ui_status: str,
+    *,
+    include_provenance_status: bool = False,
 ) -> dict[str, Any]:
     """Project a served statement + its evidence drawer onto the web-safe shape.
 
@@ -352,6 +441,11 @@ def _serialize_statement(
     ``speaker_label`` (GOV-290) is the fail-closed, read-time SAFE speaker label
     derived from the joined ``speaker_attributions`` row — also an envelope key, so
     the raw attribution columns never cross the boundary.
+
+    ``provenance_status`` (GOV-311) is the fail-closed, read-time trust indicator —
+    attached as an envelope key ONLY for the reviewer-internal lane
+    (``include_provenance_status=True``), never the public lane, so the public
+    serialization stays byte-identical.
     """
     flat = dict(record)
     flat["ui_status"] = ui_status
@@ -361,6 +455,8 @@ def _serialize_statement(
     ]
     safe["confidence_label"] = _confidence_label_for(conn, record)
     safe["speaker_label"] = _speaker_label_for(conn, record)
+    if include_provenance_status:
+        safe["provenance_status"] = _provenance_status_for(conn, record)
     return safe
 
 
@@ -459,7 +555,9 @@ def reviewer_internal_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         # No orphan claim served (1.07 §2.3): segment edge OR ≥1 evidence pointer.
         if not (_segment_resolves(conn, record.get("segment_id")) or links):
             continue
-        served.append(_serialize_statement(conn, record, ui_status))
+        served.append(
+            _serialize_statement(conn, record, ui_status, include_provenance_status=True)
+        )
     return served
 
 
