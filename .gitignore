@@ -1,0 +1,5 @@
+# Raw run evidence and logs stay local/vault-only (Data publication boundary).
+# Tools/scripts/contracts are versioned; raw gathered data and run logs are not.
+Logs/
+node_modules/
+*.log
