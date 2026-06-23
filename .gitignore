@@ -64,6 +64,10 @@ Logs/post-merge-cleanup-*.json
 # (goal/issue status + ids only, no PII / no record payload). Operational,
 # local/vault-only per the data-publication boundary — never committed.
 Logs/governance/
+# GOV-501 daily cleanup routine evidence (junk + merged-worktree dry-run/apply
+# captures): raw operational run output, local/vault-only per the
+# data-publication boundary — never committed. (F4 carried to main, GOV-503.)
+Logs/gov501-routine/
 Clone/
 .DS_Store
 .ci-venv/

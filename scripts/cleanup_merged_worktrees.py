@@ -31,7 +31,12 @@ from urllib.request import Request, urlopen
 LOG_DIR = Path(__file__).resolve().parents[1] / "Logs"
 LOG_FILE = LOG_DIR / "cleanup-merged-worktrees.log"
 
-PAPERCLIP_API = os.environ.get("PAPERCLIP_API_URL", "http://127.0.0.1:3100")
+# Canonical local control-plane. Used as both the default API base AND a
+# last-resort fallback when the configured `--api-url`/`PAPERCLIP_API_URL`
+# (e.g. a stale Cloudflare tunnel) is unreachable. See query_issue_status.
+LOCALHOST_FALLBACK = "http://127.0.0.1:3100"
+
+PAPERCLIP_API = os.environ.get("PAPERCLIP_API_URL", LOCALHOST_FALLBACK)
 
 ISSUE_RE = re.compile(r"(?i)\bgov[- ]?(\d+)\b")
 
@@ -113,7 +118,7 @@ class Candidate:
         self.action = "remove" if self.all_gates_pass else "preserve"
 
 
-def query_issue_status(issue_id: str, api_url: str) -> Optional[dict]:
+def _fetch_issue(issue_id: str, api_url: str) -> Optional[dict]:
     url = f"{api_url}/api/issues/{issue_id}"
     try:
         req = Request(url, method="GET")
@@ -123,6 +128,21 @@ def query_issue_status(issue_id: str, api_url: str) -> Optional[dict]:
             return {"status": data.get("status"), "title": data.get("title", "")}
     except (URLError, OSError, json.JSONDecodeError, KeyError):
         return None
+
+
+def query_issue_status(issue_id: str, api_url: str) -> Optional[dict]:
+    """Look up a Paperclip issue, with a localhost self-heal fallback.
+
+    The configured base (`--api-url` / `PAPERCLIP_API_URL`) may point at a stale
+    Cloudflare tunnel. If the primary lookup fails and the base is not already
+    the canonical localhost, retry once against `LOCALHOST_FALLBACK` so gate 1
+    can still resolve a real status instead of silently preserving every
+    candidate. If both fail we return None and gate 1 preserves (safe).
+    """
+    info = _fetch_issue(issue_id, api_url)
+    if info is None and api_url.rstrip("/") != LOCALHOST_FALLBACK:
+        info = _fetch_issue(issue_id, LOCALHOST_FALLBACK)
+    return info
 
 
 def check_gate1(issue_id: Optional[str], api_url: str) -> GateResult:

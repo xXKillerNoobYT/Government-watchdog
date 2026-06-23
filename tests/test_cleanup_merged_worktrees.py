@@ -114,6 +114,49 @@ class TestCheckGate1:
         assert g.passed is False
 
 
+class TestQueryIssueStatusFallback:
+    """F1: a dead PAPERCLIP_API_URL must self-heal to localhost, not silently
+    preserve every candidate."""
+
+    def test_primary_success_no_fallback(self):
+        with patch("cleanup_merged_worktrees._fetch_issue") as mock_fetch:
+            mock_fetch.return_value = {"status": "done", "title": "t"}
+            info = cm.query_issue_status("GOV-1", "http://dead-tunnel:3100")
+            assert info == {"status": "done", "title": "t"}
+            mock_fetch.assert_called_once_with("GOV-1", "http://dead-tunnel:3100")
+
+    def test_dead_tunnel_falls_back_to_localhost(self):
+        with patch("cleanup_merged_worktrees._fetch_issue") as mock_fetch:
+            # primary (dead tunnel) returns None, localhost fallback returns done
+            mock_fetch.side_effect = [None, {"status": "done", "title": "t"}]
+            info = cm.query_issue_status(
+                "GOV-67", "http://chancellor-dom-consumers-figures.trycloudflare.com:3100")
+            assert info == {"status": "done", "title": "t"}
+            assert mock_fetch.call_count == 2
+            assert mock_fetch.call_args_list[1][0][1] == cm.LOCALHOST_FALLBACK
+
+    def test_no_double_fetch_when_already_localhost(self):
+        with patch("cleanup_merged_worktrees._fetch_issue") as mock_fetch:
+            mock_fetch.return_value = None
+            info = cm.query_issue_status("GOV-1", cm.LOCALHOST_FALLBACK)
+            assert info is None
+            mock_fetch.assert_called_once()
+
+    def test_localhost_trailing_slash_not_double_fetched(self):
+        with patch("cleanup_merged_worktrees._fetch_issue") as mock_fetch:
+            mock_fetch.return_value = None
+            info = cm.query_issue_status("GOV-1", cm.LOCALHOST_FALLBACK + "/")
+            assert info is None
+            mock_fetch.assert_called_once()
+
+    def test_both_unreachable_returns_none_safe(self):
+        with patch("cleanup_merged_worktrees._fetch_issue") as mock_fetch:
+            mock_fetch.return_value = None  # both primary and fallback fail
+            info = cm.query_issue_status("GOV-1", "http://dead-tunnel:3100")
+            assert info is None  # gate 1 will preserve (safe degradation)
+            assert mock_fetch.call_count == 2
+
+
 class TestCheckGate4:
     def test_protected_branch(self):
         g = cm.check_gate4(None, "main", Path("/tmp/repo"))

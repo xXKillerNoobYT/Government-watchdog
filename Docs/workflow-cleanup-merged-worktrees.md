@@ -42,7 +42,7 @@ Owned by the existing Paperclip routine `804d7f7c-89c4-47a1-9146-32245c31ae6a`
 The routine description is extended to add a **post-merge cleanup lane**
 after the existing junk-cleanup steps:
 
-1. Dry-run: `python3 /Users/IA/Code/Government-watchdog/scripts/cleanup_merged_worktrees.py --json`
+1. Dry-run: `python3 /Users/IA/Code/Government-watchdog/scripts/cleanup_merged_worktrees.py --api-url http://127.0.0.1:3100 --json`
 2. Review preserved candidates and any failed removals.
 3. If review confirms safety, run `--apply` once per day; otherwise leave preserved candidates as review-only.
 4. Comment the day's outcome on the routine's execution issue.
@@ -84,6 +84,18 @@ occur, and only after AutomationOpsEngineer review.
 |---|---|---|
 | Git repo roots | `--repo` flag or defaults (`/Users/IA/Code/Government-watchdog`, `/Users/IA/Code/Government-watchdog-website`) | Yes (defaults provided) |
 | Paperclip API URL | `--api-url` or `PAPERCLIP_API_URL` env var (default `http://127.0.0.1:3100`) | Yes for gate 1 |
+
+> **GOV-503 / F1 — dead-tunnel landmine + self-heal.** The runner host's
+> `PAPERCLIP_API_URL` env var points at a stale Cloudflare tunnel
+> (`chancellor-dom-consumers-figures.trycloudflare.com:3100`). Because the env
+> var overrides the `127.0.0.1:3100` literal default, any invocation that omits
+> `--api-url` inherited the dead base → gate 1 returned `None` → **every**
+> candidate was preserved, making the daily apply lane a permanent no-op.
+> Mitigations now in place: (1) the daily routine and this doc pin
+> `--api-url http://127.0.0.1:3100`; (2) `query_issue_status` self-heals — if
+> the configured base is unreachable it retries once against
+> `LOCALHOST_FALLBACK` (`127.0.0.1:3100`) before giving up. If both fail it
+> still returns `None` and gate 1 preserves (safe degradation unchanged).
 | Mode | Default `dry-run`; pass `--apply` to execute removals | Yes |
 
 ## Output contract
@@ -138,6 +150,25 @@ All four gates must pass for any candidate to be eligible for removal:
 | GitHub Actions runner offline | Workflow queues until runner returns; cadence trigger (B) still covers the gap on the next daily run | Routine fires regardless of CI availability |
 | Concurrency collision (two near-simultaneous merges) | Serialised by the `post-merge-cleanup` concurrency group — second run waits, then re-evaluates with fresh state | Daily routine runs at a fixed time; no collision |
 | `--apply` accidentally added to CI | Workflow is reviewed at PR time; reviewer must block any change that introduces `--apply` to `.github/workflows/post-merge-cleanup.yml` | n/a |
+
+## Known limitation — squash-merge detection (GOV-503 / F3, review-only)
+
+Gate 2's squash-merge heuristic (`git log <default> --grep <branch[:40]>`)
+matches on the **branch name** appearing in a commit message. GitHub squash
+commits are titled with the PR subject (e.g. `GOV-67: … (#NN)`), which usually
+does **not** contain the full local branch name, so squash-merged branches can
+fail gate 2 and never be reclaimed by the apply lane. Observed 2026-06-23: 7
+done/cancelled-issue branches (GOV-67, GOV-93, GOV-215 ×2, GOV-362, GOV-363,
+GOV-367) passed gate 1 but failed gate 2 as "branch not verified merged".
+
+This is **safe** — preserve is the correct default and the count is below the
+issue-creation threshold — so gate 2 is intentionally left unchanged here:
+tightening the heuristic (e.g. matching the GOV-NNN issue id in squash subjects)
+risks false-positive deletion of genuinely-unmerged local branches, which is the
+worse failure for an apply lane. Any future tightening must be gated by CTO
+review of dry-run output before it can affect `--apply`. Until then these
+branches stay preserved and can be pruned manually after confirming their squash
+merge in the default-branch history.
 
 ## Issue-creation threshold
 
