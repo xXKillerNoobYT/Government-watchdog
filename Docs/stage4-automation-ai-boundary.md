@@ -3,7 +3,7 @@
 **Issue:** GOV-471 · **Stage:** 4.09 · **Owner:** AutomationOpsEngineer
 **Status:** boundary contract (versioned technical contract, Alpine-only)
 **Substrate this contract governs:** `src/source-registry.js`, `src/statement-verification.js`
-**Verification command:** `npm test` (Node test runner — 9 tests, all passing as of this contract)
+**Verification command:** `npm test` (Node test runner — 13 tests, all passing; F1/D10 assembler added under GOV-478)
 
 ---
 
@@ -54,7 +54,7 @@ Each step below must be performed by a script with a covering test. None may be 
 | D7 | **Verification gate enforcement** — only `fact_claim` with a source trace can become `verified` | `applyVerificationTransition` (`verify`), `assertFactClaim`, `assertHasSourceTrace` | `verification transitions cover unverified to verified...`; `AI analysis cannot be verified as fact` | AI analysis structurally barred from `verified` |
 | D8 | **Publication gate** — fail on missing source links, missing evidence limits, AI-as-fact, do-not-publish | `evaluatePublicationGate` | `publication gate fails missing source links, evidence limits, AI-as-fact, and do-not-publish flags` | gate is pure function of statement fields |
 | D9 | **Correction bookkeeping** — prior/new text + status + correcting source recorded in history | `applyVerificationTransition` (`correct_false`) | `correction to false_corrected records prior and new statement history` | append-only correction history |
-| D10 | **Repeatable digest assembly** — select only `publishable === true` statements into the weekly digest in a stable, reproducible order | *follow-up assembler (see §7 F1); MUST reuse `evaluatePublicationGate`* | to be added with the assembler | same inputs → byte-identical digest body |
+| D10 | **Repeatable digest assembly** — select only `publishable === true` statements into the weekly digest in a stable, reproducible order | `assembleDigest` (`digest-assembler.js`, reuses `evaluatePublicationGate`) | `digest body is byte-identical regardless of input order...`; `every digest line traces back to a publishable statement...`; `non-publishable statements are excluded with a logged reason...`; `publishable statement whose source link lost its trace hash is excluded as a defect` | same inputs → byte-identical digest body (createdAt+id total sort) |
 
 **Rule:** A digest the assembler emits must be reconstructable from the source registry + statement
 records alone. If a digest line cannot be traced to a `publishable` statement with at least one
@@ -141,7 +141,7 @@ These are noted, not started here. They require CEO/CTO staging and (where marke
 
 | ID | Follow-up | Stage | Notes / gate |
 |---|---|---|---|
-| **F1** | **Deterministic digest assembler** consuming `publishable` statements in a stable order (step D10). Must reuse `evaluatePublicationGate`; no AI in selection. Needs its own test for byte-identical output and trace-back. | Stage 4 | Reviewer-internal; buildable now under existing Stage 4 GO. |
+| **F1** | **Deterministic digest assembler** consuming `publishable` statements in a stable order (step D10). Must reuse `evaluatePublicationGate`; no AI in selection. Needs its own test for byte-identical output and trace-back. | Stage 4 | **DONE (GOV-478).** `src/digest-assembler.js` + `test/digest-assembler.test.js` (4 tests); `npm test` → 13 pass. Reviewer-internal; no public/email surface (F6 stays Isaac-gated). |
 | **F2** | **Weekly refresh runner + run-log writer** wiring D1–D9 into one idempotent pass (§6). Add `--dry-run`/`--apply`, log format `[YYYY-MM-DD HH:MM:SS] [LEVEL] msg`, idempotency test. | Stage 4 | Per Script-implementation workflow; CTO reviews dry-run before first `--apply`. |
 | **F3** | **External archive (Wayback) confirmation** — beyond local-capture existence, confirm an independent archived copy exists/was created for each source. | **Stage 5** | Contacts an external service → AI Gateway/Automation hard stop: needs CEO/CTO authorization before any automated external call. |
 | **F4** | **Hot-topic detection** — surfacing newly-changed or high-activity Alpine sources for the live (non-historical) newsletter. Must stay deterministic for *detection* (hash/diff/recency); AI only summarizes after. | **Stage 5** | Separate from historical refresh; do not let hot-topic discovery widen historical-pass scope. |
@@ -161,7 +161,7 @@ These are noted, not started here. They require CEO/CTO staging and (where marke
 | **Failure handling** | Fail-closed (§5). Excluded statements logged with reasons. Gateway failure blocks downstream presentation until repaired/waived. |
 | **Issue threshold** | 3+ consecutive run failures; missing-after-capture on a published source; scope leak (non-Alpine); any digest line failing trace-back; any AI item lacking source link/evidence limits. |
 | **Review cadence** | Human review of each weekly run log before the digest is treated as current; this contract reviewed at each Stage 4 closeout and before Stage 5 (F3/F4) work starts. |
-| **Acceptance / verification** | `npm test` → 9 passing tests prove D2–D9 deterministic guarantees; F1/F2 add their own idempotency + trace-back tests before scheduling. |
+| **Acceptance / verification** | `npm test` → 13 passing tests prove D2–D10 deterministic guarantees (D10/F1 assembler added under GOV-478: byte-identical output, trace-back, logged exclusions); F2 adds its own idempotency test before scheduling. |
 | **Owner** | AutomationOpsEngineer (this contract + F1/F2 runner). CTO owns technical sequencing; reviewer/VerificationSafetyReviewer owns human gate; CEO owns Stage 5 unlock; Isaac owns public publication (F6). |
 | **Escalation / hard stops** | External calls (F3 Wayback), scope beyond Alpine, public/email delivery (F6), or any `--apply` default → escalate to CEO/CTO before proceeding. |
 
