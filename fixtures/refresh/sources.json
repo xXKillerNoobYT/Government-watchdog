@@ -1,0 +1,26 @@
+[
+  {
+    "id": "toa-resolution-2026-14",
+    "sourceUrl": "https://townofalpine.example.gov/resolutions/2026-14.pdf",
+    "sourceClass": "resolution",
+    "title": "Town of Alpine Resolution 2026-14 (community grant award)",
+    "jurisdiction": "Town of Alpine",
+    "issuingBody": "Town of Alpine",
+    "publishedAt": "2026-06-05T00:00:00.000Z",
+    "capturedAt": "2026-06-05T08:00:00.000Z",
+    "toaLocalPath": "./captures/award-resolution.md",
+    "capture": { "method": "local_file", "capturedBy": "stage4-refresh-runner", "mimeType": "text/markdown" }
+  },
+  {
+    "id": "toa-minutes-2026-06-05",
+    "sourceUrl": "https://townofalpine.example.gov/minutes/2026-06-05.pdf",
+    "sourceClass": "meeting_minutes",
+    "title": "Town of Alpine Meeting Minutes 2026-06-05",
+    "jurisdiction": "Town of Alpine",
+    "issuingBody": "Town of Alpine",
+    "publishedAt": "2026-06-05T00:00:00.000Z",
+    "capturedAt": "2026-06-05T09:00:00.000Z",
+    "toaLocalPath": "./captures/grant-minutes.md",
+    "capture": { "method": "local_file", "capturedBy": "stage4-refresh-runner", "mimeType": "text/markdown" }
+  }
+]

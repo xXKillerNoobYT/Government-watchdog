@@ -3,7 +3,7 @@
 **Issue:** GOV-471 · **Stage:** 4.09 · **Owner:** AutomationOpsEngineer
 **Status:** boundary contract (versioned technical contract, Alpine-only)
 **Substrate this contract governs:** `src/source-registry.js`, `src/statement-verification.js`
-**Verification command:** `npm test` (Node test runner — 13 tests, all passing; F1/D10 assembler added under GOV-478)
+**Verification command:** `npm test` (Node test runner — 19 tests, all passing; F1/D10 assembler under GOV-478, F2 weekly runner under GOV-479)
 
 ---
 
@@ -142,7 +142,7 @@ These are noted, not started here. They require CEO/CTO staging and (where marke
 | ID | Follow-up | Stage | Notes / gate |
 |---|---|---|---|
 | **F1** | **Deterministic digest assembler** consuming `publishable` statements in a stable order (step D10). Must reuse `evaluatePublicationGate`; no AI in selection. Needs its own test for byte-identical output and trace-back. | Stage 4 | **DONE (GOV-478).** `src/digest-assembler.js` + `test/digest-assembler.test.js` (4 tests); `npm test` → 13 pass. Reviewer-internal; no public/email surface (F6 stays Isaac-gated). |
-| **F2** | **Weekly refresh runner + run-log writer** wiring D1–D9 into one idempotent pass (§6). Add `--dry-run`/`--apply`, log format `[YYYY-MM-DD HH:MM:SS] [LEVEL] msg`, idempotency test. | Stage 4 | Per Script-implementation workflow; CTO reviews dry-run before first `--apply`. |
+| **F2** | **Weekly refresh runner + run-log writer** wiring D1–D9 into one idempotent pass (§6). Add `--dry-run`/`--apply`, log format `[YYYY-MM-DD HH:MM:SS] [LEVEL] msg`, idempotency test. | Stage 4 | **DONE (GOV-479).** `src/refresh-runner.js` + `test/refresh-runner.test.js` (6 tests) + `fixtures/refresh/`; `npm test` → 19 pass. Pure `runWeeklyRefresh` + CLI (`--dry-run` default, `--apply` gated). Idempotency = unchanged sources keep prior records verbatim → no new records + byte-identical digest. CTO reviews a dry-run before the first `--apply`. |
 | **F3** | **External archive (Wayback) confirmation** — beyond local-capture existence, confirm an independent archived copy exists/was created for each source. | **Stage 5** | Contacts an external service → AI Gateway/Automation hard stop: needs CEO/CTO authorization before any automated external call. |
 | **F4** | **Hot-topic detection** — surfacing newly-changed or high-activity Alpine sources for the live (non-historical) newsletter. Must stay deterministic for *detection* (hash/diff/recency); AI only summarizes after. | **Stage 5** | Separate from historical refresh; do not let hot-topic discovery widen historical-pass scope. |
 | **F5** | **Reviewer queue surfacing** of disputed / corrected / do-not-publish statements so humans clear them before each weekly digest. | Stage 4/5 | Frontend reviewer-internal; respects gated-beta access rules. |
@@ -161,7 +161,7 @@ These are noted, not started here. They require CEO/CTO staging and (where marke
 | **Failure handling** | Fail-closed (§5). Excluded statements logged with reasons. Gateway failure blocks downstream presentation until repaired/waived. |
 | **Issue threshold** | 3+ consecutive run failures; missing-after-capture on a published source; scope leak (non-Alpine); any digest line failing trace-back; any AI item lacking source link/evidence limits. |
 | **Review cadence** | Human review of each weekly run log before the digest is treated as current; this contract reviewed at each Stage 4 closeout and before Stage 5 (F3/F4) work starts. |
-| **Acceptance / verification** | `npm test` → 13 passing tests prove D2–D10 deterministic guarantees (D10/F1 assembler added under GOV-478: byte-identical output, trace-back, logged exclusions); F2 adds its own idempotency test before scheduling. |
+| **Acceptance / verification** | `npm test` → 19 passing tests prove D2–D10 deterministic guarantees (D10/F1 assembler added under GOV-478; F2 weekly runner added under GOV-479: idempotent no-new-records + byte-identical digest, replacement→statement re-open, missing-after-capture flagging, scope-leak hard stop, run-log format). |
 | **Owner** | AutomationOpsEngineer (this contract + F1/F2 runner). CTO owns technical sequencing; reviewer/VerificationSafetyReviewer owns human gate; CEO owns Stage 5 unlock; Isaac owns public publication (F6). |
 | **Escalation / hard stops** | External calls (F3 Wayback), scope beyond Alpine, public/email delivery (F6), or any `--apply` default → escalate to CEO/CTO before proceeding. |
 
