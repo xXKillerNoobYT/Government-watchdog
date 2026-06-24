@@ -6,7 +6,8 @@ Default mode: dry-run (report only, never delete).  Pass --apply to act.
 
 Safety quad-gate — clean ONLY when ALL four gates pass:
   1. Owning Paperclip issue is done (or cancelled with no unmerged work).
-  2. Branch is verified merged into default branch.
+  2. Branch is verified merged into default branch (ancestor, or a guarded
+     squash-merge: anchored GOV-NN squash subject + git-cherry containment).
   3. Worktree (if any) is clean: no uncommitted/untracked, no unpushed commits.
   4. Path is a real git worktree/branch — never evidence/vault/data.
 
@@ -204,6 +205,58 @@ def resolve_merge_ref(repo_root: Path, default_branch: str,
     return default_branch
 
 
+def _squash_subject_in_default(issue_id: str, merge_ref: str,
+                               repo_root: Path) -> bool:
+    """True iff ``merge_ref`` has a commit whose *subject* is an anchored
+    squash-merge of ``issue_id``: ``^GOV-NN\\b ... (#<pr>)``.
+
+    GOV PRs all land as squash commits subjected ``GOV-NN: ... (#N)`` (see
+    PRs #84–#90). We narrow with a loose, fixed-string ``git log --grep`` for
+    the issue id (matches anywhere in the message), then re-validate each
+    candidate's **subject only** (``%s``) against an anchored Python regex.
+
+    The two-step matters for criterion 3 (AC3): ``git log --grep`` matches the
+    full commit message, so a body that merely *mentions* a different
+    ``GOV-MM`` would slip through a git-only check. Anchoring ``^GOV-NN`` on
+    the subject line in Python rejects that body-mention false match.
+    """
+    r = _run_git(
+        ["log", merge_ref, "--regexp-ignore-case", "--fixed-strings",
+         f"--grep={issue_id}", "--format=%s"],
+        cwd=repo_root, check=False,
+    )
+    if r.returncode != 0:
+        return False
+    anchored = re.compile(rf"^{re.escape(issue_id)}\b.*\(#[0-9]+\)",
+                          re.IGNORECASE)
+    return any(anchored.match(subject) for subject in r.stdout.splitlines())
+
+
+def _branch_content_contained(branch: str, merge_ref: str,
+                              repo_root: Path) -> bool:
+    """True iff EVERY commit on ``branch`` is already patch-equivalent in
+    ``merge_ref`` — the load-bearing safeguard for the squash-merge detector.
+
+    ``git cherry <merge_ref> <branch>`` prefixes each branch commit ``-``
+    (patch already upstream) or ``+`` (NOT upstream). A single ``+`` line means
+    the branch carries content the squash did not absorb → NOT contained →
+    PRESERVE. This is what protects the two-branches-one-issue case: a WIP
+    branch sharing ``GOV-NN`` with an already-merged PR keeps ``+`` commits and
+    is never reclaimed, even though its subject would match and its issue may
+    be ``done``.
+
+    Conservative by design: a branch whose commits were squashed as a *group*
+    (multiple commits → one squash commit) has individual patch-ids that do not
+    match the combined squash, so it reports ``+`` and stays preserved. We
+    reclaim only when containment is provable commit-by-commit. A failed/odd
+    ``git cherry`` (non-zero exit) returns False → preserve (fail-closed).
+    """
+    r = _run_git(["cherry", merge_ref, branch], cwd=repo_root, check=False)
+    if r.returncode != 0:
+        return False
+    return not any(line.startswith("+") for line in r.stdout.splitlines())
+
+
 def check_gate2(branch: str, repo_root: Path,
                 do_fetch: bool = True) -> GateResult:
     default_branch = resolve_default_branch(repo_root)
@@ -238,6 +291,25 @@ def check_gate2(branch: str, repo_root: Path,
             return GateResult(True, f"no commits ahead of {merge_ref}")
     except Exception:
         pass
+
+    # GOV-537: guarded squash-merge detector (CTO decision A / GOV-536).
+    # An ADDITIONAL positive signal, never a relaxation of the checks above.
+    # Reclaim a squash-merged branch ONLY when BOTH hold:
+    #   (a) the branch's GOV-NN issue id has an anchored `GOV-NN: ... (#N)`
+    #       squash subject in merge_ref, and
+    #   (b) every branch commit is already patch-equivalent upstream
+    #       (`git cherry` reports zero `+` lines — the content-containment
+    #       safeguard against the two-branches-one-issue false delete).
+    # Gate 1 (issue done/cancelled) is enforced independently at the Candidate
+    # level, so this never deletes a branch whose issue is not closed.
+    issue_id = extract_issue_id(branch)
+    if issue_id is not None and \
+            _squash_subject_in_default(issue_id, merge_ref, repo_root) and \
+            _branch_content_contained(branch, merge_ref, repo_root):
+        return GateResult(
+            True,
+            f"squash-merge of {issue_id} in {merge_ref}, content fully "
+            f"contained (git cherry: 0 unmerged commits)")
 
     return GateResult(False, f"branch not verified merged into {merge_ref}")
 
