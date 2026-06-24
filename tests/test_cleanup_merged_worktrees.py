@@ -251,3 +251,121 @@ class TestScopeEnforcement:
         assert ".paperclip" in cm.PROTECTED_PATH_SEGMENTS
         assert "Database" in cm.PROTECTED_PATH_SEGMENTS
         assert "Source-Data" in cm.PROTECTED_PATH_SEGMENTS
+
+
+# --- GOV-536: gate-2 must compare against the authoritative origin ref, not a
+# possibly-stale local default branch. These build real git repos so the proof
+# is data-driven (not a mock that asserts its own setup). ---
+
+def _git(args, cwd):
+    return subprocess.run(["git"] + args, cwd=str(cwd),
+                          capture_output=True, text=True, check=True)
+
+
+def _init_work_repo(path):
+    subprocess.run(["git", "init", "-b", "main", str(path)],
+                   capture_output=True, text=True, check=True)
+    _git(["config", "user.email", "t@example.com"], path)
+    _git(["config", "user.name", "Tester"], path)
+
+
+def _commit(path, fname, content, msg):
+    (path / fname).write_text(content)
+    _git(["add", "."], path)
+    _git(["commit", "-m", msg], path)
+
+
+class TestCheckGate2OriginMain:
+    """GOV-536 Finding 2: a stale local default branch ref makes
+    `git branch --merged <local-default>` blind to upstream merges → the
+    --apply lane becomes a silent permanent no-op. Gate 2 must consult
+    origin/<default> (refreshed by fetch)."""
+
+    def _origin_clone_with_truemerge(self, tmp_path, branch="gov-999-feature"):
+        """origin bare repo whose main contains a --no-ff merge of `branch`;
+        a work clone where BOTH local main and cached origin/main are rewound
+        to the pre-merge base (so every local ref is blind to the merge).
+        Returns (work_path, base_sha, branch)."""
+        origin = tmp_path / "origin.git"
+        subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)],
+                       capture_output=True, text=True, check=True)
+        work = tmp_path / "work"
+        subprocess.run(["git", "clone", str(origin), str(work)],
+                       capture_output=True, text=True, check=True)
+        _git(["config", "user.email", "t@example.com"], work)
+        _git(["config", "user.name", "Tester"], work)
+
+        _commit(work, "f.txt", "base\n", "base")
+        base_sha = _git(["rev-parse", "HEAD"], work).stdout.strip()
+        _git(["push", "origin", "main"], work)
+
+        _git(["checkout", "-b", branch], work)
+        _commit(work, "g.txt", "feat\n", f"{branch} work")
+        _git(["checkout", "main"], work)
+        _git(["merge", "--no-ff", "-m", f"merge {branch}", branch], work)
+        _git(["push", "origin", "main"], work)  # origin/main now has the merge
+
+        # Rewind every LOCAL ref to base: real origin (bare) keeps the merge,
+        # but this clone is now stale — exactly the operational-clone drift.
+        _git(["reset", "--hard", base_sha], work)
+        _git(["update-ref", "refs/remotes/origin/main", base_sha], work)
+        return work, base_sha, branch
+
+    def test_local_default_is_blind_old_behavior_red(self, tmp_path):
+        """RED proof: comparing against the stale LOCAL main misses the merge."""
+        work, _base, branch = self._origin_clone_with_truemerge(tmp_path)
+        local_merged = _git(["branch", "--merged", "main"], work).stdout
+        assert branch not in local_merged  # the original bug: blind
+
+    def test_no_fetch_uses_stale_cached_origin_red(self, tmp_path):
+        """RED proof: cached origin/main is also stale → gate2 still fails
+        unless we fetch first (fetch is load-bearing, not cosmetic)."""
+        work, _base, branch = self._origin_clone_with_truemerge(tmp_path)
+        g = cm.check_gate2(branch, work, do_fetch=False)
+        assert g.passed is False
+
+    def test_fetch_refreshes_origin_main_gate_passes(self, tmp_path):
+        """GREEN: with fetch, origin/main becomes authoritative and the
+        genuinely-merged branch passes gate 2."""
+        work, _base, branch = self._origin_clone_with_truemerge(tmp_path)
+        g = cm.check_gate2(branch, work, do_fetch=True)
+        assert g.passed is True
+        assert "origin/main" in g.detail
+
+    def test_resolve_merge_ref_prefers_origin(self, tmp_path):
+        work, _base, branch = self._origin_clone_with_truemerge(tmp_path)
+        ref = cm.resolve_merge_ref(work, "main", do_fetch=True)
+        assert ref == "origin/main"
+
+    def test_resolve_merge_ref_falls_back_to_local_when_no_remote(self, tmp_path):
+        """Local-only repo (no origin): gate must still work, comparing
+        against the local default branch."""
+        repo = tmp_path / "local_only"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        ref = cm.resolve_merge_ref(repo, "main", do_fetch=False)
+        assert ref == "main"
+        # and a truly-merged local branch still passes against local main
+        _git(["checkout", "-b", "gov-1-x"], repo)
+        _commit(repo, "g.txt", "x\n", "x")
+        _git(["checkout", "main"], repo)
+        _git(["merge", "--no-ff", "-m", "m", "gov-1-x"], repo)
+        g = cm.check_gate2("gov-1-x", repo, do_fetch=False)
+        assert g.passed is True
+
+    def test_squash_merged_branch_still_preserved(self, tmp_path):
+        """Known limitation (GOV-503/F3, re-confirmed by GOV-536): a
+        squash-merged branch is NOT an ancestor and its branch name is not in
+        the `GOV-NN: ... (#N)` squash subject, so gate 2 fails → PRESERVE.
+        Pins the conservative behavior; loosening it is a CTO-gated change
+        because of the two-branches-one-issue false-positive deletion risk."""
+        repo = tmp_path / "squash"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        _git(["checkout", "-b", "gov-999-stage-x-impl"], repo)
+        _commit(repo, "g.txt", "feat\n", "feat")
+        _git(["checkout", "main"], repo)
+        _git(["merge", "--squash", "gov-999-stage-x-impl"], repo)
+        _git(["commit", "-m", "GOV-999: Stage X impl (#123)"], repo)
+        g = cm.check_gate2("gov-999-stage-x-impl", repo, do_fetch=False)
+        assert g.passed is False  # preserved: not reclaimable without CTO-gated change

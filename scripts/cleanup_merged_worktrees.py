@@ -159,48 +159,87 @@ def check_gate1(issue_id: Optional[str], api_url: str) -> GateResult:
     return GateResult(False, f"{issue_id} status={status} (not done/cancelled)")
 
 
-def check_gate2(branch: str, repo_root: Path) -> GateResult:
+def resolve_default_branch(repo_root: Path) -> str:
+    """Name of the repo's default branch (e.g. "main"), best-effort."""
     try:
-        default_branch = _run_git(
+        name = _run_git(
             ["symbolic-ref", "refs/remotes/origin/HEAD"],
-            cwd=repo_root, check=False
+            cwd=repo_root, check=False,
         ).stdout.strip().replace("refs/remotes/origin/", "")
-        if not default_branch:
-            default_branch = "main"
+        return name or "main"
     except Exception:
-        default_branch = "main"
+        return "main"
+
+
+def _ref_exists(ref: str, repo_root: Path) -> bool:
+    r = _run_git(["rev-parse", "--verify", "--quiet", ref],
+                 cwd=repo_root, check=False)
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def resolve_merge_ref(repo_root: Path, default_branch: str,
+                      do_fetch: bool = True) -> str:
+    """Authoritative ref to test "merged into default" against.
+
+    Prefer the remote-tracking ref ``origin/<default>`` over the local
+    ``<default>`` branch. An operational clone's local default can lag
+    ``origin`` by many commits — it may even be checked out on an unrelated
+    feature branch — which makes ``git branch --merged <local-default>``
+    blind to anything merged upstream after the clone last synced. That
+    turns the ``--apply`` lane into a silent permanent no-op (same failure
+    shape as the GOV-503/F1 dead-tunnel default).
+
+    A best-effort ``git fetch origin <default>`` refreshes
+    ``origin/<default>`` first. The fetch only updates remote-tracking refs
+    in ``.git`` — it never touches the working tree or any local branch, so
+    it is safe under dry-run. If there is no remote / it is unreachable, or
+    ``origin/<default>`` does not exist, fall back to the local branch so the
+    gate still works in local-only repos and tests.
+    """
+    if do_fetch:
+        _run_git(["fetch", "origin", default_branch], cwd=repo_root, check=False)
+    remote_ref = f"origin/{default_branch}"
+    if _ref_exists(remote_ref, repo_root):
+        return remote_ref
+    return default_branch
+
+
+def check_gate2(branch: str, repo_root: Path,
+                do_fetch: bool = True) -> GateResult:
+    default_branch = resolve_default_branch(repo_root)
+    merge_ref = resolve_merge_ref(repo_root, default_branch, do_fetch=do_fetch)
 
     try:
-        result = _run_git(["branch", "--merged", default_branch], cwd=repo_root)
+        result = _run_git(["branch", "--merged", merge_ref], cwd=repo_root)
         merged_branches = {
             line.strip().lstrip("* ") for line in result.stdout.splitlines()
         }
         if branch in merged_branches:
-            return GateResult(True, f"branch tip is ancestor of {default_branch}")
+            return GateResult(True, f"branch tip is ancestor of {merge_ref}")
     except subprocess.CalledProcessError:
         pass
 
     try:
         result = _run_git(
-            ["log", "--oneline", default_branch, "--grep", branch[:40]],
+            ["log", "--oneline", merge_ref, "--grep", branch[:40]],
             cwd=repo_root, check=False,
         )
         if result.stdout.strip():
-            return GateResult(True, f"squash-merge evidence found in {default_branch} log")
+            return GateResult(True, f"squash-merge evidence found in {merge_ref} log")
     except Exception:
         pass
 
     try:
         result = _run_git(
-            ["log", f"{default_branch}..{branch}", "--oneline"],
+            ["log", f"{merge_ref}..{branch}", "--oneline"],
             cwd=repo_root, check=False,
         )
         if result.returncode == 0 and not result.stdout.strip():
-            return GateResult(True, f"no commits ahead of {default_branch}")
+            return GateResult(True, f"no commits ahead of {merge_ref}")
     except Exception:
         pass
 
-    return GateResult(False, f"branch not verified merged into {default_branch}")
+    return GateResult(False, f"branch not verified merged into {merge_ref}")
 
 
 def check_gate3(branch: str, worktree_path: Optional[str],
