@@ -126,7 +126,7 @@ All four gates must pass for any candidate to be eligible for removal:
 | Gate | Check | Failure behavior |
 |---|---|---|
 | 1. Issue done | Paperclip API `GET /api/issues/{GOV-NNN}` returns `status=done` or `status=cancelled` | Preserve; log "issue not done" |
-| 2. Branch merged | `git branch --merged main` includes the branch, or squash-merge evidence found, or no commits ahead of main | Preserve; log "not merged" |
+| 2. Branch merged | `git branch --merged origin/<default>` includes the branch, or squash-merge evidence found, or no commits ahead of `origin/<default>` | Preserve; log "not merged into origin/<default>" |
 | 3. Worktree clean | `git status --porcelain` empty + no unpushed commits (`git log @{u}..HEAD`) | Preserve; log "dirty worktree" |
 | 4. Safe path | Path is a real git worktree/branch, not under protected segments (Obsidian Vault, .paperclip, Database, Source-Data, evidence, vault, etc.) and not main/master/develop | Preserve; log "unsafe path" |
 
@@ -151,7 +151,29 @@ All four gates must pass for any candidate to be eligible for removal:
 | Concurrency collision (two near-simultaneous merges) | Serialised by the `post-merge-cleanup` concurrency group — second run waits, then re-evaluates with fresh state | Daily routine runs at a fixed time; no collision |
 | `--apply` accidentally added to CI | Workflow is reviewed at PR time; reviewer must block any change that introduces `--apply` to `.github/workflows/post-merge-cleanup.yml` | n/a |
 
-## Known limitation — squash-merge detection (GOV-503 / F3, review-only)
+## Gate 2 compares against `origin/<default>`, not the local default branch (GOV-536 / F2)
+
+> **GOV-536 — stale-local-default-ref landmine + authoritative-ref fix.** Gate 2
+> originally compared candidate branches against the **local** default branch
+> (`git branch --merged main`). An operational clone's local `main` can lag
+> `origin/main` by many commits — and may even be checked out on an unrelated
+> feature branch (observed 2026-06-24: `/Users/IA/Code/Government-watchdog` was
+> ~30 commits behind on branch `GOV-367-…`). A stale local ref makes
+> `--merged` blind to anything merged upstream after the clone last synced, so
+> the `--apply` lane silently reclaims nothing — a **permanent no-op**, the same
+> failure shape as the GOV-503/F1 dead-tunnel default.
+>
+> Fix: `resolve_merge_ref()` does a best-effort `git fetch origin <default>` and
+> compares against the remote-tracking ref `origin/<default>` (falling back to
+> the local branch only when there is no remote / it is unreachable, so
+> local-only repos and tests still work). The fetch only updates remote-tracking
+> refs in `.git` — it never touches the working tree or any local branch, so it
+> is safe under dry-run. RED-proof in `tests/test_cleanup_merged_worktrees.py`
+> (`TestCheckGate2OriginMain`): on a clone whose local refs are rewound behind a
+> genuinely-merged branch, gate 2 fails with `do_fetch=False` and passes with
+> `do_fetch=True`.
+
+## Known limitation — squash-merge detection (GOV-503 / F3, re-confirmed by GOV-536, CTO-gated)
 
 Gate 2's squash-merge heuristic (`git log <default> --grep <branch[:40]>`)
 matches on the **branch name** appearing in a commit message. GitHub squash
@@ -169,6 +191,20 @@ worse failure for an apply lane. Any future tightening must be gated by CTO
 review of dry-run output before it can affect `--apply`. Until then these
 branches stay preserved and can be pruned manually after confirming their squash
 merge in the default-branch history.
+
+> **GOV-536 re-confirmation (2026-06-24).** All 7 preserved branches were
+> verified to be **squash-merged** into `origin/main` — each has a matching
+> `GOV-NN: … (#NN)` subject in `origin/main` but is 1–2 commits "ahead" because
+> squash breaks the ancestor link. This means the GOV-536 / F2 `origin/<default>`
+> fix above — though correct and necessary — does **not** by itself reclaim
+> them: even against a fully-current `origin/main` they are not ancestors, and
+> their branch names do not appear in the squash subjects. **Reclaiming
+> squash-merged branches is therefore a separate, CTO-gated change**, because a
+> safe detector must key off the issue id *and* guard the two-branches-one-issue
+> case (an unmerged WIP branch sharing an issue id with an already-merged PR must
+> not be deleted). Gate 1 alone does not protect that case (it checks issue
+> status, not this branch's content). Until CTO authorises a guarded detector,
+> these branches remain preserved and are pruned manually.
 
 ## Issue-creation threshold
 
