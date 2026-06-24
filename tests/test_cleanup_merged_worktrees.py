@@ -353,12 +353,12 @@ class TestCheckGate2OriginMain:
         g = cm.check_gate2("gov-1-x", repo, do_fetch=False)
         assert g.passed is True
 
-    def test_squash_merged_branch_still_preserved(self, tmp_path):
-        """Known limitation (GOV-503/F3, re-confirmed by GOV-536): a
-        squash-merged branch is NOT an ancestor and its branch name is not in
-        the `GOV-NN: ... (#N)` squash subject, so gate 2 fails → PRESERVE.
-        Pins the conservative behavior; loosening it is a CTO-gated change
-        because of the two-branches-one-issue false-positive deletion risk."""
+    def test_squash_merged_branch_now_eligible(self, tmp_path):
+        """GOV-537 (CTO decision A) supersedes the GOV-536-era preserve: a
+        squash-merged branch whose single commit is fully contained upstream
+        (git cherry → all `-`) AND whose issue has an anchored `GOV-NN: ...
+        (#N)` squash subject is now gate-2 ELIGIBLE. This is the AC5 update of
+        the former `test_squash_merged_branch_still_preserved`."""
         repo = tmp_path / "squash"
         _init_work_repo(repo)
         _commit(repo, "f.txt", "base\n", "base")
@@ -368,4 +368,133 @@ class TestCheckGate2OriginMain:
         _git(["merge", "--squash", "gov-999-stage-x-impl"], repo)
         _git(["commit", "-m", "GOV-999: Stage X impl (#123)"], repo)
         g = cm.check_gate2("gov-999-stage-x-impl", repo, do_fetch=False)
-        assert g.passed is False  # preserved: not reclaimable without CTO-gated change
+        assert g.passed is True
+        assert "GOV-999" in g.detail and "contained" in g.detail
+
+
+# --- GOV-537: guarded squash-merge detector for the gate-2 reclaim lane.
+# Every GOV PR merges via squash; the squash commit is not an ancestor of the
+# branch and the branch name is absent from the `GOV-NN: ... (#N)` subject, so
+# the older heuristics never fire. The detector reclaims a branch ONLY when its
+# issue id has an anchored squash subject AND every branch commit is already
+# patch-equivalent upstream (`git cherry`). All real-git-repo tests. ---
+
+class TestSquashMergeDetector:
+
+    def _squash_merge(self, repo, branch, subject, fname="g.txt",
+                      content="feat\n"):
+        """Create `branch` off current main with one commit, squash-merge it
+        into main under `subject`. Leaves HEAD on main; branch retained."""
+        _git(["checkout", "-b", branch], repo)
+        _commit(repo, fname, content, f"{branch} work")
+        _git(["checkout", "main"], repo)
+        _git(["merge", "--squash", branch], repo)
+        _git(["commit", "-m", subject], repo)
+
+    def test_ac1_contained_squash_eligible(self, tmp_path):
+        """AC1: a contained squash-merged branch with a `GOV-NN: ... (#N)`
+        subject → gate 2 PASS (reclaim eligible)."""
+        repo = tmp_path / "ac1"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        self._squash_merge(repo, "gov-1000-impl", "GOV-1000: impl (#84)")
+        g = cm.check_gate2("gov-1000-impl", repo, do_fetch=False)
+        assert g.passed is True
+        assert "GOV-1000" in g.detail
+
+    def test_ac2_two_branches_one_issue_wip_preserved(self, tmp_path):
+        """AC2 (decisive non-tautology): two branches share GOV-2000; one is
+        squash-merged + contained → eligible; the other carries an extra
+        unmerged commit → `git cherry` `+` → PRESERVED. Gate 1 (issue status)
+        cannot protect the WIP branch here — only containment can."""
+        repo = tmp_path / "ac2"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        # WIP branch off base, BEFORE the squash lands, with its own commit.
+        _git(["checkout", "-b", "gov-2000-wip"], repo)
+        _commit(repo, "wip.txt", "wip\n", "gov-2000-wip unmerged work")
+        _git(["checkout", "main"], repo)
+        # Sibling branch, squash-merged and contained.
+        self._squash_merge(repo, "gov-2000-merged", "GOV-2000: done (#85)")
+
+        merged = cm.check_gate2("gov-2000-merged", repo, do_fetch=False)
+        wip = cm.check_gate2("gov-2000-wip", repo, do_fetch=False)
+        assert merged.passed is True   # contained → eligible
+        assert wip.passed is False     # has `+` commit → preserved
+
+    def test_ac3_body_mention_of_other_issue_not_matched(self, tmp_path):
+        """AC3: a squash subject for GOV-9999 whose BODY merely mentions the
+        branch's GOV-3000 must NOT falsely match (anchor `^GOV-NN`)."""
+        repo = tmp_path / "ac3"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        _git(["checkout", "-b", "gov-3000-impl"], repo)
+        _commit(repo, "g.txt", "feat\n", "gov-3000-impl work")
+        _git(["checkout", "main"], repo)
+        _git(["merge", "--squash", "gov-3000-impl"], repo)
+        # Subject is a DIFFERENT issue; body mentions GOV-3000.
+        _git(["commit", "-m",
+              "GOV-9999: unrelated change (#90)\n\nIncidentally relates to GOV-3000."],
+             repo)
+        g = cm.check_gate2("gov-3000-impl", repo, do_fetch=False)
+        assert g.passed is False  # body-mention must not satisfy the anchor
+
+    def test_ac4_gate1_still_required(self, tmp_path):
+        """AC4: a contained squash-merged branch whose issue is NOT done is
+        still preserved — the detector only sets gate 2; gate 1 is enforced
+        independently at the Candidate level."""
+        repo = tmp_path / "ac4"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        self._squash_merge(repo, "gov-4000-impl", "GOV-4000: impl (#86)")
+        g2 = cm.check_gate2("gov-4000-impl", repo, do_fetch=False)
+        assert g2.passed is True  # gate 2 alone is satisfied
+        # but with gate 1 failing (issue not done), the candidate is preserved:
+        c = cm.Candidate(
+            repo_root=str(repo), branch="gov-4000-impl", issue_id="GOV-4000",
+            worktree_path=None,
+            gate1_issue_done=cm.GateResult(False, "GOV-4000 status=in_progress"),
+            gate2_merged=g2,
+            gate3_clean=cm.GateResult(True, "clean"),
+            gate4_safe_path=cm.GateResult(True, "safe"),
+        )
+        assert c.all_gates_pass is False
+        assert c.action == "preserve"
+
+    def test_ac5_squash_subject_but_uncontained_preserved(self, tmp_path):
+        """AC5 variant: a branch whose squash subject exists in main but which
+        carries an extra post-merge commit (uncontained) → PRESERVED. Keeps the
+        uncontained-preserve guarantee alongside the new eligible behavior."""
+        repo = tmp_path / "ac5"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        self._squash_merge(repo, "gov-5000-impl", "GOV-5000: impl (#87)")
+        # Extra unmerged commit lands on the branch AFTER the squash.
+        _git(["checkout", "gov-5000-impl"], repo)
+        _commit(repo, "h.txt", "more\n", "post-merge work Z")
+        _git(["checkout", "main"], repo)
+        g = cm.check_gate2("gov-5000-impl", repo, do_fetch=False)
+        assert g.passed is False  # `+` commit → not contained → preserved
+
+    def test_ac7_red_proof_neuter_containment_guard(self, tmp_path,
+                                                    monkeypatch):
+        """AC7 RED-proof: neutering the containment guard (force it True) makes
+        the AC2 WIP branch FALSELY eligible — proving the guard, not the
+        subject match, is what prevents the false delete. Restored by
+        monkeypatch teardown (byte-identical source)."""
+        repo = tmp_path / "ac7"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        _git(["checkout", "-b", "gov-7000-wip"], repo)
+        _commit(repo, "wip.txt", "wip\n", "gov-7000-wip unmerged work")
+        _git(["checkout", "main"], repo)
+        self._squash_merge(repo, "gov-7000-merged", "GOV-7000: done (#88)")
+
+        # Sanity: with the real guard, the WIP branch is preserved.
+        assert cm.check_gate2("gov-7000-wip", repo, do_fetch=False).passed is False
+
+        # Neuter the guard → the WIP branch (subject matches GOV-7000) now
+        # falsely passes gate 2. This is the regression the guard prevents.
+        monkeypatch.setattr(cm, "_branch_content_contained",
+                            lambda *a, **k: True)
+        assert cm.check_gate2("gov-7000-wip", repo, do_fetch=False).passed is True

@@ -126,7 +126,7 @@ All four gates must pass for any candidate to be eligible for removal:
 | Gate | Check | Failure behavior |
 |---|---|---|
 | 1. Issue done | Paperclip API `GET /api/issues/{GOV-NNN}` returns `status=done` or `status=cancelled` | Preserve; log "issue not done" |
-| 2. Branch merged | `git branch --merged origin/<default>` includes the branch, or squash-merge evidence found, or no commits ahead of `origin/<default>` | Preserve; log "not merged into origin/<default>" |
+| 2. Branch merged | `git branch --merged origin/<default>` includes the branch, OR a loose squash-grep / no-commits-ahead match, OR the **guarded squash-merge detector** (GOV-537): the branch's `GOV-NN` id has an anchored `^GOV-NN … (#N)` squash subject in `origin/<default>` **and** `git cherry` reports zero `+` commits (all branch content patch-equivalent upstream) | Preserve; log "not verified merged into origin/<default>" |
 | 3. Worktree clean | `git status --porcelain` empty + no unpushed commits (`git log @{u}..HEAD`) | Preserve; log "dirty worktree" |
 | 4. Safe path | Path is a real git worktree/branch, not under protected segments (Obsidian Vault, .paperclip, Database, Source-Data, evidence, vault, etc.) and not main/master/develop | Preserve; log "unsafe path" |
 
@@ -173,38 +173,74 @@ All four gates must pass for any candidate to be eligible for removal:
 > genuinely-merged branch, gate 2 fails with `do_fetch=False` and passes with
 > `do_fetch=True`.
 
-## Known limitation — squash-merge detection (GOV-503 / F3, re-confirmed by GOV-536, CTO-gated)
+## Guarded squash-merge detector (GOV-537, CTO decision A / GOV-536)
 
-Gate 2's squash-merge heuristic (`git log <default> --grep <branch[:40]>`)
-matches on the **branch name** appearing in a commit message. GitHub squash
-commits are titled with the PR subject (e.g. `GOV-67: … (#NN)`), which usually
-does **not** contain the full local branch name, so squash-merged branches can
-fail gate 2 and never be reclaimed by the apply lane. Observed 2026-06-23: 7
-done/cancelled-issue branches (GOV-67, GOV-93, GOV-215 ×2, GOV-362, GOV-363,
-GOV-367) passed gate 1 but failed gate 2 as "branch not verified merged".
+Every GOV PR merges via **squash** (#84–#90). A squash commit is not an ancestor
+of the merged branch, and the branch name is absent from the `GOV-NN: … (#N)`
+squash subject, so the older gate-2 signals (ancestor / branch-name grep /
+no-commits-ahead) never fire for this repo's merge style. Net effect before
+GOV-537: even with the GOV-536/F2 `origin/<default>` fix and a fully-synced
+clone, gate 2 preserved ~every branch forever — the `--apply` reclaim lane was
+permanently inert.
 
-This is **safe** — preserve is the correct default and the count is below the
-issue-creation threshold — so gate 2 is intentionally left unchanged here:
-tightening the heuristic (e.g. matching the GOV-NNN issue id in squash subjects)
-risks false-positive deletion of genuinely-unmerged local branches, which is the
-worse failure for an apply lane. Any future tightening must be gated by CTO
-review of dry-run output before it can affect `--apply`. Until then these
-branches stay preserved and can be pruned manually after confirming their squash
-merge in the default-branch history.
+GOV-537 adds a **fourth, additive** positive signal inside `check_gate2`
+(`_squash_subject_in_default` + `_branch_content_contained`). It never relaxes
+gates 1/3/4 or the existing gate-2 checks. A branch is reclaim-eligible via this
+path **only when ALL hold**:
 
-> **GOV-536 re-confirmation (2026-06-24).** All 7 preserved branches were
-> verified to be **squash-merged** into `origin/main` — each has a matching
-> `GOV-NN: … (#NN)` subject in `origin/main` but is 1–2 commits "ahead" because
-> squash breaks the ancestor link. This means the GOV-536 / F2 `origin/<default>`
-> fix above — though correct and necessary — does **not** by itself reclaim
-> them: even against a fully-current `origin/main` they are not ancestors, and
-> their branch names do not appear in the squash subjects. **Reclaiming
-> squash-merged branches is therefore a separate, CTO-gated change**, because a
-> safe detector must key off the issue id *and* guard the two-branches-one-issue
-> case (an unmerged WIP branch sharing an issue id with an already-merged PR must
-> not be deleted). Gate 1 alone does not protect that case (it checks issue
-> status, not this branch's content). Until CTO authorises a guarded detector,
-> these branches remain preserved and are pruned manually.
+1. The branch name yields a `GOV-NN` id (`extract_issue_id`).
+2. `origin/<default>` has a commit whose **subject** matches the anchored
+   pattern `^GOV-NN\b.*\(#\d+\)` — issue id at subject start **and** a PR ref.
+   (Loose `git log --grep` narrows; the anchor is re-checked in Python against
+   `%s` so a body-mention of a *different* `GOV-MM` cannot satisfy it — AC3.)
+3. **Content-containment safeguard (load-bearing):** `git cherry origin/<default>
+   <branch>` reports **zero `+`-prefixed commits** — every branch commit is
+   already patch-equivalent upstream. Any `+` line → the branch carries content
+   the squash did not absorb → **PRESERVE**.
+4. Gate 1 (issue `done`/`cancelled`) still passes independently (enforced at the
+   `Candidate` level, not inside gate 2).
+
+### Why the containment guard is the load-bearing part
+
+The risk this must not regress is **two-branches-one-issue**: an unmerged WIP
+branch sharing a `GOV-NN` id with an already-merged PR must never be deleted.
+Gate 1 cannot protect it — the issue can be `done` while a second branch for it
+is unmerged. Criterion 3 is what protects it: the WIP branch has `+` commits in
+`git cherry` and is preserved. RED-proof
+(`test_ac7_red_proof_neuter_containment_guard` + a physical on-disk neuter):
+forcing `_branch_content_contained` to `True` makes the WIP branch falsely
+eligible → the AC2 test goes RED. The subject match alone is **not** sufficient.
+
+### Conservative by design (known, accepted limitations)
+
+- **Group-squashed multi-commit branches stay preserved.** `git cherry` compares
+  per-commit patch-ids; a branch whose *several* commits were squashed into one
+  upstream commit has individual patch-ids that don't match the combined squash,
+  so it reports `+` and is preserved. The detector reclaims only when containment
+  is provable commit-by-commit. This is a deliberate safety bias, not a bug.
+- **Squash subjects without a `(#N)` PR ref are declined** (criterion 2 requires
+  the anchor `(#\d+)`). Observed on `gov93-allowlist-gate` below.
+- A failed/odd `git cherry` (non-zero exit) → `False` → preserve (fail-closed).
+
+### CTO-reviewable `--apply` dry-run on the real clone (2026-06-24)
+
+Dry-run (default mode, **no `--apply`**) of the GOV-537 script against
+`/Users/IA/Code/Government-watchdog` after `git fetch origin main`:
+
+| Branch | issue gate1 | `git cherry origin/main` | anchored `(#N)` subject | gate 2 | disposition |
+|---|---|---|---|---|---|
+| GOV-362-stage3-03-source-inventory-contract | done | `+0 / -1` (contained) | `GOV-362: … (#64)` ✓ | **PASS** | **eligible** |
+| GOV-363-stage3-04-raw-preservation-contract | done | `+0 / -1` (contained) | `GOV-363: … (#65)` ✓ | **PASS** | **eligible** |
+| GOV-67-stage-1-15-…-escalation-contract | done | `+0 / -1` (contained) | `GOV-67: … (#5)` ✓ | **PASS** | **eligible** |
+| GOV-367-stage3-04-raw-preservation-auditor | done | **`+1`** (uncontained) | `GOV-367: … (#68)` ✓ | FAIL | **preserved** — divergent local tip; guard catch |
+| gov215-post-merge-cleanup-trigger | — | **`+2`** (uncontained) | `GOV-215: … (#44)` ✓ | FAIL | **preserved** — divergent local tip; guard catch |
+| gov93-allowlist-gate | — | `+0 / -1` (contained) | `GOV-93: …` (no `(#N)`) ✗ | FAIL | **preserved** — subject lacks PR ref |
+
+Result: **3 of the previously-stuck branches become eligible; no uncontained
+branch is listed as eligible.** GOV-367 (`+1`) and gov215 (`+2`) have a matching
+squash subject but a divergent local tip — exactly the two-branches/divergent
+case the guard exists for. They are correctly preserved on live data, not by a
+synthetic test. **`--apply` does not run until CTO reviews this transcript.**
 
 ## Issue-creation threshold
 
