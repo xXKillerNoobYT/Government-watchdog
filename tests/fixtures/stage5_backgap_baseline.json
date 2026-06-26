@@ -1,0 +1,15 @@
+{
+  "captureSourceIds": [
+    "alpine_minutes"
+  ],
+  "correctionEdges": [],
+  "inventorySourceIds": [
+    "alpine_minutes"
+  ],
+  "publishEligibleIds": [],
+  "schemaVersion": 1,
+  "servedStatementIds": [
+    "stmt-clean"
+  ],
+  "verifiedStatementIds": []
+}
