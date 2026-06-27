@@ -1,6 +1,6 @@
 {
-  "version": "5.14.0",
-  "note": "Stage 5.14 (GOV-581) reviewer-internal documentation-maintenance registry. Every artifact that must stay current for the Alpine verification substrate, with owner + cadence. The deterministic detector (src/doc-continuity.js) reads this manifest plus the live repo file set and module export surface and emits a reviewer-internal continuity report. No public output; AI-boundary preserved (GOV-471/436).",
+  "version": "5.15.0",
+  "note": "Stage 5.14 (GOV-581) reviewer-internal documentation-maintenance registry, extended in Stage 5.15 (GOV-585) with the handoff-escalation evaluator module + its contract. Every artifact that must stay current for the Alpine verification substrate, with owner + cadence. The deterministic detector (src/doc-continuity.js) reads this manifest plus the live repo file set and module export surface and emits a reviewer-internal continuity report. No public output; AI-boundary preserved (GOV-471/436).",
   "entries": [
     {
       "id": "modcont-source-registry",
@@ -123,6 +123,44 @@
       "io": true,
       "invariants": true,
       "testEntry": "node --test test/doc-continuity.test.js"
+    },
+    {
+      "id": "modcont-handoff-escalation",
+      "path": "Docs/modules/handoff-escalation.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — the agent-handoff & owner-escalation evaluator (5.15)",
+      "module": "src/handoff-escalation.js",
+      "documentedExports": [
+        "HANDOFF_VERDICT_TITLE",
+        "MODEL_VERSION",
+        "HANDOFF_VIOLATION_TYPES",
+        "ROLE_SET",
+        "TRIGGER_SET",
+        "EVIDENCE_BUCKETS",
+        "OWNER_GATE_CONDITIONS",
+        "OWNER_GATES",
+        "evaluateHandoff",
+        "evaluateEscalation",
+        "evaluateStageExit",
+        "evaluateHandoffSlice",
+        "renderHandoffVerdict"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/handoff-escalation.test.js"
+    },
+    {
+      "id": "stage-contract-5-15-handoff-escalation",
+      "path": "Docs/stage5-15-agent-handoff-escalation-contract.md",
+      "kind": "stage_contract",
+      "owner": "CTO",
+      "cadence": "on_stage_close",
+      "requiredFor": "Stage 5.15 agent-handoff & owner-escalation contract (GOV-584) — governs this slice's evaluator + model.",
+      "mustReferenceModules": [],
+      "referencedModules": []
     },
     {
       "id": "readme",
