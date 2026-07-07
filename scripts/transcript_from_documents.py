@@ -164,8 +164,9 @@ def materialize_transcripts(
                 # in the reviewer-internal store; it never lands in the gap field.
                 detail=(
                     f"transcript document id={doc['id']} (doc_type={doc['doc_type']}) "
-                    "has no parseable MM:SS locators; timestamps left absent (never "
-                    "fabricated)"
+                    "has no parseable timestamp locators (none of the deterministic "
+                    "family: bracketed/bare decimal-seconds or MM:SS/HH:MM:SS); "
+                    "timestamps left absent (never fabricated)"
                 ),
                 source_id=doc["source_id"],
                 detected_run_id=detected_run_id,

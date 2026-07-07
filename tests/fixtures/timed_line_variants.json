@@ -1,0 +1,44 @@
+{
+  "_note": "GOV-641/GOV-642 real-FORMAT, synthetic-TEXT timed-line fixtures. Every line uses a locator shape measured in the TOA corpus, but the spoken text is generic procedural boilerplate (call to order, pledge, motions) — NO person names, NO PII. Real corpus text stays local; only these synthetic fixtures go to GitHub. Tab characters in V4 are encoded as \\t.",
+  "variants": {
+    "V1_bracket_decimal": {
+      "shape": "[SS.s] bracketed decimal seconds (1-2 decimals)",
+      "timestamped_text": "[3.3] I'll call this meeting to order.\n[7.85] Please rise for the pledge of allegiance.\n[65.4] Motion to approve the agenda as presented.\n",
+      "expected": [[3, "I'll call this meeting to order."], [7, "Please rise for the pledge of allegiance."], [65, "Motion to approve the agenda as presented."]]
+    },
+    "V2_bracket_colon": {
+      "shape": "[MM:SS] bracketed colon; total-minutes field up to 4 digits",
+      "timestamped_text": "[00:24] Good evening everyone, thank you for coming.\n[05:09] Next item on the agenda is the budget report.\n[100:00] We are now past the two hour mark.\n",
+      "expected": [[24, "Good evening everyone, thank you for coming."], [309, "Next item on the agenda is the budget report."], [6000, "We are now past the two hour mark."]]
+    },
+    "V3_bracket_decimal_s": {
+      "shape": "[SSS.SSs] bracketed decimal seconds with trailing s unit",
+      "timestamped_text": "[188.96s] So, I'll call this meeting to order.\n[212.5s] Roll call vote, please.\n[999.01s] The motion carries unanimously.\n",
+      "expected": [[188, "So, I'll call this meeting to order."], [212, "Roll call vote, please."], [999, "The motion carries unanimously."]]
+    },
+    "V4_bare_decimal_tab": {
+      "shape": "bare decimal seconds + literal TAB",
+      "timestamped_text": "746.32\tI'll tap on the microphone to test it.\n812.09\tThe public hearing is now open.\n1203.5\tMotion to adjourn the meeting.\n",
+      "expected": [[746, "I'll tap on the microphone to test it."], [812, "The public hearing is now open."], [1203, "Motion to adjourn the meeting."]]
+    },
+    "legacy_colon": {
+      "shape": "legacy unbracketed MM:SS / HH:MM:SS (no regression)",
+      "timestamped_text": "00:00 Call to order for the record.\n72:15 Discussion of the budget continues.\n1:12:15 The second public hearing is now open.\n",
+      "expected": [[0, "Call to order for the record."], [4335, "Discussion of the budget continues."], [4335, "The second public hearing is now open."]]
+    },
+    "speaker_marker_verbatim": {
+      "shape": "turn markers (>>) stay INSIDE verbatim segment_text; never attributed",
+      "timestamped_text": "[250.0s] >> Thank you, Mr. Chair, I move to approve.\n[255.5s] >> Second.\n",
+      "expected": [[250, ">> Thank you, Mr. Chair, I move to approve."], [255, ">> Second."]]
+    }
+  },
+  "negatives": [
+    "[42] footnote or list marker, no dot",
+    "12.5 Discussion of budget line item (space, not a tab)",
+    "746.32",
+    "[1.2.3] malformed multi-dot token",
+    "[3.3]",
+    "188.96s trailing-s but no bracket and no tab",
+    "HEADER LINE WITH NO TIMESTAMP AT ALL"
+  ]
+}
