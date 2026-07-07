@@ -148,20 +148,30 @@ def _statements_for_timed_transcript(conn: sqlite3.Connection, transcript_id: in
     return created
 
 
-def structure(corpus_root: Path, db_path: Path, *, skip_ingest: bool = False) -> dict:
-    """Run the full deterministic structuring pass. Returns a summary dict."""
+def structure(corpus_root: Path, db_path: Path, *, skip_ingest: bool = False,
+              only_date: str | None = None) -> dict:
+    """Run the full deterministic structuring pass. Returns a summary dict.
+
+    `only_date` (YYYY-MM-DD), when set, narrows the pass to one meeting date
+    (GOV-621 Option-C pilot). The narrowing mirrors the ingest filter: the signed
+    walk runs unchanged, then folders/selection are exclude-only filtered to the
+    window, so no meeting/gap/statement is created outside the pilot scope.
+    """
     corpus_root = Path(corpus_root).resolve()
 
     # §4.0 — ensure documents + sources exist (idempotent GOV-124 ingest).
     detected_run_id = None
     if not skip_ingest:
-        isum = ingest.ingest(corpus_root, db_path, dry_run=False)
+        isum = ingest.ingest(corpus_root, db_path, dry_run=False, only_date=only_date)
         detected_run_id = isum.get("run_id")
     else:
         db.apply_migrations(db_path)
 
     folders = mlc.iter_meeting_folders(corpus_root)              # 124, oldest→newest
     selection = mlc.iter_source_of_record_files(corpus_root)
+    if only_date:  # post-walk exclude-only scope to the pilot window (see ingest)
+        folders = [(d, p) for d, p in folders if d == only_date]
+        selection = [sf for sf in selection if sf.meeting_date == only_date]
     folders_with_primary = {
         sf.meeting_date for sf in selection if sf.origin == "meeting_folder"
     }
@@ -215,9 +225,18 @@ def structure(corpus_root: Path, db_path: Path, *, skip_ingest: bool = False) ->
                     commit=False,
                 )
         # each PDF document: no deterministic text extractor exists (plan §4.2).
-        pdf_docs = conn.execute(
-            "SELECT id, doc_date FROM documents WHERE LOWER(source_url) LIKE '%.pdf'"
-        ).fetchall()
+        # Scope to the pilot window when set, so a shared DB (--skip-ingest) never
+        # accrues gaps for out-of-window documents.
+        if only_date:
+            pdf_docs = conn.execute(
+                "SELECT id, doc_date FROM documents "
+                "WHERE LOWER(source_url) LIKE '%.pdf' AND doc_date = ?",
+                (only_date,),
+            ).fetchall()
+        else:
+            pdf_docs = conn.execute(
+                "SELECT id, doc_date FROM documents WHERE LOWER(source_url) LIKE '%.pdf'"
+            ).fetchall()
         for doc in pdf_docs:
             completeness.record_gap(
                 conn, subject_node_id=str(doc["id"]), subject_node_type="document",
@@ -408,10 +427,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, default=db.DEFAULT_DB_PATH)
     parser.add_argument("--skip-ingest", action="store_true",
                         help="assume documents/sources already ingested")
+    parser.add_argument("--only-date", metavar="YYYY-MM-DD", default=None,
+                        help="narrow structuring to ONE meeting date (post-walk, "
+                        "exclude-only; GOV-621 pilot scope)")
     parser.add_argument("--report", action="store_true", help="print the full markdown report")
     args = parser.parse_args(argv)
 
-    summary = structure(args.source_dir, args.db, skip_ingest=args.skip_ingest)
+    summary = structure(args.source_dir, args.db, skip_ingest=args.skip_ingest,
+                        only_date=args.only_date)
     subgraph = _sample_subgraph(args.db)
     if args.report:
         print(render_report(summary, subgraph))

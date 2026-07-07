@@ -68,6 +68,10 @@ Logs/governance/
 # captures): raw operational run output, local/vault-only per the
 # data-publication boundary — never committed. (F4 carried to main, GOV-503.)
 Logs/gov501-routine/
+# GOV-621 Option-C pilot ingest/structure run logs: raw operational output over
+# real Alpine source data, local/vault-only per the data-publication boundary —
+# never committed (backs the GOV-620 run plan's "Logs/ is local-only" assertion).
+Logs/gov621-*.log
 Clone/
 .DS_Store
 .ci-venv/
