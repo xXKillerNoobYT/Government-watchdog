@@ -45,6 +45,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sqlite3
 import sys
@@ -105,6 +106,29 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+# The ONLY public-URL signal inside the signed selection is the YouTube video id
+# embedded in `youtube_transcript_{VIDEOID}.txt` filenames. Video ids are
+# case-sensitive, so the id is captured from the original-case filename.
+_YOUTUBE_TRANSCRIPT_RE = re.compile(
+    r"^youtube_transcript_(?P<vid>[A-Za-z0-9_-]+)\.txt$", re.IGNORECASE
+)
+
+
+def referer_url_for(sf: "mlc.SelectedFile") -> str | None:
+    """Derive the ORIGINAL public URL from corpus metadata — pure string work, no network.
+
+    Only `youtube_transcript_{VIDEOID}.txt` yields a derivable public URL
+    (`https://www.youtube.com/watch?v={VIDEOID}`, GOV-636 §4.2). Everything else
+    stays NULL, fail-closed: a media-id-only notice with no verified public base
+    URL is NOT guessed. Wayback stays `not_checked` — publication-gate work is out
+    of this chain's scope; this only records provenance for later reviewer use.
+    """
+    m = _YOUTUBE_TRANSCRIPT_RE.match(sf.path.name)
+    if m:
+        return f"https://www.youtube.com/watch?v={m.group('vid')}"
+    return None
+
+
 def ensure_corpus_source(conn, corpus_root: Path, *, scan_date: str) -> None:
     """Upsert the single corpus-level `sources` row (C4) via the validated path."""
     seed = {
@@ -135,25 +159,29 @@ def ensure_corpus_source(conn, corpus_root: Path, *, scan_date: str) -> None:
 
 def _upsert_document(conn, *, source_url: str, title: str, doc_type: str,
                      doc_date: str, local_path: str, sha256: str,
-                     size_bytes: int, fetch_time_utc: str) -> bool:
+                     size_bytes: int, fetch_time_utc: str,
+                     referer_url: str | None = None) -> bool:
     """Idempotent upsert keyed on the UNIQUE source_url. Returns True if new.
 
     fetch_time_utc is preserved on conflict (stable first-seen provenance), so a
     re-run changes no row meaningfully — supports the reproducibility AC.
+    `referer_url` carries the derived original public URL when available (GOV-636
+    §4.2); it stays NULL fail-closed otherwise and never triggers a network call.
     """
     existing = conn.execute(
         "SELECT id FROM documents WHERE source_url = ?", (source_url,)
     ).fetchone()
     conn.execute(
-        "INSERT INTO documents (source_url, title, doc_type, doc_date, local_path, "
-        "sha256, size_bytes, fetch_time_utc, source_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "INSERT INTO documents (source_url, referer_url, title, doc_type, doc_date, "
+        "local_path, sha256, size_bytes, fetch_time_utc, source_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(source_url) DO UPDATE SET "
-        "title=excluded.title, doc_type=excluded.doc_type, doc_date=excluded.doc_date, "
+        "referer_url=excluded.referer_url, title=excluded.title, "
+        "doc_type=excluded.doc_type, doc_date=excluded.doc_date, "
         "local_path=excluded.local_path, sha256=excluded.sha256, "
         "size_bytes=excluded.size_bytes, source_id=excluded.source_id",
-        (source_url, title, doc_type, doc_date, local_path, sha256, size_bytes,
-         fetch_time_utc, CORPUS_SOURCE_ID),
+        (source_url, referer_url, title, doc_type, doc_date, local_path, sha256,
+         size_bytes, fetch_time_utc, CORPUS_SOURCE_ID),
     )
     return existing is None
 
@@ -232,6 +260,7 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
     new_rows = 0
     copied = 0
     skipped_hash = 0
+    referer_derived = 0
     failures: list[dict] = []
     folders_with_primary: set[str] = set()
 
@@ -278,6 +307,9 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
                         dest.unlink(missing_ok=True)
                         raise OSError(f"copy hash mismatch for {sf.path}")
                     copied += 1
+                referer_url = referer_url_for(sf)
+                if referer_url is not None:
+                    referer_derived += 1
                 is_new = _upsert_document(
                     conn,
                     source_url=source_url,
@@ -288,6 +320,7 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
                     sha256=sha,
                     size_bytes=sf.path.stat().st_size,
                     fetch_time_utc=_now_utc(),
+                    referer_url=referer_url,
                 )
                 new_rows += int(is_new)
             except Exception as exc:  # record, continue; surfaced in the run log
@@ -324,14 +357,14 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
                        copied=copied, failures=failures,
                        folders_with_primary=folders_with_primary,
                        run_id=run_id, dry_run=False, only_date=only_date,
-                       skipped_hash=skipped_hash)
+                       skipped_hash=skipped_hash, referer_derived=referer_derived)
     summary["orphans"] = orphans
     return summary
 
 
 def _summary(corpus_root, selection, by_doc_type, *, new_rows, copied, failures,
              folders_with_primary, run_id, dry_run, only_date=None,
-             skipped_hash=0) -> dict:
+             skipped_hash=0, referer_derived=0) -> dict:
     all_folders = [d for d, _ in mlc.iter_meeting_folders(corpus_root)]
     if only_date:  # scope coverage to the pilot window so denominators stay coherent
         all_folders = [d for d in all_folders if d == only_date]
@@ -343,6 +376,7 @@ def _summary(corpus_root, selection, by_doc_type, *, new_rows, copied, failures,
         "new_documents": new_rows,
         "copied_to_raw_store": copied,
         "skipped_hash": skipped_hash,
+        "referer_url_derived": referer_derived,
         "by_doc_type": dict(sorted(by_doc_type.items())),
         "failures": failures,
         "coverage": {
@@ -363,6 +397,8 @@ def render_report(summary: dict) -> str:
     lines.append(f"- new `documents` rows: {summary['new_documents']}")
     lines.append(f"- copied to gitignored raw store: {summary['copied_to_raw_store']}")
     lines.append(f"- skipped:hash (unchanged, zero processing): {summary.get('skipped_hash', 0)}")
+    lines.append(f"- referer_url derived (youtube video id → public URL, no network): "
+                 f"{summary.get('referer_url_derived', 0)}")
     if summary.get("planned") is not None:
         p = summary["planned"]
         lines.append(
