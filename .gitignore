@@ -72,6 +72,10 @@ Logs/gov501-routine/
 # real Alpine source data, local/vault-only per the data-publication boundary —
 # never committed (backs the GOV-620 run plan's "Logs/ is local-only" assertion).
 Logs/gov621-*.log
+# GOV-637 full-corpus ingest run artifacts (leg 2 of the GOV-612 full-ingest chain):
+# run logs AND the pilot-baseline cross-check (source_url/sha256) — reviewer-internal
+# provenance over real Alpine source data, local/vault-only, never committed.
+Logs/gov637-*
 # GOV-634 refresh-runner run logs (GOV-631 T1): operational output over real
 # Alpine source data — local/vault-only, never committed.
 Logs/refresh-runner/

@@ -191,17 +191,27 @@ def structure(corpus_root: Path, db_path: Path, *, skip_ingest: bool = False,
         total_segments = 0
         total_statements = 0
         meetings_with_transcript: set[str] = set()
+        structuring_failures: list[dict] = []
         for item in bsum["items"]:
             tid = item.get("transcript_id")
             if tid is None:
                 continue
-            _link_transcript_to_meeting(conn, tid, item["doc_date"])
-            meetings_with_transcript.add(item["doc_date"])
-            if item["timed"]:
-                segments = seg.segment_transcript(conn, tid, source_id=CORPUS_SOURCE_ID)
-                total_segments += len(segments)
-                total_statements += _statements_for_timed_transcript(conn, tid, segments)
-            # untimed: bridge already recorded missing_timestamps; no segments/statements.
+            # Per-transcript isolation (GOV-636 §4.1): one malformed transcript must
+            # not abort the whole 134-folder pass. Record + continue; exit 1 if any.
+            try:
+                _link_transcript_to_meeting(conn, tid, item["doc_date"])
+                meetings_with_transcript.add(item["doc_date"])
+                if item["timed"]:
+                    segments = seg.segment_transcript(conn, tid, source_id=CORPUS_SOURCE_ID)
+                    total_segments += len(segments)
+                    total_statements += _statements_for_timed_transcript(conn, tid, segments)
+                # untimed: bridge already recorded missing_timestamps; no segments/statements.
+            except Exception as exc:  # isolate this transcript, keep the run going
+                structuring_failures.append({
+                    "transcript_id": tid,
+                    "doc_date": item.get("doc_date"),
+                    "error": str(exc),
+                })
 
         # §4.2 — coverage gaps (first-class, surfaced). detail anchors on ids/dates,
         # never raw titles (B3): a meeting date / doc id is not human-name PII.
@@ -260,6 +270,7 @@ def structure(corpus_root: Path, db_path: Path, *, skip_ingest: bool = False,
             "transcripts_untimed": bsum["untimed"],
             "segments_created": total_segments,
             "statements_created": total_statements,
+            "structuring_failures": structuring_failures,
             "run_id": detected_run_id,
         })
     return summary
@@ -384,6 +395,10 @@ def render_report(summary: dict, subgraph: dict | None) -> str:
         f"untimed {summary['transcripts_untimed']})"
     )
     lines.append(f"- segments: {summary['segments_created']} · statements: {summary['statements_created']}")
+    sf = summary.get("structuring_failures") or []
+    lines.append(f"- per-transcript structuring failures (isolated, run continued): {len(sf)}")
+    for f in sf:
+        lines.append(f"  - transcript {f['transcript_id']} ({f['doc_date']}): {f['error']}")
     lines.append("")
     lines.append("## §5.4 conservative speaker attribution")
     lines.append(
@@ -436,14 +451,18 @@ def main(argv: list[str] | None = None) -> int:
     summary = structure(args.source_dir, args.db, skip_ingest=args.skip_ingest,
                         only_date=args.only_date)
     subgraph = _sample_subgraph(args.db)
+    n_struct_fail = len(summary.get("structuring_failures") or [])
     if args.report:
         print(render_report(summary, subgraph))
     else:
         r = summary["rows"]
         print(f"meetings={r['meetings']} segments={r['transcript_segments']} "
               f"statements={r['statements']} evidence={r['evidence_links']} "
-              f"gaps={r['completeness_gaps']} orphans={summary['no_orphan_statements']}")
-    return 1 if summary["no_orphan_statements"] else 0
+              f"gaps={r['completeness_gaps']} orphans={summary['no_orphan_statements']} "
+              f"structuring_failures={n_struct_fail}")
+    # exit 1 on any orphan statement (invariant breach) OR any isolated per-transcript
+    # failure — so a partial structuring run is never silently reported as clean.
+    return 1 if (summary["no_orphan_statements"] or n_struct_fail) else 0
 
 
 if __name__ == "__main__":
