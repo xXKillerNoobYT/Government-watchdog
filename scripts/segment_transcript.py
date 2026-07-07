@@ -15,10 +15,15 @@ Deterministic by construction — NO AI, no network, no model:
   paraphrase/AI-summary path is explicitly out of scope (1.07 §5.4 — that is the
   later `statements` layer).
 
-Input format (matches fetch_transcripts.py output): one line per snippet,
-``MM:SS text`` where ``MM`` is *total minutes* (``int(start // 60)``, so it may
-exceed 59), e.g. ``72:15`` = 1h12m15s. ``HH:MM:SS text`` is also accepted. Lines
-that do not start with a timestamp (headers, blanks) are skipped deterministically.
+Input format: one line per snippet, prefixed by a deterministic timestamp
+locator. The legacy fetch_transcripts.py output is ``MM:SS text`` where ``MM`` is
+*total minutes* (``int(start // 60)``, so it may exceed 59), e.g. ``72:15`` =
+1h12m15s; ``HH:MM:SS text`` is also accepted. GOV-641 extends the contract to the
+real TOA corpus locator family (see ``_LINE_RE`` below): bracketed ``[3.3]`` /
+``[100:00]`` / ``[188.96s]`` and bare ``746.32\ttext`` (literal TAB). Decimal-
+seconds tokens are floored to whole seconds (``timestamp_seconds`` is INTEGER).
+Lines that do not start with a parseable locator (headers, blanks, list markers)
+are skipped deterministically — never fabricated.
 
 Data boundary (1.07 §7): `transcript_path` is the vault-only local path to the
 preserved transcript; it is stored for provenance and must never reach a web-safe
@@ -49,8 +54,30 @@ logger = logging.getLogger("segment_transcript")
 ALLOWED_CONFIDENCE = ("high", "medium", "low")
 DEFAULT_CONFIDENCE = "medium"
 
-# A timestamp token (MM:SS or HH:MM:SS) followed by at least one space and text.
-_LINE_RE = re.compile(r"^\s*(\d{1,2}(?::\d{2}){1,2})\s+(.*\S)\s*$")
+# THE single timed-line contract (GOV-641 §1). ONE compiled regex, anchored,
+# shared verbatim by transcript_from_documents.has_parseable_timestamps() so
+# classification and segmentation can never disagree.
+#
+# Covers the full deterministic locator family measured in the TOA corpus:
+#   V1  ``[3.3] text``        bracketed decimal seconds (1-3 decimals)
+#   V2  ``[100:00] text``     bracketed colon; total-minutes field up to 4 digits
+#   V3  ``[188.96s] text``    bracketed decimal seconds with a trailing ``s`` unit
+#   V4  ``746.32\ttext``      bare decimal seconds + a LITERAL TAB (never a space)
+#   legacy ``72:15 text`` / ``1:12:15 text``  unbracketed MM:SS / HH:MM:SS
+#
+# Fail-closed by construction (GOV-641 §1): the dot is REQUIRED in every decimal
+# variant (so ``[42]`` list/footnote markers never parse), V4 REQUIRES a literal
+# TAB (so space-separated packet numbers like ``12.5 Discussion`` never parse),
+# and every branch still demands trailing ``\S`` text (token-only lines skipped).
+_COLON = r"\d{1,4}(?::\d{2}){1,2}"   # MM:SS / MMM:SS / HH:MM:SS (2-part = total-minutes)
+_DECIMAL = r"\d{1,5}\.\d{1,3}"       # decimal seconds — the dot is REQUIRED
+_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"\[(" + _COLON + r"|" + _DECIMAL + r"s?)\][ \t]+"   # V1/V2/V3 bracketed token
+    r"|(" + _COLON + r")[ \t]+"                          # legacy unbracketed MM:SS/HH:MM:SS
+    r"|(" + _DECIMAL + r")\t[ \t]*"                      # V4 bare decimal + literal TAB
+    r")(.*\S)\s*$"
+)
 
 
 def _now_utc_iso() -> str:
@@ -58,18 +85,39 @@ def _now_utc_iso() -> str:
 
 
 def parse_timestamp(token: str) -> int:
-    """Parse a ``MM:SS`` or ``HH:MM:SS`` token into integer seconds.
+    """Parse a timed-line locator token into integer seconds (GOV-641 §2).
 
-    Two-part tokens follow the fetch_transcripts.py convention where the first
-    field is *total minutes* (may exceed 59); three-part tokens are H:M:S.
+    Normalizes then dispatches on shape:
+    - Strip enclosing ``[``/``]`` and one trailing ``s`` unit (bracketed variants).
+    - Colon tokens keep the legacy rules: two-part = *total minutes*×60 + seconds
+      (fetch_transcripts.py convention, first field may exceed 59); three-part =
+      H:M:S.
+    - Decimal-seconds tokens are floored: ``int(float(token))``. Floor is
+      deterministic and a video seek lands ≤1s *before* the utterance, never
+      after; ``transcript_segments.timestamp_seconds`` is INTEGER (migration
+      0006), so no sub-second precision is stored — the sha-addressed raw file
+      remains the source-of-record for the exact token.
+
+    A token that the grammar matched but this parser cannot resolve raises
+    ``ValueError`` (loud abort): grammar and parser must stay co-extensive, so a
+    parse failure is a defect, never a silent skip.
     """
-    parts = token.split(":")
-    if len(parts) == 2:
-        minutes, seconds = int(parts[0]), int(parts[1])
-        return minutes * 60 + seconds
-    if len(parts) == 3:
-        hours, minutes, seconds = int(parts[0]), int(parts[1]), int(parts[2])
-        return hours * 3600 + minutes * 60 + seconds
+    token = token.strip()
+    if token.startswith("[") and token.endswith("]"):
+        token = token[1:-1]
+    if token.endswith("s"):
+        token = token[:-1]
+    if ":" in token:
+        parts = token.split(":")
+        if len(parts) == 2:
+            minutes, seconds = int(parts[0]), int(parts[1])
+            return minutes * 60 + seconds
+        if len(parts) == 3:
+            hours, minutes, seconds = int(parts[0]), int(parts[1]), int(parts[2])
+            return hours * 3600 + minutes * 60 + seconds
+        raise ValueError(f"unparseable timestamp token: {token!r}")
+    if "." in token:
+        return int(float(token))  # floor decimal seconds to whole seconds
     raise ValueError(f"unparseable timestamp token: {token!r}")
 
 
@@ -78,6 +126,25 @@ def format_human(total_seconds: int) -> str:
     hours, rem = divmod(int(total_seconds), 3600)
     minutes, seconds = divmod(rem, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def count_nonmonotonic(records: list[dict]) -> int:
+    """Count segments whose timestamp goes *backwards* vs the previous segment.
+
+    Observability only (GOV-641 §4): monotonicity is expected but NEVER enforced.
+    Segment order is file order (`segment_index`); rows are never re-sorted and
+    out-of-order lines are never rejected — reordering would fabricate structure.
+    A non-zero count on the real corpus signals a format/drift surprise worth a
+    human look, so the run summary logs it. No mutation, no gate.
+    """
+    nonmono = 0
+    prev: int | None = None
+    for record in records:
+        ts = record["timestamp_seconds"]
+        if prev is not None and ts < prev:
+            nonmono += 1
+        prev = ts
+    return nonmono
 
 
 def parse_timestamped_text(text: str) -> list[tuple[int, str]]:
@@ -95,7 +162,10 @@ def parse_timestamped_text(text: str) -> list[tuple[int, str]]:
         match = _LINE_RE.match(stripped)
         if not match:
             continue
-        segments.append((parse_timestamp(match.group(1)), match.group(2).strip()))
+        # Exactly one of the three token groups matches per line (bracketed /
+        # legacy-colon / bare-decimal); group 4 is always the segment text.
+        token = match.group(1) or match.group(2) or match.group(3)
+        segments.append((parse_timestamp(token), match.group(4).strip()))
     return segments
 
 
@@ -214,7 +284,14 @@ def run(*, transcript_id: int | None, all_transcripts: bool, dry_run: bool, db_p
     for tid in ids:
         records = segment_transcript(conn, tid, dry_run=dry_run)
         total += len(records)
-        logger.info("transcript %s -> %d segments%s", tid, len(records), " (dry-run)" if dry_run else "")
+        nonmono = count_nonmonotonic(records)
+        logger.info(
+            "transcript %s -> %d segments (nonmonotonic_lines=%d)%s",
+            tid,
+            len(records),
+            nonmono,
+            " (dry-run)" if dry_run else "",
+        )
     logger.info("DONE: %d transcripts, %d segments total", len(ids), total)
     return total
 
