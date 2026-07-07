@@ -76,6 +76,10 @@ Logs/gov621-*.log
 # run logs AND the pilot-baseline cross-check (source_url/sha256) — reviewer-internal
 # provenance over real Alpine source data, local/vault-only, never committed.
 Logs/gov637-*
+# GOV-644 full-run re-structuring artifacts (leg 4 of the GOV-612 full-ingest chain):
+# structuring/ingest/gap-reconcile/verification run logs over real Alpine source
+# data — reviewer-internal provenance, local/vault-only, never committed.
+Logs/gov644-*
 # GOV-634 refresh-runner run logs (GOV-631 T1): operational output over real
 # Alpine source data — local/vault-only, never committed.
 Logs/refresh-runner/
