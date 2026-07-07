@@ -1,0 +1,47 @@
+# GOV-634 (implements GOV-631 T6): tests + graphify AST hygiene wired into the
+# change loop, so verification stays free (zero AI credits).
+#
+# Runs on every PR that touches pipeline code, tests, or migrations — the
+# pre-merge complement to the manual local-runner-smoke.yml dispatch.
+# Self-hosted Mac runner; python3.12 is REQUIRED (the suite uses PEP-701
+# nested f-strings; 3.11 fails on stage2_traceability.py — known, GOV-576/579).
+name: Backend Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "Database/migrations/**"
+      - "requirements.txt"
+      - ".github/workflows/backend-tests.yml"
+
+jobs:
+  pytest:
+    name: pytest (py3.12) + graphify AST update
+    runs-on: [self-hosted, macOS, ARM64, government-watchdog, gov-backend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up venv (python3.12 required)
+        run: |
+          PY="$(command -v python3.12 || true)"
+          if [ -z "$PY" ]; then
+            echo "python3.12 not found on runner — suite needs >=3.12 (PEP 701)"; exit 1
+          fi
+          "$PY" -m venv .ci-venv
+          ./.ci-venv/bin/pip install --quiet --upgrade pip
+          ./.ci-venv/bin/pip install --quiet -r requirements.txt
+      - name: Run test suite
+        run: ./.ci-venv/bin/python -m pytest -q
+      - name: Graphify AST update (free; only when a graph exists)
+        run: |
+          # T6: keep the knowledge graph current on every change. AST-only —
+          # `graphify update` spends no LLM/API tokens. Building a graph from
+          # scratch (`graphify extract`) is NOT done here: it can spend API
+          # tokens and needs manager approval (CTO instruction rule).
+          if [ -f graphify-out/graph.json ] && command -v graphify >/dev/null 2>&1; then
+            graphify update .
+          else
+            echo "no graphify-out/graph.json in this repo (or CLI absent) — step self-skips"
+          fi

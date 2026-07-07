@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,6 +158,44 @@ def _upsert_document(conn, *, source_url: str, title: str, doc_type: str,
     return existing is None
 
 
+def _stored_sha(conn, source_url: str) -> str | None:
+    """The sha256 already on record for this source_url, or None if never seen."""
+    row = conn.execute(
+        "SELECT sha256 FROM documents WHERE source_url = ?", (source_url,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _plan_against_db(selection: list, db_path: Path) -> dict | None:
+    """Dry-run hash comparison against an EXISTING DB, strictly read-only (T2/GOV-634).
+
+    Classifies every selected file as `skipped_hash` (unchanged: stored sha256
+    matches the file's current hash — an apply run would do ZERO processing),
+    `reprocess_changed` (row exists, hash differs), or `ingest_new`. Returns None
+    when there is no DB to compare against (fresh run) or its schema predates the
+    `documents` contract — a dry-run must never create or migrate a DB.
+    """
+    if not Path(db_path).exists():
+        return None
+    plan = {"ingest_new": 0, "reprocess_changed": 0, "skipped_hash": 0}
+    try:
+        conn = sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True)
+        try:
+            for sf in selection:
+                stored = _stored_sha(conn, sf.path.resolve().as_uri())
+                if stored is None:
+                    plan["ingest_new"] += 1
+                elif stored == sha256_file(sf.path):
+                    plan["skipped_hash"] += 1
+                else:
+                    plan["reprocess_changed"] += 1
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return plan
+
+
 def _apply_only_date(selection: list, only_date: str | None) -> list:
     """Narrow the SIGNED selection to a single meeting date (GOV-621 pilot scope).
 
@@ -192,6 +231,7 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
     by_doc_type: dict[str, int] = {}
     new_rows = 0
     copied = 0
+    skipped_hash = 0
     failures: list[dict] = []
     folders_with_primary: set[str] = set()
 
@@ -200,10 +240,16 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
             by_doc_type[doc_type_for(sf)] = by_doc_type.get(doc_type_for(sf), 0) + 1
             if sf.origin == "meeting_folder":
                 folders_with_primary.add(sf.meeting_date)
-        return _summary(corpus_root, selection, by_doc_type, new_rows=0,
-                        copied=0, failures=failures,
-                        folders_with_primary=folders_with_primary,
-                        run_id=None, dry_run=True, only_date=only_date)
+        # T2 (GOV-634): when a DB already exists, report what an apply run WOULD
+        # do — unchanged sources classify as skipped:hash (zero processing).
+        planned = _plan_against_db(selection, db_path)
+        summary = _summary(corpus_root, selection, by_doc_type, new_rows=0,
+                           copied=0, failures=failures,
+                           folders_with_primary=folders_with_primary,
+                           run_id=None, dry_run=True, only_date=only_date,
+                           skipped_hash=(planned or {}).get("skipped_hash", 0))
+        summary["planned"] = planned
+        return summary
 
     db.apply_migrations(db_path)
     with db.open_db(db_path) as conn:
@@ -211,9 +257,20 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
         for sf in selection:
             try:
                 sha = sha256_file(sf.path)
+                doc_type = doc_type_for(sf)
+                by_doc_type[doc_type] = by_doc_type.get(doc_type, 0) + 1
+                if sf.origin == "meeting_folder":
+                    folders_with_primary.add(sf.meeting_date)
+                source_url = sf.path.resolve().as_uri()
                 ext = sf.path.suffix.lower()
                 rel = f"{RAW_STORE_DIRNAME}/{sha[:2]}/{sha}{ext}"
                 dest = REPO_ROOT / rel
+                # T2 hash gate (GOV-631 §2 / GOV-634): unchanged source (stored
+                # sha256 matches) with its raw-store snapshot intact gets ZERO
+                # processing — no copy, no row write. Logged as skipped:hash.
+                if _stored_sha(conn, source_url) == sha and dest.exists():
+                    skipped_hash += 1
+                    continue
                 if not dest.exists():
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(sf.path, dest)
@@ -221,10 +278,9 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
                         dest.unlink(missing_ok=True)
                         raise OSError(f"copy hash mismatch for {sf.path}")
                     copied += 1
-                doc_type = doc_type_for(sf)
                 is_new = _upsert_document(
                     conn,
-                    source_url=sf.path.resolve().as_uri(),
+                    source_url=source_url,
                     title=sf.path.name,
                     doc_type=doc_type,
                     doc_date=sf.meeting_date,
@@ -234,9 +290,6 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
                     fetch_time_utc=_now_utc(),
                 )
                 new_rows += int(is_new)
-                by_doc_type[doc_type] = by_doc_type.get(doc_type, 0) + 1
-                if sf.origin == "meeting_folder":
-                    folders_with_primary.add(sf.meeting_date)
             except Exception as exc:  # record, continue; surfaced in the run log
                 failures.append({"path": str(sf.path), "error": str(exc)})
         conn.commit()
@@ -257,19 +310,28 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
             new_documents=new_rows,
             targets=[str(corpus_root)],
             notes=f"local-corpus ingest: {len(selection)} selected, {new_rows} new, "
-            f"{copied} copied to raw store, {len(failures)} failures, orphans={orphans}",
+            f"{copied} copied to raw store, skipped:hash={skipped_hash}, "
+            f"{len(failures)} failures, orphans={orphans}",
         )
+        # First-class skip accounting (T2/GOV-634; column added by migration 0019).
+        conn.execute(
+            "UPDATE crawl_runs SET skipped_hash = ? WHERE id = ?",
+            (skipped_hash, run_id),
+        )
+        conn.commit()
 
     summary = _summary(corpus_root, selection, by_doc_type, new_rows=new_rows,
                        copied=copied, failures=failures,
                        folders_with_primary=folders_with_primary,
-                       run_id=run_id, dry_run=False, only_date=only_date)
+                       run_id=run_id, dry_run=False, only_date=only_date,
+                       skipped_hash=skipped_hash)
     summary["orphans"] = orphans
     return summary
 
 
 def _summary(corpus_root, selection, by_doc_type, *, new_rows, copied, failures,
-             folders_with_primary, run_id, dry_run, only_date=None) -> dict:
+             folders_with_primary, run_id, dry_run, only_date=None,
+             skipped_hash=0) -> dict:
     all_folders = [d for d, _ in mlc.iter_meeting_folders(corpus_root)]
     if only_date:  # scope coverage to the pilot window so denominators stay coherent
         all_folders = [d for d in all_folders if d == only_date]
@@ -280,6 +342,7 @@ def _summary(corpus_root, selection, by_doc_type, *, new_rows, copied, failures,
         "selected": len(selection),
         "new_documents": new_rows,
         "copied_to_raw_store": copied,
+        "skipped_hash": skipped_hash,
         "by_doc_type": dict(sorted(by_doc_type.items())),
         "failures": failures,
         "coverage": {
@@ -299,6 +362,13 @@ def render_report(summary: dict) -> str:
     lines.append(f"{tag}selected source-of-record files: **{summary['selected']}**")
     lines.append(f"- new `documents` rows: {summary['new_documents']}")
     lines.append(f"- copied to gitignored raw store: {summary['copied_to_raw_store']}")
+    lines.append(f"- skipped:hash (unchanged, zero processing): {summary.get('skipped_hash', 0)}")
+    if summary.get("planned") is not None:
+        p = summary["planned"]
+        lines.append(
+            f"- planned (dry-run vs existing DB): {p['skipped_hash']} skipped:hash · "
+            f"{p['ingest_new']} new · {p['reprocess_changed']} changed"
+        )
     if "orphans" in summary:
         lines.append(f"- orphan documents (must be 0): **{summary['orphans']}**")
     if summary["run_id"] is not None:
@@ -353,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{tag}selected={summary['selected']} new={summary['new_documents']} "
             f"copied={summary['copied_to_raw_store']} "
+            f"skipped:hash={summary.get('skipped_hash', 0)} "
             f"with_primary={summary['coverage']['with_primary_source']}/"
             f"{summary['coverage']['meeting_folders_total']} "
             f"failures={len(summary['failures'])}"
