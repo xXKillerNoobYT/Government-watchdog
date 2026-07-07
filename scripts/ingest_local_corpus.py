@@ -157,13 +157,34 @@ def _upsert_document(conn, *, source_url: str, title: str, doc_type: str,
     return existing is None
 
 
-def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False) -> dict:
+def _apply_only_date(selection: list, only_date: str | None) -> list:
+    """Narrow the SIGNED selection to a single meeting date (GOV-621 pilot scope).
+
+    Post-walk, exclude-ONLY: the signed GOV-133 walk + classification run first and
+    unchanged; this only DROPS files whose `meeting_date` != `only_date`. It can never
+    add or reclassify a file, so sign-off condition C1 (no drift) holds. Provenance
+    (`source_url` from the real path) is untouched. Allowlisted out-of-folder notices
+    carry their own parsed date and are dropped unless they match the window.
+    """
+    if not only_date:
+        return selection
+    return [sf for sf in selection if sf.meeting_date == only_date]
+
+
+def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False,
+           only_date: str | None = None) -> dict:
     """Ingest the signed source-of-record selection, oldest→newest.
+
+    `only_date` (YYYY-MM-DD), when set, narrows the run to one meeting folder
+    (GOV-621 Option-C pilot) via a post-walk exclude-only filter — see
+    `_apply_only_date`.
 
     Returns a summary dict (counts, doc_type breakdown, coverage, run id).
     """
     corpus_root = corpus_root.resolve()
-    selection = mlc.iter_source_of_record_files(corpus_root)
+    selection = _apply_only_date(
+        mlc.iter_source_of_record_files(corpus_root), only_date
+    )
     raw_store = REPO_ROOT / RAW_STORE_DIRNAME
     started = _now_utc()
     scan_date = started[:10]
@@ -182,7 +203,7 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False) -> dict:
         return _summary(corpus_root, selection, by_doc_type, new_rows=0,
                         copied=0, failures=failures,
                         folders_with_primary=folders_with_primary,
-                        run_id=None, dry_run=True)
+                        run_id=None, dry_run=True, only_date=only_date)
 
     db.apply_migrations(db_path)
     with db.open_db(db_path) as conn:
@@ -242,14 +263,16 @@ def ingest(corpus_root: Path, db_path: Path, *, dry_run: bool = False) -> dict:
     summary = _summary(corpus_root, selection, by_doc_type, new_rows=new_rows,
                        copied=copied, failures=failures,
                        folders_with_primary=folders_with_primary,
-                       run_id=run_id, dry_run=False)
+                       run_id=run_id, dry_run=False, only_date=only_date)
     summary["orphans"] = orphans
     return summary
 
 
 def _summary(corpus_root, selection, by_doc_type, *, new_rows, copied, failures,
-             folders_with_primary, run_id, dry_run) -> dict:
+             folders_with_primary, run_id, dry_run, only_date=None) -> dict:
     all_folders = [d for d, _ in mlc.iter_meeting_folders(corpus_root)]
+    if only_date:  # scope coverage to the pilot window so denominators stay coherent
+        all_folders = [d for d in all_folders if d == only_date]
     md_only = [d for d in all_folders if d not in folders_with_primary]
     return {
         "dry_run": dry_run,
@@ -314,11 +337,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="SQLite DB path (default: Database/gov_watchdog.db)")
     parser.add_argument("--dry-run", action="store_true",
                         help="plan the selection without writing rows/copying bytes")
+    parser.add_argument("--only-date", metavar="YYYY-MM-DD", default=None,
+                        help="narrow the run to ONE meeting date (post-walk, "
+                        "exclude-only; GOV-621 pilot scope)")
     parser.add_argument("--report", action="store_true",
                         help="print the full markdown run/coverage report")
     args = parser.parse_args(argv)
 
-    summary = ingest(args.source_dir, args.db, dry_run=args.dry_run)
+    summary = ingest(args.source_dir, args.db, dry_run=args.dry_run,
+                     only_date=args.only_date)
     if args.report:
         print(render_report(summary))
     else:
