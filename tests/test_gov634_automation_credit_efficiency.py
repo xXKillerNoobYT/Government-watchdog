@@ -418,7 +418,8 @@ def test_filer_dry_run_default_and_dedupe_and_apply(tmp_path: Path) -> None:
     out2 = filer.file_issues(findings, apply=True, transport=transport2)
     assert out2["filed"] == [key] and len(out2["created"]) == 1
     method, url, body = calls[-1]
-    assert method == "POST" and url.endswith("/api/issues")
+    assert method == "POST"
+    assert url.endswith(f"/api/companies/{filer.COMPANY_ID}/issues")
     assert f"[auto:T5 {key}]" in body["title"]
     assert body["assigneeAgentId"] == filer.CTO_AGENT_ID
 

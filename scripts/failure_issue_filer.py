@@ -223,7 +223,11 @@ def file_issues(findings: list[dict], *, apply: bool = False,
                 "priority": "high",
                 "status": "todo",
             }
-            created.append(transport("POST", f"{base_url}/api/issues", payload))
+            # Issue creation is COMPANY-SCOPED (verified live on the local
+            # control plane 2026-07-07: flat POST /api/issues → route not found).
+            created.append(transport(
+                "POST", f"{base_url}/api/companies/{COMPANY_ID}/issues", payload
+            ))
     return {
         "findings": len(findings),
         "would_file" if not apply else "filed": [f["dedupe_key"] for f in to_file],
