@@ -1,0 +1,87 @@
+# DEPLOY-2026 (GOV-722) — reproducible local Compose deployment.
+#
+# Private/loopback only (GOV-420 hold): NO service publishes a host port. The
+# ingress binds 127.0.0.1 inside its own container (webhook_ingress refuses any
+# non-loopback host by design); services are exercised via `docker compose exec`,
+# never a public interface. The registry DB and raw store are VOLUME MOUNTS,
+# never image layers (INV-7).
+#
+# One-command bring-up (default profile):
+#   docker-compose -f deploy/docker-compose.yml up --build
+#
+# Scale-shape stand-in (adds the managed-DB drill target):
+#   docker-compose -f deploy/docker-compose.yml --profile scale-shape up --build
+#
+# Secrets: values come from deploy/.env (gitignored). deploy/.env.example is the
+# committed template and holds only placeholders — a test asserts no committed
+# compose/Dockerfile/.env.example content contains secret-shaped values (PORT-4).
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  environment:
+    GW_DB_PATH: /data/gov_watchdog.db
+  volumes:
+    # Synthetic/local registry mounted read-write; raw store mounted read-only.
+    # NEVER the real vault — point DATA_DIR at a scratch/synthetic dir.
+    - ${DATA_DIR:-./data}:/data
+  restart: "no"
+
+services:
+  # Signed-webhook ingress — long-running HTTP server, loopback-only (INV-4).
+  ingress:
+    <<: *app
+    command: >
+      python scripts/webhook_ingress.py --db /data/gov_watchdog.db
+      --host 127.0.0.1 --port 8719
+
+  # Micro-job worker — one-shot CLI wrapped in a poll loop. Dry-run by default
+  # (no --apply); flip to --apply only in a trusted local run.
+  worker:
+    <<: *app
+    command: >
+      sh -c 'while true; do python scripts/job_worker.py --db /data/gov_watchdog.db
+      --max 5 --log-dir /data/logs; sleep 5; done'
+
+  # Paperclip outbox relay — dry-run default (no --apply).
+  relay:
+    <<: *app
+    command: >
+      sh -c 'while true; do python scripts/paperclip_outbox.py relay
+      --db /data/gov_watchdog.db; sleep 10; done'
+
+  # MCP JSON-RPC service — stdio transport (no socket, INV-4). Held resident on
+  # an open stdin; exercised via `docker compose exec -T mcp ...` piping JSON-RPC.
+  mcp:
+    <<: *app
+    command: python deploy/mcp_stdio.py --db /data/gov_watchdog.db
+    stdin_open: true
+    tty: true
+
+  # --- scale-shape profile: managed-DB stand-in for the portability drill -----
+  # A real different engine (postgres:16) the drill migrates into to prove
+  # export→restore→verify hashes equal and access decisions identical (AM-6).
+  # Zero cloud spend: this is a LOCAL container, not a hosted service (plan D3).
+  postgres:
+    image: postgres:16
+    profiles: ["scale-shape"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-drill}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-drill}
+      POSTGRES_DB: ${POSTGRES_DB:-portability_drill}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-drill}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: "no"
+
+# Object-storage stand-in (MinIO) is a NAMED FOLLOW-UP, not shipped in this leg
+# (plan D3 stretch goal). The object-storage adapter interface is declared in the
+# DEPLOY-2026 contract; a MinIO drill target is deferred to a GOV-722 follow-up.
+
+volumes:
+  pgdata:
