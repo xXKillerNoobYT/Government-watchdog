@@ -62,6 +62,12 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "node_label_aliases",  # GOV-98 addendum: plain-language label layer (§A.7)
         "reviewer_identities",  # GOV-131: reviewer-identity registry (Lane-5 allowlist SoT)
         "completeness_gaps",  # GOV-125: first-class completeness-gap layer (plan §3)
+        "webhook_sources",  # GOV-733: CTRL-2026 §3.1 — registered ingress principals
+        "event_envelopes",  # GOV-733: CTRL-2026 §3.1 — WRITE-ONCE signed-event record
+        "event_dedupe_hits",  # GOV-733: CTRL-2026 §3.1 — append-only replay ledger
+        "event_jobs",  # GOV-733: CTRL-2026 §3.1 — micro-job LED-1 rows
+        "job_transitions",  # GOV-733: CTRL-2026 §3.1 — append-only state-machine audit
+        "paperclip_outbox",  # GOV-733: CTRL-2026 §3.1 — bounded safe hand-off to Paperclip
     }
 
 
