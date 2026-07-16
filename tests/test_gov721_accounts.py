@@ -71,7 +71,10 @@ def test_decisions_append_rows_and_latest_wins(conn):
 
 def test_tier_tie_break_on_identical_timestamp_uses_rowid(conn):
     uid = service.create_user(conn, email="tie@example.com")
-    ts = "2026-07-16T12:00:00.000+00:00"
+    # Far-future stamp: must sort AFTER the waitlisted row create_user just
+    # wrote with the real clock (the original 2026-07-16T12:00 literal became
+    # a time bomb the moment the wall clock passed it — GOV-771 repair).
+    ts = "2099-01-01T00:00:00.000+00:00"
     for tier in ("approved", "revoked"):  # same granted_utc, later rowid wins
         conn.execute(
             "INSERT INTO access_grants (grant_id, user_id, tier,"
