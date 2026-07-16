@@ -80,6 +80,16 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "mcp_budget_events",
         "mcp_routing_policies",
         "mcp_provider_health",
+        # GOV-743 (LEDGER-2026 §1): nine additive area-economics tables.
+        "areas",
+        "area_state",
+        "area_transitions",
+        "area_funding_entries",
+        "area_funding_policy",
+        "area_entitlements",
+        "ledger_fixed_costs",
+        "ledger_reviewer_work",
+        "ledger_report_runs",
     }
 
 

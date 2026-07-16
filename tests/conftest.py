@@ -189,3 +189,129 @@ def fake_adapter(provider_id="fake", model="fake-1"):
     from mcp_service.providers.fake import FakeAdapter
 
     return FakeAdapter(provider_id=provider_id, model=model)
+
+
+# --- GOV-743 additive helpers (LEDGER-2026 area-economics seeding) --------------
+
+ECON_PERIOD = "2026-07"
+
+
+def _seed_envelope(conn, envelope_id, area_id, period):
+    """Seed the webhook_source + event_envelope FK chain for an event_job."""
+    ts = f"{period}-01T00:00:00.000+00:00"
+    conn.execute(
+        "INSERT OR IGNORE INTO webhook_sources (source_key, secret_ref, active, created_at)"
+        " VALUES ('econ-src', 'ref:econ', 1, ?)",
+        (ts,),
+    )
+    conn.execute(
+        "INSERT INTO event_envelopes (envelope_id, received_at, source_key,"
+        " canonical_payload, payload_sha256, source_hash, area_id, event_kind,"
+        " policy_version, dedupe_key) VALUES (?, ?, 'econ-src', '{}', ?, ?, ?,"
+        " 'ingest', 'p1', ?)",
+        (envelope_id, ts, f"h{envelope_id}", f"sh{envelope_id}", area_id,
+         f"dk-{envelope_id}"),
+    )
+
+
+def seed_economics(conn):
+    """Deterministic synthetic area-economics fixture (no network, no registry data).
+
+    Two towns under one county under one state; a handful of event_jobs and
+    mcp_audit_events carrying MEASURED cost units for period 2026-07; owner-set
+    fixed cost, funding, reviewer-work, and a designed entitlement. Everything is
+    invented test data — never real registry rows.
+    """
+    from economics import areas
+
+    areas.create_area(conn, area_id="wy", kind="state", name="Wyoming")
+    areas.create_area(conn, area_id="lincoln", kind="county", name="Lincoln County",
+                      parent_area_id="wy")
+    areas.create_area(conn, area_id="alpine", kind="town", name="Alpine",
+                      parent_area_id="lincoln")
+    areas.create_area(conn, area_id="etna", kind="town", name="Etna",
+                      parent_area_id="lincoln")
+
+    period = ECON_PERIOD
+    ts = f"{period}-05T00:00:00.000+00:00"
+
+    # event_jobs: 3 alpine (lane 2), 2 etna, 1 shared-pool (area_id NULL).
+    plan = [
+        ("alpine", "2_extraction", 1.0, 0.5),
+        ("alpine", "2_extraction", 2.0, 0.25),
+        ("alpine", "5_review", 0.5, 0.1),
+        ("etna", "2_extraction", 1.5, 0.4),
+        ("etna", "2_extraction", 1.0, 0.2),
+        (None, "2_extraction", 3.0, 1.0),
+    ]
+    for i, (area_id, lane, cpu_s, qw) in enumerate(plan, start=1):
+        _seed_envelope(conn, i, area_id, period)
+        conn.execute(
+            "INSERT INTO event_jobs (envelope_id, lane, area_id, state, enqueued_at,"
+            " finished_at, queue_wait_s, cpu_s, retry_count, cache_hit)"
+            " VALUES (?, ?, ?, 'done', ?, ?, ?, ?, 0, 0)",
+            (i, lane, area_id, ts, ts, qw, cpu_s),
+        )
+
+    # mcp_audit_events: MEASURED direct_cost_units + latency for F1 / SLO-3.
+    audits = [
+        ("alpine", 100, 40, 60, 120),
+        ("alpine", 150, 55, 90, 200),
+        ("etna", 80, 30, 45, 90),
+        (None, 300, 120, 180, 500),
+    ]
+    for j, (area_id, direct, inp, outp, latency) in enumerate(audits, start=1):
+        conn.execute(
+            "INSERT INTO mcp_audit_events (audit_id, area_id, kind, name, outcome,"
+            " latency_ms, provider, model, input_units, output_units,"
+            " direct_cost_units, cache_hit, retry_count, created_at)"
+            " VALUES (?, ?, 'tool', 'summarize', 'allow', ?, 'fake', 'fake-1', ?, ?,"
+            " ?, 0, 0, ?)",
+            (f"aud-{j}", area_id, latency, inp, outp, direct, ts),
+        )
+
+    # OWNER-SET fixed cost for the period.
+    conn.execute(
+        "INSERT INTO ledger_fixed_costs (period, fixed_total_units, weight_basis,"
+        " basis, created_utc) VALUES (?, 1000, 'document_share', 'OWNER-SET', ?)",
+        (period, ts),
+    )
+    # OWNER-SET funding + safety factor for alpine (F-ELIG).
+    conn.execute(
+        "INSERT INTO area_funding_entries (entry_id, area_id, period, amount_units,"
+        " basis, created_utc) VALUES ('f1', 'alpine', ?, 5000, 'OWNER-SET', ?)",
+        (period, ts),
+    )
+    conn.execute(
+        "INSERT INTO area_funding_policy (area_id, safety_factor, updated_utc)"
+        " VALUES ('alpine', 1.5, ?)",
+        (ts,),
+    )
+    # LED-2 reviewer work: a MEASURED batch for alpine.
+    conn.execute(
+        "INSERT INTO ledger_reviewer_work (batch_id, area_id, period,"
+        " reviewer_minutes, decision_count, per_decision_units, correction_rate,"
+        " rejection_rate, source_coverage_rate, basis, created_utc)"
+        " VALUES ('b1', 'alpine', ?, 45.0, 10, 5.0, 0.1, 0.05, 0.9, 'MEASURED', ?)",
+        (period, ts),
+    )
+    # GATE-P designed entitlement for alpine (schema-only; inert).
+    conn.execute(
+        "INSERT INTO area_entitlements (entitlement_id, area_id, tier, state,"
+        " owner_decision_ref, created_utc) VALUES ('ent1', 'alpine', 'tier-a',"
+        " 'designed', NULL, ?)",
+        (ts,),
+    )
+    conn.commit()
+    return period
+
+
+@pytest.fixture()
+def econ_conn(tmp_path):
+    """A migrated DB seeded with the synthetic area-economics fixture."""
+    db_path = tmp_path / "econ.db"
+    db.apply_migrations(db_path)
+    conn = db.open_db(db_path)
+    seed_economics(conn)
+    yield conn
+    conn.close()
