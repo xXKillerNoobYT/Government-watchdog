@@ -68,6 +68,13 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "event_jobs",  # GOV-733: CTRL-2026 §3.1 — micro-job LED-1 rows
         "job_transitions",  # GOV-733: CTRL-2026 §3.1 — append-only state-machine audit
         "paperclip_outbox",  # GOV-733: CTRL-2026 §3.1 — bounded safe hand-off to Paperclip
+        # GOV-731 (CONTRACT-2026-MCP §4): six additive mcp_* service-layer tables.
+        "mcp_jobs",
+        "mcp_capability_grants",
+        "mcp_policy_packs",
+        "mcp_job_outputs",
+        "mcp_audit_events",
+        "mcp_provider_registry",
     }
 
 
