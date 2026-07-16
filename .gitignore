@@ -13,6 +13,9 @@ Raw-Corpus/
 # Operational ingest run logs (Lane 1) — local/vault-only, never committed
 # (data-publication boundary; GOV-75 / 1.04-g).
 Logs/crawl-*.log
+# GOV-733 CTRL-2026 §7: control-plane ingress/worker run logs — local/vault-only
+# (rejection JSONL + worker run summaries; registry tables live in Database/*.db).
+Logs/control-plane/
 # GOV-272: run/acceptance/verification logs are local/vault-only, not GitHub
 # artifacts (data-publication boundary). These two were tracked from the WEI era
 # but are summary-only evidence (SHA256s + pass/fail counts, no raw corpus/PII);

@@ -4,9 +4,10 @@
 -- promotion/anchoring write-once) is byte-for-byte unaffected (INV-1/INV-3).
 --
 -- Migration-number note (GOV-731 collision warning): the accepted GOV-719
--- control-plane plan also reserved 0021. At impl time 0020 was the highest
--- applied migration and no 0021 existed on disk, so this file takes 0021; if the
--- GOV-719 leg lands first it must renumber. Recorded in the PR body.
+-- control-plane plan also reserved 0021. The GOV-733 control-plane leg landed
+-- on main first (PR #105, 0021_control_plane.sql), so per the recorded
+-- second-lander-renumbers rule this file takes 0022 (renumbered at the GOV-732
+-- merge gate).
 --
 -- Additive + idempotent: every statement is CREATE ... IF NOT EXISTS, so the
 -- db.py ledger fast-path and a bare re-run are both safe. One statement per ';',

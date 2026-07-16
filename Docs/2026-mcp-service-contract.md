@@ -1,7 +1,7 @@
 # CONTRACT-2026-MCP v1.0 — Self-contained MCP service layer
 
 **Status:** implemented (GOV-731, author leg of accepted GOV-717 plan rev `5f52bc06`).
-**Package:** `scripts/mcp_service/` · **Migration:** `Database/migrations/0021_mcp_service.sql`.
+**Package:** `scripts/mcp_service/` · **Migration:** `Database/migrations/0022_mcp_service.sql`.
 This doc mirrors the plan's §3 contract specifications; the plan
 ([GOV-717 plan document](/GOV/issues/GOV-717#document-plan)) remains the authority
 and carries the ADR (§2), data-model (§4), non-goals (§5), and test plan (§6).

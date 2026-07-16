@@ -37,7 +37,7 @@ def test_frozen_surfaces_byte0_diff_vs_origin_main():
 
 
 def test_migration_is_additive_no_alter():
-    sql = (ROOT / "Database/migrations/0021_mcp_service.sql").read_text(encoding="utf-8")
+    sql = (ROOT / "Database/migrations/0022_mcp_service.sql").read_text(encoding="utf-8")
     upper = "\n".join(
         l for l in sql.splitlines() if not l.lstrip().startswith("--")).upper()
     assert "ALTER TABLE" not in upper, "migration must not ALTER existing tables"
