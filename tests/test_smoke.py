@@ -90,6 +90,19 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "ledger_fixed_costs",
         "ledger_reviewer_work",
         "ledger_report_runs",
+        # GOV-753 (ACCT-2026 v0.2 / GOV-721 leg 1): eleven additive
+        # accounts/cohorts/notifications tables.
+        "users",
+        "waitlist_requests",
+        "access_grants",
+        "cohort_state",
+        "cohort_transitions",
+        "consent_preferences",
+        "notification_events",
+        "email_outbox",
+        "email_delivery_log",
+        "feature_flags",
+        "auth_sessions",
     }
 
 
