@@ -5,3 +5,4 @@ youtube-transcript-api>=1.2
 yt-dlp>=2024.0.0
 pypdf>=4.0
 pytest>=8.0
+argon2-cffi>=23.1  # argon2id password hashing (GOV-721 D2/INV-7; prebuilt wheels, py3.12 CI)
