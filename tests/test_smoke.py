@@ -75,6 +75,11 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "mcp_job_outputs",
         "mcp_audit_events",
         "mcp_provider_registry",
+        # GOV-736 (PLAN-2026-AI §3): four additive routing/budget/health tables.
+        "mcp_budgets",
+        "mcp_budget_events",
+        "mcp_routing_policies",
+        "mcp_provider_health",
     }
 
 
