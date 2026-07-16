@@ -1,0 +1,19 @@
+# DEPLOY-2026 (GOV-722) — keep registry + raw data OUT of the build context.
+# INV-7: only code and migration SQL enter an image; nothing private (the DB, the
+# raw vault, run logs, secrets) is ever copyable into a layer.
+Database/*.db
+Database/*.db-journal
+Database/*.db-wal
+Database/*.db-shm
+Raw-PDFs/
+Raw-Corpus/
+Transcripts/
+Docs/Source-Data/
+Logs/
+deploy/.env
+deploy/data/
+**/__pycache__/
+*.pyc
+.venv/
+.git/
+graphify-out/

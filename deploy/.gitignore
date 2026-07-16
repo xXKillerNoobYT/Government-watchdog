@@ -1,0 +1,5 @@
+# DEPLOY-2026 — never commit real secrets or mounted data (INV-7 / PORT-4).
+.env
+data/
+*.db
+logs/
