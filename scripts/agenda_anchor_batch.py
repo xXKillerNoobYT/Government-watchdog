@@ -1,9 +1,16 @@
 """GOV-698 — agenda-anchoring batch CLI (Option-A pilot, anchoring leg 2 of 6).
 
+GOV-710 (scale leg 2 of 6) parameterizes the scope: ``--meeting-id`` /
+``--agenda-doc-id`` / ``--transcript-id`` generalize the pinned pilot constants so
+the anchoring lane scales across the local TOA corpus (GOV-709 §3). Defaults
+reproduce the pilot verbatim; every fail-closed cross-check is kept and generalized
+(doc_date == meeting date == transcript date), and the agenda-item id is keyed on
+the meeting + document. The frozen surfaces are untouched.
+
 A deterministic, fail-closed batch tool that (a) extracts top-level agenda items
-from ONE meeting's own revised agenda document and (b) anchors the 50 already
-``reviewed_source_linked`` statements of that meeting to those agenda items using a
-**reviewer-confirmed timestamp-range table**. Zero AI, zero network, zero credits.
+from ONE meeting's own revised agenda document and (b) anchors the already
+``reviewed_source_linked`` statements of that transcript to those agenda items using
+a **reviewer-confirmed timestamp-range table**. Zero AI, zero network, zero credits.
 
 Scope boundary (Isaac card ``7b606128`` / GOV-652, CTO spec GOV-697): the single
 2026-06-23 Town of Alpine council meeting (``meetings.id = 129``), agenda source of
@@ -205,9 +212,53 @@ def extract_agenda_items(text: str) -> list[dict[str, Any]]:
     return items
 
 
-def agenda_item_id_for(order: int) -> str:
-    """Deterministic, re-run-stable agenda_item_id (the natural idempotency key)."""
-    return f"agi:m{PILOT_MEETING_ID}:doc-{AGENDA_DOC_ID}:item-{order:02d}"
+def agenda_item_id_for(
+    order: int,
+    *,
+    meeting_id: int = PILOT_MEETING_ID,
+    agenda_doc_id: int = AGENDA_DOC_ID,
+) -> str:
+    """Deterministic, re-run-stable agenda_item_id (the natural idempotency key).
+
+    Keyed on ``meeting_id`` + ``agenda_doc_id`` so it stays collision-free per
+    meeting/document as the chain scales beyond the pilot (GOV-709 §3). Defaults
+    reproduce the pilot ids ``agi:m129:doc-137:item-NN`` verbatim.
+    """
+    return f"agi:m{meeting_id}:doc-{agenda_doc_id}:item-{order:02d}"
+
+
+def _resolve_anchor_scope(
+    conn: sqlite3.Connection,
+    *,
+    meeting_id: int,
+    transcript_id: int | None,
+) -> dict[str, Any]:
+    """Resolve the meeting date and fail-closed cross-check the transcript.
+
+    The meeting identity is taken from an explicit ``meeting_id`` (the timed
+    transcripts do not back-reference their meeting row — GOV-709 §1a). Its
+    ``meetings.meeting_date`` becomes the single date every other source must agree
+    with: a supplied ``transcript_id`` must share it (else a mis-paired transcript
+    is refused rather than anchored to the wrong meeting).
+    """
+    mrow = conn.execute(
+        "SELECT meeting_date FROM meetings WHERE id = ?", (meeting_id,)
+    ).fetchone()
+    if mrow is None:
+        raise AnchorRefusedError(f"meeting id {meeting_id} not in registry")
+    meeting_date = mrow["meeting_date"]
+    if transcript_id is not None:
+        trow = conn.execute(
+            "SELECT meeting_date FROM transcripts WHERE id = ?", (transcript_id,)
+        ).fetchone()
+        if trow is None:
+            raise AnchorRefusedError(f"transcript id {transcript_id} not in registry")
+        if trow["meeting_date"] != meeting_date:
+            raise AnchorRefusedError(
+                f"transcript {transcript_id} is dated {trow['meeting_date']!r} but "
+                f"meeting {meeting_id} is dated {meeting_date!r} (fail-closed cross-check)"
+            )
+    return {"meeting_date": meeting_date}
 
 
 # --- source-of-record loading + integrity (GOV-697 §1) ----------------------
@@ -221,26 +272,32 @@ def _sha256_file(path: Path) -> str:
 
 
 def load_agenda_document(
-    conn: sqlite3.Connection, *, corpus_root: Path
+    conn: sqlite3.Connection,
+    *,
+    corpus_root: Path,
+    agenda_doc_id: int = AGENDA_DOC_ID,
+    meeting_date: str = PILOT_MEETING_DATE,
 ) -> dict[str, Any]:
-    """Read the pinned agenda document row and re-verify its raw file sha256.
+    """Read the agenda document row and re-verify its raw file sha256.
 
-    Fail-closed: a wrong doc_date/doc_type on the pinned id, a missing raw file, or
-    a sha256 mismatch (source_changed) all abort — the extractor never parses an
-    unverified or drifted source. ``corpus_root`` resolves ``local_path`` (which is
-    relative to the ops-clone repo root, not ``Database/``).
+    Fail-closed: a wrong doc_date/doc_type on the id, a missing raw file, or a
+    sha256 mismatch (source_changed) all abort — the extractor never parses an
+    unverified or drifted source. ``doc_date`` must equal ``meeting_date`` (which
+    the caller has already reconciled against the meeting + transcript rows, so a
+    doc from a different meeting refuses here). ``corpus_root`` resolves
+    ``local_path`` (relative to the ops-clone repo root, not ``Database/``).
     """
     row = conn.execute(
         "SELECT id, title, doc_type, doc_date, local_path, sha256 "
         "FROM documents WHERE id = ?",
-        (AGENDA_DOC_ID,),
+        (agenda_doc_id,),
     ).fetchone()
     if row is None:
-        raise AnchorRefusedError(f"agenda document id {AGENDA_DOC_ID} not in registry")
+        raise AnchorRefusedError(f"agenda document id {agenda_doc_id} not in registry")
     doc = dict(row)
-    if doc["doc_date"] != PILOT_MEETING_DATE or doc["doc_type"] != "agenda":
+    if doc["doc_date"] != meeting_date or doc["doc_type"] != "agenda":
         raise AnchorRefusedError(
-            f"pinned agenda doc {AGENDA_DOC_ID} is not the {PILOT_MEETING_DATE} agenda "
+            f"agenda doc {agenda_doc_id} is not the {meeting_date} agenda "
             f"(doc_date={doc['doc_date']!r}, doc_type={doc['doc_type']!r})"
         )
     raw_path = (corpus_root / doc["local_path"]).resolve()
@@ -259,37 +316,66 @@ def load_agenda_document(
 
 # --- target-statement selector (GOV-697 §2 — the closed 50-row batch) -------
 
-def target_statements(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """The 50 ``reviewed_source_linked`` statements, in ``timestamp_seconds`` order.
+def target_statements(
+    conn: sqlite3.Connection, *, transcript_id: int | None = None
+) -> list[dict[str, Any]]:
+    """The ``reviewed_source_linked`` statements, in ``timestamp_seconds`` order.
 
     Joined to ``transcript_segments`` for the timestamp used by the containment
-    rule. Deterministic ordering (timestamp then statement_id) keeps the manifest
-    byte-stable across re-proposals.
+    rule. ``transcript_id`` scopes the batch to ONE transcript's promoted rows (the
+    scale selector — without it, several promoted meetings would collapse into one
+    anchor batch, GOV-709 §3); the pilot default (``None``) is the whole reviewed
+    set, exactly as before. Deterministic ordering (timestamp then statement_id)
+    keeps the manifest byte-stable across re-proposals.
     """
+    where = "s.verification_status = ?"
+    params: list[Any] = [TARGET_VERIFICATION_STATUS]
+    if transcript_id is not None:
+        where += " AND ts.transcript_id = ?"
+        params.append(transcript_id)
     rows = conn.execute(
         "SELECT s.statement_id, s.segment_id, ts.timestamp_seconds, ts.timestamp_human "
         "FROM statements s "
         "JOIN transcript_segments ts ON ts.segment_id = s.segment_id "
-        "WHERE s.verification_status = ? "
+        f"WHERE {where} "
         "ORDER BY ts.timestamp_seconds, s.statement_id",
-        (TARGET_VERIFICATION_STATUS,),
+        tuple(params),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 # --- propose (registry read-only; emits a local/gitignored manifest) --------
 
-def build_manifest(conn: sqlite3.Connection, *, corpus_root: Path) -> dict[str, Any]:
+def build_manifest(
+    conn: sqlite3.Connection,
+    *,
+    corpus_root: Path,
+    meeting_id: int = PILOT_MEETING_ID,
+    agenda_doc_id: int = AGENDA_DOC_ID,
+    transcript_id: int | None = None,
+) -> dict[str, Any]:
     """Build the anchoring review packet. Read-only: touches no write path.
 
     Emits the extracted agenda items (each with a *null* ``range_start_s`` /
     ``range_end_s`` for the reviewer to fill), optional ``hint_only`` substring
-    matches (never applied), the 50 statement inventory, counts, and a DB
-    fingerprint the apply step re-checks for drift.
+    matches (never applied), the statement inventory, counts, and a DB fingerprint
+    the apply step re-checks for drift.
+
+    ``meeting_id`` / ``agenda_doc_id`` / ``transcript_id`` select the scope and are
+    recorded in the manifest; the meeting date they reconcile to gates the agenda
+    doc, and the agenda-item ids are keyed on the meeting + document (GOV-709 §3).
+    Defaults reproduce the pilot packet verbatim.
     """
-    doc = load_agenda_document(conn, corpus_root=corpus_root)
+    scope = _resolve_anchor_scope(
+        conn, meeting_id=meeting_id, transcript_id=transcript_id
+    )
+    meeting_date = scope["meeting_date"]
+    doc = load_agenda_document(
+        conn, corpus_root=corpus_root,
+        agenda_doc_id=agenda_doc_id, meeting_date=meeting_date,
+    )
     raw_items = extract_agenda_items(doc["_text"])
-    statements = target_statements(conn)
+    statements = target_statements(conn, transcript_id=transcript_id)
 
     # Optional aid: exact case/whitespace-folded substring hits of an item title in
     # a segment's text. Hints are advisory only and are NEVER applied by `apply`.
@@ -311,10 +397,12 @@ def build_manifest(conn: sqlite3.Connection, *, corpus_root: Path) -> dict[str, 
         ]
         agenda_items.append(
             {
-                "agenda_item_id": agenda_item_id_for(it["item_order"]),
+                "agenda_item_id": agenda_item_id_for(
+                    it["item_order"], meeting_id=meeting_id, agenda_doc_id=agenda_doc_id
+                ),
                 "item_order": it["item_order"],
                 "title": it["title"],
-                "source_document_id": AGENDA_DOC_ID,
+                "source_document_id": agenda_doc_id,
                 "citation_target": it["citation_target"],
                 # Reviewer fills these on the leg-4 card; propose proposes NO ranges.
                 "range_start_s": None,
@@ -336,8 +424,9 @@ def build_manifest(conn: sqlite3.Connection, *, corpus_root: Path) -> dict[str, 
     return {
         "manifest_version": MANIFEST_VERSION,
         "kind": MANIFEST_KIND,
-        "meeting_id": PILOT_MEETING_ID,
-        "meeting_date": PILOT_MEETING_DATE,
+        "meeting_id": meeting_id,
+        "meeting_date": meeting_date,
+        "transcript_id": transcript_id,
         "reviewer_id": REVIEWER_ID,
         "to_verification_status": TARGET_VERIFICATION_STATUS,
         "agenda_doc": {
@@ -455,8 +544,13 @@ def _assert_anchoring_reviewer(reviewer_id: str) -> None:
         )
 
 
-def _assert_source_unchanged(conn: sqlite3.Connection, manifest: dict[str, Any]) -> None:
-    """Re-check the agenda doc sha256 and the exact 50-statement set vs the DB."""
+def _assert_source_unchanged(
+    conn: sqlite3.Connection,
+    manifest: dict[str, Any],
+    *,
+    transcript_id: int | None = None,
+) -> None:
+    """Re-check the agenda doc sha256 and the exact target statement set vs the DB."""
     doc = manifest.get("agenda_doc", {})
     row = conn.execute(
         "SELECT sha256 FROM documents WHERE id = ?", (doc.get("document_id"),)
@@ -465,7 +559,7 @@ def _assert_source_unchanged(conn: sqlite3.Connection, manifest: dict[str, Any])
         raise AnchorRefusedError(
             "agenda document sha256 changed since the manifest was built (source_changed)"
         )
-    live = target_statements(conn)
+    live = target_statements(conn, transcript_id=transcript_id)
     live_ids = sorted(s["statement_id"] for s in live)
     manifest_ids = sorted(s["statement_id"] for s in manifest.get("statements", []))
     if live_ids != manifest_ids:
@@ -475,12 +569,16 @@ def _assert_source_unchanged(conn: sqlite3.Connection, manifest: dict[str, Any])
         )
 
 
-def _upsert_agenda_item(conn: sqlite3.Connection, item: dict[str, Any]) -> bool:
+def _upsert_agenda_item(
+    conn: sqlite3.Connection, item: dict[str, Any], *, meeting_id: int
+) -> bool:
     """Idempotent insert of one agenda_items row VERBATIM from the manifest.
 
     Returns True if a row was inserted, False if an identical row already existed.
     A present row whose identity fields differ from the manifest is a fail-closed
-    source-drift abort (never an UPDATE/DELETE).
+    source-drift abort (never an UPDATE/DELETE). ``meeting_id`` is the manifest's
+    meeting (not a module constant) so scale batches file items under their own
+    meeting row.
     """
     aid = item["agenda_item_id"]
     existing = conn.execute(
@@ -507,7 +605,7 @@ def _upsert_agenda_item(conn: sqlite3.Connection, item: dict[str, Any]) -> bool:
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             aid,
-            PILOT_MEETING_ID,
+            meeting_id,
             item["item_order"],
             item["title"],
             AGENDA_DOC_SOURCE_ID,
@@ -561,7 +659,13 @@ def apply_manifest(
             f"batch of {len(entries)} exceeds the {MAX_BATCH}-statement ceiling"
         )
 
-    _assert_source_unchanged(conn, manifest)
+    # Scope (meeting + transcript) is taken from the card-bound manifest, not module
+    # constants, so scale batches file items under their own meeting and re-check
+    # their own transcript's reviewed set (GOV-709 §3). Defaults keep the pilot.
+    meeting_id = manifest.get("meeting_id", PILOT_MEETING_ID)
+    transcript_id = manifest.get("transcript_id")
+
+    _assert_source_unchanged(conn, manifest, transcript_id=transcript_id)
     ranged = validated_ranges(manifest)
     manifest_items = {it["agenda_item_id"]: it for it in manifest.get("agenda_items", [])}
 
@@ -572,7 +676,7 @@ def apply_manifest(
     try:
         # 1) materialise every extracted agenda item (idempotent, provenance-bound).
         for it in sorted(manifest.get("agenda_items", []), key=lambda x: x["item_order"]):
-            if _upsert_agenda_item(conn, it):
+            if _upsert_agenda_item(conn, it, meeting_id=meeting_id):
                 inserted += 1
 
         # 2) anchor each statement by pure timestamp containment.
@@ -680,7 +784,11 @@ def _default_logs_dir() -> Path:
 def _cmd_propose(args: argparse.Namespace) -> int:
     conn = db.open_db(args.db)
     try:
-        manifest = build_manifest(conn, corpus_root=args.corpus_root)
+        manifest = build_manifest(
+            conn, corpus_root=args.corpus_root,
+            meeting_id=args.meeting_id, agenda_doc_id=args.agenda_doc_id,
+            transcript_id=args.transcript_id,
+        )
     except AnchorRefusedError as exc:
         print(f"refused (fail-closed): {exc}", file=sys.stderr)
         return EXIT_REFUSED
@@ -750,6 +858,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="mode", required=True)
 
     p_prop = sub.add_parser("propose", help="emit a local anchoring manifest (read-only)")
+    p_prop.add_argument(
+        "--meeting-id", type=int, default=PILOT_MEETING_ID,
+        help="meeting whose date reconciles doc + transcript (default: pilot 129)",
+    )
+    p_prop.add_argument(
+        "--agenda-doc-id", type=int, default=AGENDA_DOC_ID,
+        help="agenda document id to extract items from (default: pilot 137)",
+    )
+    p_prop.add_argument(
+        "--transcript-id", type=int, default=None,
+        help="scope the reviewed target statements to ONE transcript (scale selector)",
+    )
     p_prop.add_argument(
         "--corpus-root", type=Path, default=db.REPO_ROOT,
         help="root the agenda doc local_path resolves against (default: repo root)",
