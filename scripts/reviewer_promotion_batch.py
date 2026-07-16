@@ -1,8 +1,14 @@
 """GOV-648 — reviewer-promotion batch CLI (Option-A pilot, leg 2 of 6).
 
+GOV-710 (scale leg 2 of 6) parameterizes the slice selector: the pilot behaviour
+is preserved verbatim when no selector is given, and a ``--meeting-date`` +
+``--transcript-id`` pair scopes the slice to ONE transcript for the oldest→newest
+scale-up across the local TOA corpus (GOV-709 §3). The frozen promotion gate is
+unchanged; every batch is still `reviewer:isaac`-only and its own-card-gated.
+
 A deterministic, fail-closed batch tool that drives the ONE sanctioned Lane-5
-promotion path (:func:`ai_risk_gate.promote_statement`) over the 2026-06-23 Town
-of Alpine council pilot slice. It is an *orchestrator*, never a parallel write
+promotion path (:func:`ai_risk_gate.promote_statement`) over a transcript slice of
+the local Town of Alpine corpus. It is an *orchestrator*, never a parallel write
 path: it never issues a bare ``UPDATE statements`` for review fields and never
 re-implements the reviewer gate. ``read_api`` / ``publication`` /
 ``ai_risk_gate`` / ``stage5_agenda_board`` stay byte-0-diff (the CLI imports them
@@ -88,31 +94,67 @@ class PromotionScopeError(RuntimeError):
 
 # --- slice selector (GOV-647 §1 — the normative, date-scoped selector) ------
 
-def pilot_slice(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Return the pilot-slice statements in ``segment_index`` order (packet rows).
+def pilot_slice(
+    conn: sqlite3.Connection,
+    *,
+    meeting_date: str = PILOT_MEETING_DATE,
+    transcript_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return the slice statements in ``segment_index`` order (packet rows).
 
-    The normative selector is date-scoped through the transcript (NOT the meeting
-    FK — see the §1 caveat): every statement whose segment belongs to a transcript
-    recorded on :data:`PILOT_MEETING_DATE`. Ordering is deterministic
-    (``segment_index`` then ``statement_id``) so batch windows are stable and
-    re-proposals are byte-identical.
+    Two scoping modes (GOV-709 §3):
+
+    * Pilot default (``transcript_id=None``): date-scoped through the transcript
+      (NOT the meeting FK — see the §1 caveat), every statement whose segment
+      belongs to a transcript recorded on ``meeting_date``.
+    * Scale (``transcript_id`` given): scoped to that ONE transcript. This is the
+      normative selector for the scale-up because a ``meeting_date`` can carry two
+      timed transcripts whose ``segment_index`` sequences would otherwise interleave
+      (2026-05-07, GOV-709 §1a). ``meeting_date`` is then a fail-closed cross-check
+      against ``transcripts.meeting_date`` — a mismatch refuses rather than slices
+      the wrong meeting.
+
+    Ordering is deterministic (``segment_index`` then ``statement_id``) so batch
+    windows are stable and re-proposals are byte-identical.
     """
+    if transcript_id is not None:
+        trow = conn.execute(
+            "SELECT meeting_date FROM transcripts WHERE id = ?", (transcript_id,)
+        ).fetchone()
+        if trow is None:
+            raise PromotionScopeError(f"transcript id {transcript_id} not in registry")
+        if meeting_date is not None and trow["meeting_date"] != meeting_date:
+            raise PromotionScopeError(
+                f"transcript {transcript_id} is dated {trow['meeting_date']!r}, not the "
+                f"requested --meeting-date {meeting_date!r} (fail-closed cross-check)"
+            )
+        where, param = "tr.id = ?", transcript_id
+    else:
+        where, param = "tr.meeting_date = ?", meeting_date
     rows = conn.execute(
         "SELECT s.statement_id, s.segment_id, ts.segment_index, ts.timestamp_human, "
         "       s.statement_text, tr.local_path AS transcript_local_path, tr.sha256 "
         "FROM statements s "
         "JOIN transcript_segments ts ON ts.segment_id = s.segment_id "
         "JOIN transcripts tr ON tr.id = ts.transcript_id "
-        "WHERE tr.meeting_date = ? "
+        f"WHERE {where} "
         "ORDER BY ts.segment_index, s.statement_id",
-        (PILOT_MEETING_DATE,),
+        (param,),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def pilot_slice_ids(conn: sqlite3.Connection) -> set[str]:
-    """The set of statement ids in the pilot slice — the scope-gate allowlist."""
-    return {r["statement_id"] for r in pilot_slice(conn)}
+def pilot_slice_ids(
+    conn: sqlite3.Connection,
+    *,
+    meeting_date: str = PILOT_MEETING_DATE,
+    transcript_id: int | None = None,
+) -> set[str]:
+    """The set of statement ids in the slice — the scope-gate allowlist."""
+    return {
+        r["statement_id"]
+        for r in pilot_slice(conn, meeting_date=meeting_date, transcript_id=transcript_id)
+    }
 
 
 # --- propose (registry read-only; emits a local/vault-only manifest) --------
@@ -122,8 +164,10 @@ def build_manifest(
     *,
     offset: int = 0,
     limit: int = MAX_BATCH,
+    meeting_date: str = PILOT_MEETING_DATE,
+    transcript_id: int | None = None,
 ) -> dict[str, Any]:
-    """Build a review packet for a contiguous window of the pilot slice.
+    """Build a review packet for a contiguous window of the slice.
 
     Read-only: touches no write path. The window is ``[offset, offset+limit)`` in
     the deterministic slice order. ``limit`` is clamped to :data:`MAX_BATCH`. Each
@@ -131,13 +175,19 @@ def build_manifest(
     source anchor (transcript ``local_path`` + ``sha256``). ``proposed_agenda_item``
     is copied from any anchor a statement already carries; it is otherwise absent
     (never guessed — anchoring is a human-approved apply-time write).
+
+    ``meeting_date`` / ``transcript_id`` select the slice (see :func:`pilot_slice`)
+    and are recorded verbatim in the manifest so :func:`apply_manifest` re-derives
+    the exact same scope-gate allowlist from the accepted packet (GOV-709 §3).
     """
     if offset < 0:
         raise PromotionScopeError("offset must be >= 0")
     if not (0 < limit <= MAX_BATCH):
         raise PromotionScopeError(f"limit must be in 1..{MAX_BATCH} (got {limit})")
 
-    window = pilot_slice(conn)[offset:offset + limit]
+    window = pilot_slice(
+        conn, meeting_date=meeting_date, transcript_id=transcript_id
+    )[offset:offset + limit]
     statements: list[dict[str, Any]] = []
     for row in window:
         statements.append(
@@ -158,11 +208,13 @@ def build_manifest(
             }
         )
     last = offset + len(statements)
+    scope_tag = f"tx{transcript_id}" if transcript_id is not None else meeting_date
     return {
         "manifest_version": MANIFEST_VERSION,
         "kind": MANIFEST_KIND,
-        "meeting_date": PILOT_MEETING_DATE,
-        "batch_id": f"promotion-batch:{PILOT_MEETING_DATE}:{offset:04d}-{last:04d}",
+        "meeting_date": meeting_date,
+        "transcript_id": transcript_id,
+        "batch_id": f"promotion-batch:{scope_tag}:{offset:04d}-{last:04d}",
         "reviewer_id": REVIEWER_ID,
         "to_verification_status": TO_VERIFICATION_STATUS,
         "agenda_items": [],
@@ -284,12 +336,23 @@ def apply_manifest(
             f"batch of {len(entries)} exceeds the {MAX_BATCH}-statement ceiling"
         )
 
-    slice_ids = pilot_slice_ids(conn)
+    # The scope-gate allowlist is re-derived from the SELECTOR the manifest was
+    # built with (card-bound), not a module constant, so scale batches gate against
+    # their own transcript slice while pilot manifests stay date-scoped (GOV-709 §3).
+    meeting_date = manifest.get("meeting_date", PILOT_MEETING_DATE)
+    transcript_id = manifest.get("transcript_id")
+    slice_scope = (
+        f"transcript {transcript_id}" if transcript_id is not None
+        else f"{meeting_date} slice"
+    )
+    slice_ids = pilot_slice_ids(
+        conn, meeting_date=meeting_date, transcript_id=transcript_id
+    )
     offenders = [e["statement_id"] for e in entries if e["statement_id"] not in slice_ids]
     if offenders:
         raise PromotionScopeError(
-            f"{len(offenders)} statement(s) outside the {PILOT_MEETING_DATE} pilot "
-            f"slice: {offenders[:5]}{'…' if len(offenders) > 5 else ''}"
+            f"{len(offenders)} statement(s) outside the {slice_scope}: "
+            f"{offenders[:5]}{'…' if len(offenders) > 5 else ''}"
         )
 
     agenda_items_by_id = {a["agenda_item_id"]: a for a in manifest.get("agenda_items", [])}
@@ -303,7 +366,7 @@ def apply_manifest(
             decision = entry.get("decision", DEFAULT_DECISION)
             reason = entry.get("reason") or (
                 f"reviewer:isaac accepted batch card {card_id} "
-                f"({PILOT_MEETING_DATE} TOA council pilot, GOV-648)"
+                f"({meeting_date} TOA council {slice_scope}, GOV-648/GOV-710)"
             )
 
             if _already_applied(conn, statement_id, decision, reviewer_id):
@@ -374,7 +437,10 @@ def apply_manifest(
 def _cmd_propose(args: argparse.Namespace) -> int:
     conn = db.open_db(args.db)
     try:
-        manifest = build_manifest(conn, offset=args.offset, limit=args.limit)
+        manifest = build_manifest(
+            conn, offset=args.offset, limit=args.limit,
+            meeting_date=args.meeting_date, transcript_id=args.transcript_id,
+        )
     except PromotionScopeError as exc:
         print(f"scope error: {exc}", file=sys.stderr)
         return EXIT_SCOPE
@@ -433,6 +499,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="mode", required=True)
 
     p_prop = sub.add_parser("propose", help="emit a local review-packet manifest (read-only)")
+    p_prop.add_argument("--meeting-date", default=PILOT_MEETING_DATE,
+                        help="meeting date to slice (default: the pilot 2026-06-23); "
+                             "with --transcript-id it becomes a fail-closed cross-check")
+    p_prop.add_argument("--transcript-id", type=int, default=None,
+                        help="scope the slice to ONE transcript (the scale selector; "
+                             "required to disambiguate a date with two timed transcripts)")
     p_prop.add_argument("--offset", type=int, default=0,
                         help="start index into the slice (segment_index order)")
     p_prop.add_argument("--limit", type=int, default=MAX_BATCH,
