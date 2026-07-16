@@ -286,6 +286,12 @@ Each invariant gate needs a neuter-goes-RED proof (GOV-738/743 pattern), specifi
 
 ---
 
+## Leg-2 implementation notes (GOV-754, FoundingEngineer, 2026-07-16)
+
+1. **Package rename `scripts/email/` → `scripts/email_gateway/`.** A package literally named `email` shadows the Python stdlib `email` module for every process with `scripts/` on `sys.path` (the whole repo, including the test suite and every serving script): `http.client` internally does `import email.parser`, so `requests`/`urllib` — and with them the frozen serving surfaces — would break at **runtime** while staying byte-identical (verified: `ModuleNotFoundError: No module named 'email.parser'`). Scope, interfaces, and invariants are unchanged; only the directory name differs. Flagged for the SecPriv (Leg-4) and CTO (Leg-5) gates.
+2. **Fixed-template-only mail bodies.** `email_gateway/outbox.py` accepts no free-form subject/body — bodies render only from `email_gateway/templates.py`, and civic-content templates are refused for non-approved recipients. This makes the AC-1 mail-body zero-leak structural rather than advisory.
+3. **Cumulative cap semantics (D4).** With additive membership, each cohort cap is enforced as the cumulative program size (beta-3's cap of 3 counts the 2 carried-over beta-2 members), recomputed from `cohort_transitions` in-transaction (INV-6).
+
 ## Amendment log v0.1 → v0.2 (CTO review GOV-751, comment `57cb400e`)
 
 1. bcrypt → argon2id reconciled (schema §1 comment + INV-7; D2).

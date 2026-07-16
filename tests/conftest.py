@@ -315,3 +315,40 @@ def econ_conn(tmp_path):
     seed_economics(conn)
     yield conn
     conn.close()
+
+
+# --- GOV-754 additive helpers (accounts/cohorts/email leg 2) --------------------
+
+#: Distinctive civic content for zero-leak assertions: any 403/mail body that
+#: contains this string is a leak (AC-1). Synthetic test data, never registry data.
+CIVIC_MARKER = "CIVIC-MARKER-quarterly-budget-line-item-7"
+
+
+def seed_civic_marker_statement(conn):
+    """One reviewed statement carrying CIVIC_MARKER (FK chain like _seed)."""
+    conn.executescript(
+        f"""
+        INSERT INTO transcripts(id,video_id,video_url,full_text,local_path,sha256,fetch_time_utc)
+        VALUES(701,'vid701','https://youtube.com/watch?v=vid701','marker transcript',
+            '/Users/IA/vault/t701.txt','sha701','2026-07-16');
+        INSERT INTO transcript_segments(segment_id,transcript_id,segment_index,
+            timestamp_seconds,timestamp_human,segment_text)
+        VALUES('seg701',701,0,5,'0:05','The council discussed {CIVIC_MARKER}.');
+        INSERT INTO statements(statement_id,segment_id,statement_text,
+            verification_status,publication_state)
+        VALUES('stmt701','seg701','The council approved {CIVIC_MARKER}.',
+            'reviewed_source_linked','not_publishable');
+        """
+    )
+    conn.commit()
+
+
+@pytest.fixture()
+def acct2_conn(tmp_path):
+    """GOV-754: fully migrated DB + the civic-marker statement, no users yet."""
+    db_path = tmp_path / "acct2.db"
+    db.apply_migrations(db_path)
+    conn = db.open_db(db_path)
+    seed_civic_marker_statement(conn)
+    yield conn
+    conn.close()
