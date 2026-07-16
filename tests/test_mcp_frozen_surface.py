@@ -46,6 +46,33 @@ def test_migration_is_additive_no_alter():
     assert len(creates) == 6
 
 
+def test_routing_migration_0023_is_additive_no_alter():
+    """GOV-736: 0023 adds four routing/budget/health tables, ALTERs nothing."""
+    sql = (ROOT / "Database/migrations/0023_provider_routing.sql").read_text(encoding="utf-8")
+    upper = "\n".join(
+        l for l in sql.splitlines() if not l.lstrip().startswith("--")).upper()
+    assert "ALTER TABLE" not in upper, "migration must not ALTER existing tables"
+    creates = [l for l in upper.splitlines() if "CREATE TABLE" in l]
+    assert len(creates) == 4
+    for table in ("MCP_BUDGETS", "MCP_BUDGET_EVENTS", "MCP_ROUTING_POLICIES",
+                  "MCP_PROVIDER_HEALTH"):
+        assert table in upper
+
+
+def test_new_modules_do_not_import_frozen_surface_writers():
+    """The GOV-736 modules import the frozen scanners (read-only), never a writer
+    into read_api / stage5_agenda_board. redaction.py is the only bridge."""
+    import ast
+
+    pkg = ROOT / "scripts" / "mcp_service"
+    for name in ("routing.py", "budget.py", "health.py", "lenses.py", "analysis.py"):
+        tree = ast.parse((pkg / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module not in ("read_api", "stage5_agenda_board"), (
+                    f"{name} imports a frozen serving surface directly")
+
+
 def test_jsonrpc_tools_list_needs_no_auth(mcp_conn):
     resp = jsonrpc.handle_request(mcp_conn, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     names = {t["name"] for t in resp["result"]["tools"]}

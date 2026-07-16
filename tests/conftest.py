@@ -127,3 +127,65 @@ def good_output_args(job_id="job1"):
                     "uncertainty": "low"}],
         "policy_pack_id": "pack1", "policy_pack_version": "1.0.0",
     }
+
+
+# --- GOV-736 additive helpers (routing / budget / lens seeding) ----------------
+
+def seed_local_routing(
+    conn,
+    *,
+    provider_id="fake",
+    kind="fake",
+    cap_units=1000,
+    model="fake-1",
+    job_kind="lens_analysis",
+    context_class="local_only",
+    enabled=True,
+    budget=True,
+    policy=True,
+    packs=True,
+):
+    """Make a local provider routable + seed the lens packs, all additive.
+
+    Mirrors what the CLI composition root does, so the routing/budget/lens tests
+    share one fixture. Every step is opt-out via a flag so a test can, e.g.,
+    register a provider with NO budget (BUD-5) or a cap of 0 (AM-11).
+    """
+    from mcp_service import budget as budget_mod, lenses
+    from mcp_service.providers import base as pbase
+
+    if packs:
+        lenses.seed_lens_packs(conn)
+    pbase.register_provider(conn, provider_id=provider_id, kind=kind,
+                            budget_cap_units=cap_units if budget else 0)
+    if enabled:
+        conn.execute(
+            "UPDATE mcp_provider_registry SET enabled=1, budget_cap_units=? "
+            "WHERE provider_id=?", (cap_units if budget else 0, provider_id))
+    if budget:
+        budget_mod.create_budget(
+            conn, budget_id=f"budget-{provider_id}", provider_id=provider_id,
+            cap_units=cap_units, window_kind="total", area_id="alpine")
+    if policy:
+        import json as _json
+        conn.execute(
+            "INSERT OR IGNORE INTO mcp_routing_policies "
+            "(policy_id, version, job_kind, context_class, provider_preference, "
+            " model, max_output_units, created_utc) "
+            "VALUES (?, '1.0.0', ?, ?, ?, ?, 50, '2026-07-16T00:00:00.000+00:00')",
+            (f"policy-{provider_id}", job_kind, context_class,
+             _json.dumps([provider_id]), model))
+    conn.commit()
+
+
+@pytest.fixture()
+def routed(mcp_conn):
+    """mcp_conn with a callable local 'fake' provider + lens packs + policy."""
+    seed_local_routing(mcp_conn)
+    return mcp_conn
+
+
+def fake_adapter(provider_id="fake", model="fake-1"):
+    from mcp_service.providers.fake import FakeAdapter
+
+    return FakeAdapter(provider_id=provider_id, model=model)
