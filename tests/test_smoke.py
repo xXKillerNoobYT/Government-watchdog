@@ -62,6 +62,13 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "node_label_aliases",  # GOV-98 addendum: plain-language label layer (§A.7)
         "reviewer_identities",  # GOV-131: reviewer-identity registry (Lane-5 allowlist SoT)
         "completeness_gaps",  # GOV-125: first-class completeness-gap layer (plan §3)
+        # GOV-731 (CONTRACT-2026-MCP §4): six additive mcp_* service-layer tables.
+        "mcp_jobs",
+        "mcp_capability_grants",
+        "mcp_policy_packs",
+        "mcp_job_outputs",
+        "mcp_audit_events",
+        "mcp_provider_registry",
     }
 
 
