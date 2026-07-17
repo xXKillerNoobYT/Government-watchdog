@@ -179,6 +179,26 @@ def _adapter_for(provider_id: str, provider_kind: str):
     return FakeAdapter(provider_id=provider_id, model=f"{provider_id}-1")
 
 
+def _policy_model_for(provider_id: str, provider_kind: str) -> str:
+    """The model name to seed in the routing policy for a local provider.
+
+    The fake adapter accepts *any* name (its default is ``f"{provider_id}-1"``),
+    but a real provider only serves specific models. Seeding ``"ollama-1"`` for
+    the ollama provider forced ``routing.route_and_generate`` to pass a model the
+    daemon does not serve, so ``/api/generate`` 404-ed and the run fail-closed
+    (GOV-790). For a non-fake provider, seed the adapter's own advertised default
+    model — the same value ``request.model or self._model`` would have fallen
+    back to — so the policy resolves to something the daemon actually serves.
+
+    We read the default from the (frozen) adapter's ``capabilities()`` rather than
+    hard-coding it here, keeping ``scripts/mcp_service/`` byte-0: constructing the
+    adapter opens no socket and ``capabilities()`` is pure.
+    """
+    if provider_kind == "fake":
+        return f"{provider_id}-1"
+    return _adapter_for(provider_id, provider_kind).capabilities()["models"][0]
+
+
 def _seed_envelope(conn: sqlite3.Connection, envelope_id: int,
                    area_id: str | None) -> None:
     now = _utcnow()
@@ -275,7 +295,8 @@ def _bootstrap(conn: sqlite3.Connection, *, provider_id: str,
     lenses.register_output_schema()
     _route_provider(conn, provider_id=provider_id, kind=provider_kind,
                     job_kind=_LENS_JOB_KIND, cap_units=100000, budget_cap=100000,
-                    budget_id=f"budget-{provider_id}", model=f"{provider_id}-1")
+                    budget_id=f"budget-{provider_id}",
+                    model=_policy_model_for(provider_id, provider_kind))
     # WL-4(c) breach provider: registry-callable, but a tiny enforced budget cap
     # so a single routed call trips the fail-closed pause (D3 / AM-4).
     _route_provider(conn, provider_id=_BREACH_PROVIDER, kind="fake",

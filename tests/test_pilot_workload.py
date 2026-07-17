@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from mcp_service.providers.base import GenerationRequest
+from mcp_service.providers.ollama import OllamaAdapter
 from pilot import workload
+
+#: The model the (frozen) Ollama adapter advertises by default — what the policy
+#: should resolve to, and what /api/generate actually serves (GOV-790).
+_OLLAMA_DEFAULT = OllamaAdapter().capabilities()["models"][0]
 
 
 # --- §5.3 test 1: workload dry-run determinism --------------------------------
@@ -60,6 +66,53 @@ def test_apply_runs_all_wl_types(pilot_applied):
     assert c["WL-4"] == {"scope_deny": 1, "redaction_deny": 1,
                          "budget_deny": 1, "revocation_deny": 1}
     assert c["WL-5"] == {"sent": 3, "no_consent_refused": 2}
+
+
+# --- GOV-790 regression: seeded policy must not force a nonexistent model -------
+
+def test_ollama_policy_seeds_a_servable_model_not_provider_dash_one(pilot_conn):
+    """Root cause (GOV-790): the routing policy for a *non-fake* provider must not
+    force a model name the daemon does not serve.
+
+    ``_bootstrap`` used to seed ``model=f"{provider_id}-1"`` unconditionally, so
+    the ollama policy carried ``"ollama-1"``. ``route_and_generate`` passes
+    ``policy.model`` straight into the request and ``request.model or self._model``
+    then honours the truthy ``"ollama-1"`` — a model Ollama does not serve — so
+    ``/api/generate`` returned HTTP 404 and the whole run fail-closed.
+    """
+    workload._bootstrap(pilot_conn, provider_id="ollama", provider_kind="ollama")
+    model = pilot_conn.execute(
+        "SELECT model FROM mcp_routing_policies WHERE policy_id = 'policy-ollama'"
+    ).fetchone()[0]
+
+    assert model != "ollama-1"        # the bug: an invented, unservable model name
+    assert model == _OLLAMA_DEFAULT   # sourced from the adapter's own advertised default
+
+    # End-to-end: the name the adapter actually POSTs to /api/generate is that
+    # servable model, never the 404-causing "ollama-1". Transport is stubbed, so
+    # this makes zero network calls.
+    posted: dict = {}
+
+    def _transport(url, payload):
+        posted.update(payload)
+        return {"response": "ok", "prompt_eval_count": 1, "eval_count": 1}
+
+    adapter = OllamaAdapter(transport=_transport)
+    adapter.generate(GenerationRequest(model=model, minimized_context_parts=["x"]))
+    assert posted["model"] == _OLLAMA_DEFAULT
+
+
+def test_fake_policy_model_path_unchanged(pilot_conn):
+    """The fake-provider path is untouched — still seeds ``fake-1`` — so the
+    dry-run manifest and the fake-adapter run stay byte-for-byte deterministic.
+    (The manifest hash never depended on the model, but pin the seeded value so a
+    future edit can't silently regress the fake path while fixing the ollama one.)
+    """
+    workload._bootstrap(pilot_conn, provider_id="fake", provider_kind="fake")
+    model = pilot_conn.execute(
+        "SELECT model FROM mcp_routing_policies WHERE policy_id = 'policy-fake'"
+    ).fetchone()[0]
+    assert model == "fake-1"
 
 
 # --- §5.3 test 4: zero-credit assertion over a fake-adapter run ----------------
