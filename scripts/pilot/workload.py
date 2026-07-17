@@ -179,6 +179,19 @@ def _adapter_for(provider_id: str, provider_kind: str):
     return FakeAdapter(provider_id=provider_id, model=f"{provider_id}-1")
 
 
+def _policy_model(provider_id: str, provider_kind: str) -> str:
+    """The model the seeded routing policy names for the WL lens lane.
+
+    ``routing.route_and_generate`` passes ``policy.model`` into the generation
+    request, overriding the adapter's own default — so the policy must name a
+    model the adapter actually serves. Deriving it from the adapter keeps the
+    two in lockstep: ``fake`` stays ``fake-1``; ``ollama`` gets the adapter's
+    real default (``llama3.2``) instead of the literal ``ollama-1`` that a live
+    Ollama 404s on (GOV-783 Wave-0 finding, fixed in GOV-789).
+    """
+    return _adapter_for(provider_id, provider_kind).capabilities()["models"][0]
+
+
 def _seed_envelope(conn: sqlite3.Connection, envelope_id: int,
                    area_id: str | None) -> None:
     now = _utcnow()
@@ -275,7 +288,8 @@ def _bootstrap(conn: sqlite3.Connection, *, provider_id: str,
     lenses.register_output_schema()
     _route_provider(conn, provider_id=provider_id, kind=provider_kind,
                     job_kind=_LENS_JOB_KIND, cap_units=100000, budget_cap=100000,
-                    budget_id=f"budget-{provider_id}", model=f"{provider_id}-1")
+                    budget_id=f"budget-{provider_id}",
+                    model=_policy_model(provider_id, provider_kind))
     # WL-4(c) breach provider: registry-callable, but a tiny enforced budget cap
     # so a single routed call trips the fail-closed pause (D3 / AM-4).
     _route_provider(conn, provider_id=_BREACH_PROVIDER, kind="fake",
