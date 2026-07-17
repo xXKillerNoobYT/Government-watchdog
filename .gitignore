@@ -89,3 +89,7 @@ Clone/
 .DS_Store
 .ci-venv/
 .ci-smoke.db
+# GOV-781 PILOT-2026 Wave-0 harness run logs / snapshot / pack artifacts: raw
+# operational output (metric snapshots, decision packs, support JSONL) —
+# local/vault-only per the data-publication boundary, never committed (§5.2).
+Logs/pilot/
