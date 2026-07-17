@@ -352,3 +352,33 @@ def acct2_conn(tmp_path):
     seed_civic_marker_statement(conn)
     yield conn
     conn.close()
+
+
+# --- GOV-781 additive helpers (PILOT-2026 Wave-0 harness) ------------------------
+
+#: Small bounds keep the apply run fast while still exercising every WL path.
+PILOT_BOUNDS = {"WL-1": 5, "WL-2": 2, "WL-3": 4, "WL-4": 1, "WL-5": 3, "WL-6": 2}
+
+
+@pytest.fixture()
+def pilot_conn(tmp_path, monkeypatch):
+    """A fully migrated DB with MCP_HMAC_SECRET set (no workload run yet)."""
+    monkeypatch.setenv("MCP_HMAC_SECRET", "pilot-test-secret-not-committed")
+    db_path = tmp_path / "pilot.db"
+    db.apply_migrations(db_path)
+    conn = db.open_db(db_path)
+    yield conn
+    conn.close()
+
+
+@pytest.fixture()
+def pilot_applied(pilot_conn):
+    """``pilot_conn`` after a bounded Wave-0 ``--apply`` run.
+
+    Returns ``(conn, report)`` where ``report`` is the run outcome dict.
+    """
+    from pilot import workload
+
+    report = workload.run(pilot_conn, seed="PILOT-TEST", apply=True,
+                          bounds=PILOT_BOUNDS)
+    return pilot_conn, report
