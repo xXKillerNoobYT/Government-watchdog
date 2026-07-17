@@ -85,3 +85,33 @@ def test_zero_credit_flags_a_nonlocal_provider(pilot_applied):
     with pytest.raises(workload.ZeroCreditViolation, match="non-local provider"):
         workload.assert_zero_credit(conn, rep["period"],
                                     breach_budget_ids=["budget-pilot-breach-probe"])
+
+
+# --- GOV-789: seeded routing-policy model must match the adapter --------------
+
+def test_seeded_ollama_policy_model_is_served_by_adapter(pilot_conn):
+    """The ollama lane's policy model must be one the adapter actually serves.
+
+    The old ``f"{provider_id}-1"`` template seeded the literal ``ollama-1``,
+    which a live local Ollama 404s on -> MCPDenied fail-closed abort (found in
+    the GOV-783 Wave-0 apply; dry runs return before any generate call, so the
+    dry-run gate cannot catch it).
+    """
+    from mcp_service.providers.ollama import OllamaAdapter
+
+    workload._bootstrap(pilot_conn, provider_id="ollama", provider_kind="ollama")
+    row = pilot_conn.execute(
+        "SELECT model FROM mcp_routing_policies WHERE policy_id = 'policy-ollama'"
+    ).fetchone()
+    assert row is not None
+    served = OllamaAdapter(provider_id="ollama").capabilities()["models"]
+    assert row["model"] in served
+
+
+def test_seeded_fake_policy_models_unchanged(pilot_conn):
+    """Behavior-preserving for the fake lane: ``fake-1`` and ``fakecap-1``."""
+    workload._bootstrap(pilot_conn, provider_id="fake", provider_kind="fake")
+    rows = {r["policy_id"]: r["model"] for r in pilot_conn.execute(
+        "SELECT policy_id, model FROM mcp_routing_policies")}
+    assert rows["policy-fake"] == "fake-1"
+    assert rows["policy-fakecap"] == "fakecap-1"
