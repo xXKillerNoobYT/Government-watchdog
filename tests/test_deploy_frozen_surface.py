@@ -28,6 +28,7 @@ FROZEN = [
 # the guard). Grows deliberately, one PR at a time, next free slot only.
 MIGRATION_ALLOWLIST = {
     "0025_accounts_cohorts_notifications.sql",
+    "0026_beta_gate.sql",  # GOV-801: gated-beta front door (five beta_* tables)
 }
 
 
