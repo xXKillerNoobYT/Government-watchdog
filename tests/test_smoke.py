@@ -103,6 +103,12 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "email_delivery_log",
         "feature_flags",
         "auth_sessions",
+        # GOV-801 (0026): five additive gated-beta front-door tables.
+        "beta_allowlist",
+        "beta_magic_tokens",
+        "beta_sessions",
+        "beta_waitlist",
+        "beta_audit_log",
     }
 
 

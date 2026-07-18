@@ -60,6 +60,25 @@ _TEMPLATES = {
             "Government Watchdog: unsubscribed",
             "You have been unsubscribed. No further email will be sent.",
             civic=False),
+        # GOV-801 gated-beta front door. Both carry account-state strings only
+        # (no civic data => civic=False). magic_link interpolates a one-time
+        # sign-in URL that expires in 15 minutes; the beta mailer sends both
+        # through the fail-closed null adapter until an owner enables a real one.
+        EmailTemplate(
+            "magic_link",
+            "Government Watchdog: your beta sign-in link",
+            "Use this one-time link to sign in to the Government Watchdog "
+            "beta. It expires in 15 minutes and works only once:\n\n"
+            "{verify_url}\n\n"
+            "If you did not request this, you can ignore this email.",
+            civic=False),
+        EmailTemplate(
+            "waitlist_confirmation",
+            "Government Watchdog: you're on the beta waitlist",
+            "Thanks for your interest in the Government Watchdog beta. "
+            "You're on the waitlist. We'll email you if a spot opens after "
+            "an owner review. No action is needed.",
+            civic=False),
         # Civic-content template shape for FUTURE digest cards. Approved
         # recipients only (AC-1); its existence lets tests pin the refusal.
         EmailTemplate(

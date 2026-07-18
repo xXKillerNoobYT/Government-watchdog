@@ -187,9 +187,11 @@ def test_civic_template_allowed_for_approved_recipient(conn):
 
 def test_lifecycle_mail_bodies_carry_no_civic_marker(conn):
     uid, _ = _consented_user(conn)
+    ctx_by_tpl = {"cohort_advanced": {"to_cohort": "beta-2"},
+                  "magic_link": {"verify_url": "http://127.0.0.1:8801/x"}}
     for tpl in sorted(templates.NON_APPROVED_ALLOWED):
-        ctx = {"to_cohort": "beta-2"} if tpl == "cohort_advanced" else None
-        outbox.queue_email(conn, user_id=uid, template_id=tpl, context=ctx)
+        outbox.queue_email(conn, user_id=uid, template_id=tpl,
+                           context=ctx_by_tpl.get(tpl))
     bodies = json.dumps([tuple(r) for r in conn.execute(
         "SELECT subject, body_text, body_html FROM email_outbox")])
     assert CIVIC_MARKER not in bodies
