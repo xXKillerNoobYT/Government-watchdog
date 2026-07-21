@@ -1,0 +1,78 @@
+# GOV-1526 (Phase 1b of GOV-1523): build + deny-list-gate + publish the pinned
+# backend web artifact (Docs/gov1523-artifact-contract-spec.md §1/§2/§3).
+#
+# The website repo pins a backend ref via its BACKEND_REF file and downloads
+# gw-web-artifact-<short_sha>.tar.gz from THIS repo's GitHub Release for that ref
+# (1c). This job builds that tarball and attaches it — but ONLY on a deliberate
+# tag push, so a normal PR merge activates no deploy surface (GOV-420 hold).
+#
+# The registry DB is local/vault-only and never in the repo; the self-hosted
+# gov-backend runner is Isaac's Mac where it lives. Point at it via the repo
+# variable GW_REGISTRY_DB (falls back to the in-repo Database path if seeded).
+#
+# Zero AI, zero external network beyond the Release upload. The deny-list scan
+# runs inside the builder (build_artifact check=True): ANY hit fails the job and
+# no asset is attached — fail closed by absence (§2/§6).
+
+name: Web Artifact Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      attach_release:
+        description: "Attach the tarball to a GitHub Release for this ref (deploy-gated; default no)"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "web-artifact-*"
+
+permissions:
+  contents: write   # release upload only; no other scope (§4 least-privilege)
+
+jobs:
+  build:
+    name: build + deny-list gate (py3.12)
+    runs-on: [self-hosted, macOS, ARM64, government-watchdog, gov-backend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up venv (python3.12 required)
+        run: |
+          PY="$(command -v python3.12 || true)"
+          if [ -z "$PY" ]; then
+            echo "python3.12 not found on runner — suite needs >=3.12 (PEP 701)"; exit 1
+          fi
+          "$PY" -m venv .ci-venv
+          ./.ci-venv/bin/pip install --quiet --upgrade pip
+          ./.ci-venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Deny-list + service tests (no real registry needed)
+        run: ./.ci-venv/bin/python -m pytest -q tests/test_gov1526_export_web_artifact.py
+
+      - name: Build artifact from the registry (deny-list gate inside the builder)
+        env:
+          GW_REGISTRY_DB: ${{ vars.GW_REGISTRY_DB }}
+        run: |
+          DB="${GW_REGISTRY_DB:-Database/gov_watchdog.db}"
+          if [ ! -f "$DB" ]; then
+            echo "registry DB not found at '$DB' — set the GW_REGISTRY_DB repo variable"; exit 1
+          fi
+          # build_artifact runs the §2 deny-list check by default; a hit exits non-zero.
+          ./.ci-venv/bin/python scripts/export_web_artifact.py --db "$DB" --out-dir dist
+
+      - name: Attach to GitHub Release (tag push, or dispatch opt-in)
+        if: startsWith(github.ref, 'refs/tags/web-artifact-') || inputs.attach_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # gh needs a tag; on workflow_dispatch from a branch, derive one from the sha.
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            TAG="web-artifact-$(git rev-parse --short=12 HEAD)"
+            git tag -f "$TAG" && git push -f origin "$TAG" || true
+          fi
+          gh release create "$TAG" dist/gw-web-artifact-*.tar.gz \
+            --title "Web artifact $TAG" \
+            --notes "Pinned backend web artifact (GOV-1523). Deny-list gated; see manifest.json inside." \
+            || gh release upload "$TAG" dist/gw-web-artifact-*.tar.gz --clobber
