@@ -265,6 +265,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sqlite3
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -454,6 +455,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="public origin baked into magic-link emails "
                              "(default: the beta service's loopback default)")
     args = parser.parse_args(argv)
+    # INFO logs to stderr: the hash-only send audit trail (GOV-1544 F2) must
+    # reach platform logs. No log line anywhere in the service may carry a
+    # plaintext email address — enforced by tests and the e2e log sweep.
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     # GOV-1544 F2: env supplies SMTP *credentials only*; complete+valid env
     # registers the adapter, but every send still resolves through the
     # owner-gated email_adapter_enabled flag (fail closed either way).
