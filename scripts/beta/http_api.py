@@ -16,8 +16,11 @@ module activates nothing.
 Bind guard: :func:`serve` refuses any host but loopback (GATE-PUB / INV-4 — no
 public exposure, ever; public deploy is a later owner card).
 
-Session cookie: HttpOnly + Secure + SameSite=Lax, 7-day Max-Age, Path=/. The raw
+Session cookie: HttpOnly + Secure + SameSite=Strict, 7-day Max-Age, Path=/. The raw
 value is the browser's only copy — the DB stores only its sha256 (sessions.py).
+Strict is safe here (GOV-1543 F1): the cookie is SET on the magic-link 302
+(SameSite never restricts setting), and every later authenticated call is a
+same-origin fetch('/api/…') where Strict cookies always ride.
 """
 
 from __future__ import annotations
@@ -54,15 +57,15 @@ class BindError(Exception):
 
 def build_session_cookie(raw_token: str, *,
                          max_age: int = sessions.BETA_TTL_SECONDS) -> str:
-    """The Set-Cookie value for a fresh session (HttpOnly + Secure + Lax)."""
+    """The Set-Cookie value for a fresh session (HttpOnly + Secure + Strict)."""
     return (f"{COOKIE_NAME}={raw_token}; Max-Age={max_age}; Path=/;"
-            " HttpOnly; Secure; SameSite=Lax")
+            " HttpOnly; Secure; SameSite=Strict")
 
 
 def clear_session_cookie() -> str:
     """The Set-Cookie value that immediately expires the session cookie."""
     return (f"{COOKIE_NAME}=; Max-Age=0; Path=/;"
-            " HttpOnly; Secure; SameSite=Lax")
+            " HttpOnly; Secure; SameSite=Strict")
 
 
 def cookie_token(cookie_header: str | None) -> str | None:
