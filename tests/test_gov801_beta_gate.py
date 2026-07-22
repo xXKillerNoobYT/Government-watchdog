@@ -302,7 +302,7 @@ def test_verify_success_sets_httponly_cookie_and_redirects_to_app(conn):
     assert headers["Location"] == service.APP_REDIRECT
     cookie = headers["Set-Cookie"]
     assert cookie.startswith(http_api.COOKIE_NAME + "=")
-    assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=Lax" in cookie
+    assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=Strict" in cookie
     assert f"Max-Age={sessions.BETA_TTL_SECONDS}" in cookie
 
 
@@ -402,3 +402,19 @@ def test_end_to_end_approved_email_to_session(conn, capture, live_server):
                          service.SESSION_CURRENT_ROUTE, cookie=raw_cookie)
     assert status == 200
     assert sessions.verify(conn, session_value) is None
+
+
+def test_no_cookie_is_lax_or_missing_samesite():
+    """GOV-1544 F1 regression: every Set-Cookie this module emits is Strict.
+
+    Guards the GOV-802 acceptance criterion (AC said Strict; Lax must never
+    come back) at the helper level and by a whole-module source sweep.
+    """
+    import inspect
+
+    for cookie in (http_api.build_session_cookie("tok"),
+                   http_api.clear_session_cookie()):
+        assert "SameSite=Strict" in cookie
+        assert "SameSite=Lax" not in cookie
+    source = inspect.getsource(http_api)
+    assert "SameSite=Lax" not in source

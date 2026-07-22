@@ -57,7 +57,7 @@ GATE_FUNCTIONS = [
 ]
 #: Package roots whose import closure is packaged into the running service.
 #: read_api is deliberately NOT here (see module docstring).
-SERVICE_ENTRY_PACKAGES = ("accounts", "notifications", "email_gateway")
+SERVICE_ENTRY_PACKAGES = ("accounts", "notifications", "email_gateway", "beta")
 
 ARTIFACT_PREFIX = "gw-web-artifact-"
 
@@ -105,10 +105,12 @@ def _walk_json_keys(obj):
 def allowed_file_set(root: Path) -> set[str]:
     """The closed allowlist for a staged artifact (§2 clause 5).
 
-    Exactly: the manifest, the two lane files, ``service/run.py``, and the
-    packaged service import closure — nothing else.
+    Exactly: the manifest, the two lane files, ``service/run.py``, the
+    seedless ``service/schema.sql`` (GOV-1544), and the packaged service
+    import closure — nothing else.
     """
-    allowed = {MANIFEST_NAME, PUBLISHED_NAME, REVIEWER_INTERNAL_NAME, "service/run.py"}
+    allowed = {MANIFEST_NAME, PUBLISHED_NAME, REVIEWER_INTERNAL_NAME,
+               "service/run.py", "service/schema.sql"}
     for rel in compute_service_closure(SCRIPTS_DIR):
         allowed.add(f"{SERVICE_DIR}/{rel.as_posix()}")
     return allowed
@@ -244,11 +246,15 @@ Single documented entrypoint for the pinned backend web artifact:
 
     run.py --db <path> --port <port> [--host 127.0.0.1]
 
-Routes (GET only):
-  /api/health            liveness for the website build/proxy; zero civic data.
-  /api/notifications     the existing GOV-771 endpoint (flag-gated, session-auth).
-  /api/reviewer-internal approved-tier civic data (accounts.gate) -> the pre-built
-                         data/reviewer_internal.json lane; 403 otherwise.
+Routes:
+  GET    /api/health            liveness for the website build/proxy; zero civic data.
+  GET    /api/notifications     the existing GOV-771 endpoint (flag-gated, session-auth).
+  GET    /api/reviewer-internal approved-tier civic data (accounts.gate) -> the pre-built
+                                data/reviewer_internal.json lane; 403 otherwise.
+  POST   /api/beta/magic-link/request  gated-beta front door (GOV-801/GOV-1544 wiring);
+  GET    /api/beta/magic-link/verify   every /api/beta/* route answers a constant 404
+  POST   /api/beta/waitlist            until the owner-gated ``beta_gate_enabled``
+  DELETE /api/beta/sessions/current    flag row is enabled (fail closed, D1).
 
 Bind guard: refuses any host outside ALLOWED_BIND_HOSTS (127.0.0.1/localhost) —
 the service is never publicly addressable. All frozen serving logic is reused
@@ -259,6 +265,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sqlite3
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -274,6 +281,7 @@ ALLOWED_BIND_HOSTS = frozenset({"127.0.0.1", "localhost"})
 HEALTH_ROUTE = "/api/health"
 NOTIFICATIONS_ROUTE = "/api/notifications"
 REVIEWER_INTERNAL_ROUTE = "/api/reviewer-internal"
+BETA_ROUTE_PREFIX = "/api/beta/"
 
 BODY_404 = {"error": "not_found"}
 BODY_500 = {"error": "internal_error"}
@@ -320,6 +328,26 @@ def reviewer_internal_payload(conn: sqlite3.Connection, authorization: str | Non
     return 200, {"reviewer_internal_records": records}
 
 
+def beta_request(conn: sqlite3.Connection, *, method: str, path: str,
+                 raw_body: bytes, cookie_header: str | None,
+                 ip_hint: str | None,
+                 verify_base_url: str | None = None) -> tuple[int, dict, dict]:
+    """Bridge to the gated-beta front door (GOV-1544 wiring; no new logic).
+
+    Delegates to ``beta.http_api.process_request`` — flag check FIRST, so the
+    whole /api/beta/* surface is a constant 404 until ``beta_gate_enabled`` is
+    appended by an owner-gated decision. Returns (status, body, headers);
+    headers carry the Set-Cookie for verify/sign-out.
+    """
+    from beta import http_api as beta_http_api
+    from beta import service as beta_service
+
+    return beta_http_api.process_request(
+        conn, method=method, path=path, raw_body=raw_body,
+        cookie_header=cookie_header, ip_hint=ip_hint,
+        verify_base_url=verify_base_url or beta_service.DEFAULT_VERIFY_BASE_URL)
+
+
 def process_request(conn: sqlite3.Connection, *, path: str, authorization: str | None) -> tuple[int, dict]:
     """Pure request core (no sockets) — the unit-testable router."""
     route = urlsplit(path).path
@@ -338,14 +366,20 @@ def _open(db_path: Path) -> sqlite3.Connection:
     return db.open_db(db_path)
 
 
-def make_handler(db_path: Path):
+def make_handler(db_path: Path, *, verify_base_url: str | None = None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # silence default stderr spam
             pass
 
-        def do_GET(self):
+        def _dispatch(self, method: str) -> None:
+            route = urlsplit(self.path).path
+            headers: dict = {}
+            # Always drain the request body so HTTP framing stays correct even
+            # for routes that ignore it (e.g. flag-off constant 404s).
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw_body = self.rfile.read(length) if length else b""
             # /api/health needs no DB, so it answers even if the DB is absent.
-            if urlsplit(self.path).path == HEALTH_ROUTE:
+            if method == "GET" and route == HEALTH_ROUTE:
                 status, payload = 200, health_payload()
             else:
                 # Fail closed on ANY handler error: a constant 500 body, never a
@@ -355,30 +389,60 @@ def make_handler(db_path: Path):
                 try:
                     conn = _open(db_path)
                     try:
-                        status, payload = process_request(
-                            conn, path=self.path,
-                            authorization=self.headers.get("Authorization"))
+                        if route.startswith(BETA_ROUTE_PREFIX):
+                            from beta import common as beta_common
+
+                            # ip_hint is computed at the boundary — a raw IP
+                            # never crosses into the service or audit layers.
+                            ip_hint = beta_common.ip_hint(
+                                self.client_address[0]
+                                if self.client_address else None)
+                            status, payload, headers = beta_request(
+                                conn, method=method, path=self.path,
+                                raw_body=raw_body,
+                                cookie_header=self.headers.get("Cookie"),
+                                ip_hint=ip_hint,
+                                verify_base_url=verify_base_url)
+                        elif method == "GET":
+                            status, payload = process_request(
+                                conn, path=self.path,
+                                authorization=self.headers.get("Authorization"))
+                        else:
+                            status, payload = 404, dict(BODY_404)
                     finally:
                         conn.close()
                 except Exception:  # noqa: BLE001 — defense in depth at the boundary
-                    status, payload = 500, dict(BODY_500)
+                    status, payload, headers = 500, dict(BODY_500), {}
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def do_GET(self):
+            self._dispatch("GET")
+
+        def do_POST(self):
+            self._dispatch("POST")
+
+        def do_DELETE(self):
+            self._dispatch("DELETE")
+
     return Handler
 
 
-def serve(db_path: Path, *, host: str = "127.0.0.1", port: int = 8791) -> HTTPServer:
+def serve(db_path: Path, *, host: str = "127.0.0.1", port: int = 8791,
+          verify_base_url: str | None = None) -> HTTPServer:
     """Create (do not yet serve) an HTTPServer bound to loopback only."""
     if host not in ALLOWED_BIND_HOSTS:
         raise BindError(
             f"refusing to bind web-artifact service to {host!r}; loopback only (127.0.0.1)"
         )
-    return HTTPServer((host, port), make_handler(db_path))
+    return HTTPServer((host, port),
+                      make_handler(db_path, verify_base_url=verify_base_url))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -387,8 +451,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8791)
+    parser.add_argument("--verify-base-url", default=None,
+                        help="public origin baked into magic-link emails "
+                             "(default: the beta service's loopback default)")
     args = parser.parse_args(argv)
-    server = serve(args.db, host=args.host, port=args.port)
+    # INFO logs to stderr: the hash-only send audit trail (GOV-1544 F2) must
+    # reach platform logs. No log line anywhere in the service may carry a
+    # plaintext email address — enforced by tests and the e2e log sweep.
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    # GOV-1544 F2: env supplies SMTP *credentials only*; complete+valid env
+    # registers the adapter, but every send still resolves through the
+    # owner-gated email_adapter_enabled flag (fail closed either way).
+    from email_gateway import adapters as email_adapters
+
+    email_adapters.register_smtp_from_env()
+    server = serve(args.db, host=args.host, port=args.port,
+                   verify_base_url=args.verify_base_url)
     print(f"web-artifact service listening on http://{args.host}:{args.port}{HEALTH_ROUTE}",
           file=sys.stderr)
     server.serve_forever()
@@ -439,6 +517,35 @@ def _content_digest(files: dict[str, bytes]) -> str:
     return hasher.hexdigest()
 
 
+def schema_sql_bytes(scripts_dir: Path = SCRIPTS_DIR) -> bytes:
+    """Seedless DB schema (GOV-1543 §2 build-stage output; GOV-1544 wiring).
+
+    Migrations never ship in the artifact, but the deployed unit must be able
+    to initialize an EMPTY ``/data/gw.db`` (accounts/flags/waitlist/outbox
+    only — zero rows, zero civic data). Apply the repo's migrations to a
+    throwaway DB and dump ``sqlite_master`` DDL in creation order.
+    """
+    import tempfile
+
+    sys.path.insert(0, str(scripts_dir))
+    import db  # noqa: E402
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_db = Path(tmp) / "schema.db"
+        db.apply_migrations(tmp_db)
+        import sqlite3
+
+        conn = sqlite3.connect(tmp_db)
+        try:
+            rows = conn.execute(
+                "SELECT sql FROM sqlite_master"
+                " WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        finally:
+            conn.close()
+    return ("\n\n".join(sql + ";" for (sql,) in rows) + "\n").encode("utf-8")
+
+
 def stage_files(
     db_path: Path,
     *,
@@ -465,6 +572,7 @@ def stage_files(
 
     # Service code: the entrypoint + the deterministic import closure.
     files["service/run.py"] = RUN_PY.encode("utf-8")
+    files["service/schema.sql"] = schema_sql_bytes(scripts_dir)
     for rel in compute_service_closure(scripts_dir):
         files[f"{SERVICE_DIR}/{rel.as_posix()}"] = (scripts_dir / rel).read_bytes()
 
