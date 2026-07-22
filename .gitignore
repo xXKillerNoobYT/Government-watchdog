@@ -93,3 +93,9 @@ Clone/
 # operational output (metric snapshots, decision packs, support JSONL) —
 # local/vault-only per the data-publication boundary, never committed (§5.2).
 Logs/pilot/
+
+# GOV-1526 (P1b of GOV-1523): built web artifacts. The tarball carries projected
+# civic data lanes (data/reviewer_internal.json) — build output, never committed;
+# it ships only as a GitHub Release asset on a deliberate BACKEND_REF bump.
+dist/
+gw-web-artifact-*.tar.gz
