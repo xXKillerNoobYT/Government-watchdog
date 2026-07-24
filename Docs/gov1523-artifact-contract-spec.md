@@ -35,8 +35,8 @@ gw-web-artifact-<backend_short_sha>.tar.gz
 | Field | Meaning |
 |---|---|
 | `backend_commit` | full 40-char SHA the artifact was built from (must equal the website's `BACKEND_REF` resolution) |
-| `artifact_sha256` | sha256 of the tarball contents (computed over a deterministic file order) |
-| `generated_at_utc` | build timestamp, ISO-8601 UTC |
+| `artifact_sha256` | sha256 of the deterministic `(path, bytes)` content tree, excluding `manifest.json`; the GitHub Release notes separately carry the sha256 of the uploaded `.tar.gz` bytes |
+| `generated_at_utc` | source commit timestamp for release builds, ISO-8601 with UTC offset; pinned so equal source + registry inputs rebuild byte-for-byte |
 | `schema_version` | integer, bumped on any data-shape change; website build refuses unknown versions |
 | `gate_functions` | literal list: `["read_api.published_records", "read_api.reviewer_internal_records"]` — proves which frozen gates produced the lanes |
 | `row_counts` | `{ "published": n, "reviewer_internal": m }` — consumers can assert honest-empty vs. missing-data |
@@ -56,8 +56,29 @@ A deny-list failure is a **build failure** of the artifact job — the artifact 
 ## 3. Pin format — `BACKEND_REF`
 
 - The website repo carries exactly one pin file at its root: **`BACKEND_REF`** — a single line, either a full 40-char commit SHA or an annotated tag on the backend repo. No ranges, no branch names.
-- The website build resolves `BACKEND_REF` → downloads `gw-web-artifact-<short_sha>.tar.gz` from the backend repo's GitHub Release for that ref (1b's CI job builds and attaches the artifact on tag push / manual dispatch).
-- Build verifies `manifest.backend_commit` matches the resolved ref and `artifact_sha256` matches the tarball; any mismatch = build failure.
+- The website build resolves `BACKEND_REF` → downloads
+  `gw-web-artifact-<short_sha>.tar.gz` from the backend repo's GitHub Release
+  for that ref. Publication is a manual dispatch from the protected default
+  branch: the persistent self-hosted runner builds and gates with read-only
+  source access, then a protected GitHub-hosted environment receives the
+  candidate through a private one-day Actions artifact and alone holds release
+  authority.
+- Build verifies `manifest.backend_commit` matches the resolved ref and
+  `artifact_sha256` matches the recomputed deterministic content-tree digest.
+  The isolated publisher also regenerates the service entrypoint, import
+  closure, and seedless schema from that exact checked-out ref and requires the
+  packaged executable bytes to match.
+  Release verification separately checks the uploaded tarball-byte sha256 from
+  immutable GitHub asset metadata; any mismatch = build/release failure.
+- A retry of an already-published immutable source tag succeeds only when the
+  rebuilt local candidate and downloaded remote asset are exactly equal:
+  tarball bytes, GitHub digest, manifest source, recomputed content digest,
+  schema, and release evidence. If the mutable registry has changed at the same
+  source commit, the retry fails without mutation; a new reviewed backend
+  commit/tag identity is required.
+- A tag without a published release or verified draft carries no artifact
+  digest and is never a resumable checkpoint. Recovery rolls forward with a new
+  reviewed backend commit/tag rather than publishing an unprovable candidate.
 - **Bump = explicit one-line PR** changing only `BACKEND_REF`, titled `chore: bump BACKEND_REF to <short_sha>`. That PR's CI runs the website against the new artifact — this is the whole cross-repo integration test surface. Fine-tuning either side independently never breaks the other until a deliberate bump.
 
 ## 4. Deploy-token scoping
@@ -111,7 +132,9 @@ scripts/local_e2e.sh        # website repo, 1c implements
 
 Steps the script must perform:
 1. Resolve `BACKEND_REF=local:<backend checkout>` → build the artifact locally (same builder as 1b's CI job) → run the §2 deny-list tests against it.
-2. Verify manifest (commit match against the checkout's HEAD, sha256, schema_version).
+2. Verify manifest (commit match against the checkout's HEAD, deterministic
+   content-tree sha256, schema_version) and, for a downloaded release, verify
+   the uploaded tarball-byte sha256 recorded by the immutable release.
 3. Start `service/run.py --db <seeded demo DB> --port <p>` on loopback; assert a non-loopback bind attempt is refused.
 4. Start the website preview (`vite preview`, 127.0.0.1:4173) with `/api/*` proxied to the service.
 5. Smoke assertions: (a) unauthenticated → public landing only, gated routes show gated states, `/api/notifications` → 404 while flag off; (b) after appending the feature flags with a test `owner_decision_ref` → magic-link request flows through the NullAdapter outbox, session cookie issued, approved session sees reviewer-internal data via `/api/*` only; (c) built static output contains zero reviewer-internal content and zero deny-listed strings.
