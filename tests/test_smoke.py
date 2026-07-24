@@ -109,6 +109,12 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "beta_sessions",
         "beta_waitlist",
         "beta_audit_log",
+        # ACCESS-2026 v0.1 (0027): explicit, inert product/program/feature/
+        # exact-geography decision facts. No row is seeded by the migration.
+        "access_plan_assignments",
+        "access_program_assignments",
+        "access_feature_grants",
+        "access_geography_grants",
     }
 
 

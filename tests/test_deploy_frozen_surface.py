@@ -29,6 +29,7 @@ FROZEN = [
 MIGRATION_ALLOWLIST = {
     "0025_accounts_cohorts_notifications.sql",
     "0026_beta_gate.sql",  # GOV-801: gated-beta front door (five beta_* tables)
+    "0027_access_decision_core.sql",  # ACCESS-2026: inert explicit access facts
 }
 
 
