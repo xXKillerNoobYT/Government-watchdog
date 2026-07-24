@@ -10,7 +10,7 @@ one versioned tarball per pinned backend ref:
     │   └── reviewer_internal.json    # gated lane   <- read_api.reviewer_internal_records
     └── service/
         ├── run.py                    # loopback-only auth/notification service + health check
-        └── <auth/notification import closure, copied verbatim from scripts/>
+        └── <auth/notification/web-access import closure, copied verbatim from scripts/>
 
 Design note (build-time vs. run-time, resolves a §1/§2 tension):
 ``read_api`` runs HERE, at BUILD time, in the backend repo, to produce the two
@@ -57,7 +57,13 @@ GATE_FUNCTIONS = [
 ]
 #: Package roots whose import closure is packaged into the running service.
 #: read_api is deliberately NOT here (see module docstring).
-SERVICE_ENTRY_PACKAGES = ("accounts", "notifications", "email_gateway", "beta")
+SERVICE_ENTRY_PACKAGES = (
+    "accounts",
+    "notifications",
+    "email_gateway",
+    "beta",
+    "web_access",
+)
 
 ARTIFACT_PREFIX = "gw-web-artifact-"
 
@@ -249,7 +255,8 @@ Single documented entrypoint for the pinned backend web artifact:
 Routes:
   GET    /api/health            liveness for the website build/proxy; zero civic data.
   GET    /api/notifications     the existing GOV-771 endpoint (flag-gated, session-auth).
-  GET    /api/reviewer-internal approved-tier civic data (accounts.gate) -> the pre-built
+  GET    /api/reviewer-internal approved bearer or owner-gated beta-cookie session
+                                (web_access.gate) -> the pre-built
                                 data/reviewer_internal.json lane; 403 otherwise.
   POST   /api/beta/magic-link/request  gated-beta front door (GOV-801/GOV-1544 wiring);
   GET    /api/beta/magic-link/verify   every /api/beta/* route answers a constant 404
@@ -310,19 +317,34 @@ def health_payload() -> dict:
     }
 
 
-def reviewer_internal_payload(conn: sqlite3.Connection, authorization: str | None) -> tuple[int, dict]:
-    """Approved-tier gate -> the pre-built reviewer_internal lane, or 403.
+def reviewer_internal_payload(
+    conn: sqlite3.Connection,
+    authorization: str | None,
+    cookie_header: str | None,
+    authorization_header_count: int = 0,
+    cookie_header_count: int = 0,
+) -> tuple[int, dict]:
+    """Approved bearer/beta-cookie gate -> reviewer_internal lane, or 403.
 
     The civic query is a static-file read that lives BELOW the gate, so no code
-    path reaches the data unauthorized (same shape as accounts.gate's worked
-    example). Reuses the single fail-closed authorization path; no new logic.
+    path reaches the data unauthorized. The composed gate preserves the
+    accounts bearer path, adds the owner-gated beta cookie, and rejects
+    ambiguous requests carrying both credential families.
     """
-    from accounts import gate
+    from web_access import gate
 
-    token = authorization[len("Bearer "):] if authorization and authorization.startswith("Bearer ") else None
-    status, principal_or_body = gate.guard_civic_request(conn, token)
+    # Repeated credential header fields have ambiguous ordering/combining
+    # rules. Identity transport is strict: at most one of each is accepted.
+    if authorization_header_count > 1 or cookie_header_count > 1:
+        return 403, dict(gate.DENIED_BODY)
+
+    status, principal_or_body = gate.guard_reviewer_request(
+        conn,
+        authorization=authorization,
+        cookie_header=cookie_header,
+    )
     if status != 200:
-        return status, dict(DENIED_BODY)
+        return status, dict(gate.DENIED_BODY)
     lane = ARTIFACT_ROOT / "data" / "reviewer_internal.json"
     records = json.loads(lane.read_text(encoding="utf-8")) if lane.exists() else []
     return 200, {"reviewer_internal_records": records}
@@ -348,7 +370,15 @@ def beta_request(conn: sqlite3.Connection, *, method: str, path: str,
         verify_base_url=verify_base_url or beta_service.DEFAULT_VERIFY_BASE_URL)
 
 
-def process_request(conn: sqlite3.Connection, *, path: str, authorization: str | None) -> tuple[int, dict]:
+def process_request(
+    conn: sqlite3.Connection,
+    *,
+    path: str,
+    authorization: str | None,
+    cookie_header: str | None = None,
+    authorization_header_count: int = 0,
+    cookie_header_count: int = 0,
+) -> tuple[int, dict]:
     """Pure request core (no sockets) — the unit-testable router."""
     route = urlsplit(path).path
     if route == HEALTH_ROUTE:
@@ -357,7 +387,13 @@ def process_request(conn: sqlite3.Connection, *, path: str, authorization: str |
         from notifications import http_api
         return http_api.process_request(conn, path=path, authorization=authorization)
     if route == REVIEWER_INTERNAL_ROUTE:
-        return reviewer_internal_payload(conn, authorization)
+        return reviewer_internal_payload(
+            conn,
+            authorization,
+            cookie_header,
+            authorization_header_count,
+            cookie_header_count,
+        )
     return 404, dict(BODY_404)
 
 
@@ -378,6 +414,14 @@ def make_handler(db_path: Path, *, verify_base_url: str | None = None):
             # for routes that ignore it (e.g. flag-off constant 404s).
             length = int(self.headers.get("Content-Length", 0) or 0)
             raw_body = self.rfile.read(length) if length else b""
+            authorization_headers = self.headers.get_all("Authorization") or []
+            authorization = (
+                authorization_headers[0]
+                if len(authorization_headers) == 1
+                else None
+            )
+            cookie_headers = self.headers.get_all("Cookie") or []
+            cookie_header = cookie_headers[0] if len(cookie_headers) == 1 else None
             # /api/health needs no DB, so it answers even if the DB is absent.
             if method == "GET" and route == HEALTH_ROUTE:
                 status, payload = 200, health_payload()
@@ -400,13 +444,18 @@ def make_handler(db_path: Path, *, verify_base_url: str | None = None):
                             status, payload, headers = beta_request(
                                 conn, method=method, path=self.path,
                                 raw_body=raw_body,
-                                cookie_header=self.headers.get("Cookie"),
+                                cookie_header=cookie_header,
                                 ip_hint=ip_hint,
                                 verify_base_url=verify_base_url)
                         elif method == "GET":
                             status, payload = process_request(
                                 conn, path=self.path,
-                                authorization=self.headers.get("Authorization"))
+                                authorization=authorization,
+                                cookie_header=cookie_header,
+                                authorization_header_count=(
+                                    len(authorization_headers)
+                                ),
+                                cookie_header_count=len(cookie_headers))
                         else:
                             status, payload = 404, dict(BODY_404)
                     finally:
