@@ -16,6 +16,7 @@ from beta import allowlist, audit, common, mailer, ratelimit, sessions, tokens, 
 # Route paths (also the HTTP dispatch table in http_api).
 MAGIC_LINK_REQUEST_ROUTE = "/api/beta/magic-link/request"
 MAGIC_LINK_VERIFY_ROUTE = "/api/beta/magic-link/verify"
+MAGIC_LINK_CONSUME_ROUTE = "/api/beta/magic-link/consume"  # 6-digit code (GOV-1538)
 WAITLIST_ROUTE = "/api/beta/waitlist"
 SESSION_CURRENT_ROUTE = "/api/beta/sessions/current"
 
@@ -59,9 +60,9 @@ def request_magic_link(conn: sqlite3.Connection, email: str, *,
         return
     if not allowlist.is_allowed(conn, norm):
         return  # neutral: never confirm or deny allowlist membership
-    raw_token = tokens.issue(conn, norm, ip_hint=ip_hint)
+    raw_token, raw_code = tokens.issue_with_code(conn, norm, ip_hint=ip_hint)
     verify_url = build_verify_url(raw_token, verify_base_url=verify_base_url)
-    mailer.send_magic_link(conn, norm, verify_url=verify_url)
+    mailer.send_magic_link(conn, norm, verify_url=verify_url, code=raw_code)
     audit.record(conn, event="magic_link_sent", email=norm, ip_hint=ip_hint)
 
 
@@ -86,6 +87,34 @@ def verify_magic_link(conn: sqlite3.Connection, raw_token: str, *,
     audit.record(conn, event="magic_link_verified", email=email,
                  ip_hint=ip_hint)
     audit.record(conn, event="session_issued", email=email, ip_hint=ip_hint)
+    return raw_session
+
+
+def consume_code(conn: sqlite3.Connection, email: str, code: str, *,
+                 ip_hint: str | None = None) -> str | None:
+    """Redeem the 6-digit code for ``email`` and issue a session (GOV-1538).
+
+    Returns the raw session token, or None on any failure — bad/expired/reused
+    code, attempt cap reached, or the email was allowlist-revoked between
+    request and consume (re-checked here, exactly like :func:`verify_magic_link`,
+    so a revoked invite cannot be redeemed by code either). The caller answers a
+    single neutral error for every None so the code path leaks no allowlist
+    signal.
+    """
+    verified = tokens.consume_code(conn, email, code)
+    if verified is None:
+        audit.record(conn, event="magic_link_rejected",
+                     email=common.normalize_email(email) or None,
+                     ip_hint=ip_hint, detail="invalid_or_expired_code")
+        return None
+    if not allowlist.is_allowed(conn, verified):
+        audit.record(conn, event="magic_link_rejected", email=verified,
+                     ip_hint=ip_hint, detail="not_allowed")
+        return None
+    _, raw_session = sessions.issue(conn, verified)
+    audit.record(conn, event="magic_link_verified", email=verified,
+                 ip_hint=ip_hint)
+    audit.record(conn, event="session_issued", email=verified, ip_hint=ip_hint)
     return raw_session
 
 
