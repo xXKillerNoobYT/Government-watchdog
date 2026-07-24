@@ -24,10 +24,15 @@ from email_gateway import adapters, templates
 
 
 def send_magic_link(conn: sqlite3.Connection, email: str, *,
-                    verify_url: str) -> str | None:
-    """Render + send the one-time sign-in link. Null adapter until enabled."""
-    subject, body_text = templates.render("magic_link",
-                                          {"verify_url": verify_url})
+                    verify_url: str, code: str) -> str | None:
+    """Render + send the one-time sign-in link AND code. Null adapter until on.
+
+    One email carries both credentials (GOV-1538): the tappable link and the
+    6-digit code fallback used until the Phase-3 domain can serve an AASA file
+    for universal links.
+    """
+    subject, body_text = templates.render(
+        "magic_link", {"verify_url": verify_url, "code": code})
     return adapters.resolve_adapter(conn).send(
         to_email=email, subject=subject, body_text=body_text, body_html=None)
 
