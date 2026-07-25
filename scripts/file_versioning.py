@@ -68,7 +68,7 @@ import file_records as fr
 #: The only flag a freshly-registered dependency may hold (nothing to re-review).
 INITIAL_REVIEW_FLAG = "current"
 
-#: Every legal review_flag (must mirror the CHECK in 0029_supplied_file_versioning).
+#: Every legal review_flag (must mirror the CHECK in 0030_supplied_file_versioning).
 REVIEW_FLAGS = ("current", "needs_re_review")
 
 #: The record fields compared in a before/after diff. Content-integrity +

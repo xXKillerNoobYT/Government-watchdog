@@ -11,9 +11,8 @@
 -- ledger fast-path and a bare re-run are both safe. One statement per ';', no
 -- semicolons in literals, full-line comments only (db.py splitter contract).
 --
--- Migration slot: 0029 is the first free slot on origin/main (latest =
--- 0028_supplied_file_records.sql). If another 0029 lands first, the merge gate
--- renumbers this file (second-lander-renumbers rule).
+-- Migration slot: 0030 (renumbered from 0029: GOV-1577/B4 landed first with
+-- 0029_supplied_file_links.sql per second-lander-renumbers rule).
 --
 -- WHY THESE TABLES (plan §5): "Replacing/superseding a file is a red-flag event:
 -- keep both versions, compute before/after, mark affected records, and require
