@@ -7,6 +7,11 @@ Database/*.db-wal
 Database/*.db-shm
 Raw-PDFs/
 Transcripts/
+# GOV-1574 (B1): content-addressed encrypted raw-object store for supplied source
+# files. Raw bytes (ciphertext), the link ledger, and the store descriptor are
+# local/vault-only per the data-publication boundary — never committed. The store
+# encryption key is provisioned out-of-band (env/secret), never in the repo.
+Vault/
 # GOV-124 managed local-corpus raw store — snapshotted raw bytes from the on-disk
 # Alpine corpus (data-publication boundary; raw stays local/vault-only).
 Raw-Corpus/
