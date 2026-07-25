@@ -30,6 +30,7 @@ MIGRATION_ALLOWLIST = {
     "0025_accounts_cohorts_notifications.sql",
     "0026_beta_gate.sql",  # GOV-801: gated-beta front door (five beta_* tables)
     "0027_beta_magic_code.sql",  # GOV-1538: 6-digit code columns on beta_magic_tokens
+    "0028_supplied_file_records.sql",  # GOV-1575 (B2): supplied_files record + provenance
 }
 
 
