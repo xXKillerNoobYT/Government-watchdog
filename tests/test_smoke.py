@@ -111,6 +111,9 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "beta_audit_log",
         # GOV-1575 (0028 / GOV-1566 B2): supplied-file record + provenance model.
         "supplied_files",
+        # GOV-1578 (0029 / GOV-1566 B5): supersede versioning + red-flag tables.
+        "supplied_file_dependencies",
+        "supplied_file_supersede_events",
     }
 
 
