@@ -113,6 +113,9 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "supplied_files",
         # GOV-1577 (0029 / GOV-1566 B4): supplied-file → area/meeting/agenda linkage.
         "supplied_file_links",
+        # GOV-1578 (0030 / GOV-1566 B5): supersede versioning + red-flag tables.
+        "supplied_file_dependencies",
+        "supplied_file_supersede_events",
     }
 
 
