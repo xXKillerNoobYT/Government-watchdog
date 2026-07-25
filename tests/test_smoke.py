@@ -109,6 +109,8 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "beta_sessions",
         "beta_waitlist",
         "beta_audit_log",
+        # GOV-1575 (0028 / GOV-1566 B2): supplied-file record + provenance model.
+        "supplied_files",
     }
 
 
