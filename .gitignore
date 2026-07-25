@@ -3,3 +3,9 @@
 Logs/
 node_modules/
 *.log
+
+# macOS finder metadata (junk, never a deliverable)
+.DS_Store
+
+# Playwright-MCP scratch captures (transient run artifacts, not versioned evidence)
+.playwright-mcp/
