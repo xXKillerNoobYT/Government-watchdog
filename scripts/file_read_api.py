@@ -81,6 +81,7 @@ WEB_SAFE_FILE_FIELDS = frozenset({
     "original_filename",
     "captured_at",
     "origin_url",          # present ONLY when a public http(s) URL (else dropped)
+    "provenance_note",     # present ONLY when a non-blank note (GOV-1625); free text
     "mime",
     "byte_size",
     "review_state",
@@ -99,6 +100,7 @@ _WEB_SAFE_FILE_COLUMNS = (
     "original_filename",
     "captured_at",
     "origin_url",
+    "provenance_note",
     "mime",
     "byte_size",
     "review_state",
@@ -173,8 +175,13 @@ def _assert_file_keys(card: dict[str, Any]) -> dict[str, Any]:
 def _project_file(conn: sqlite3.Connection, rec: dict[str, Any]) -> dict[str, Any]:
     """Project one ``supplied_files`` row (already SELECTed web-safe) to a card.
 
-    ``origin_url`` is kept only when a public web URL; ``links`` is attached as an
-    envelope key. The key-set assertion is the structural backstop.
+    ``origin_url`` is kept only when a public web URL; ``provenance_note`` only
+    when a non-blank note (GOV-1625) — it is free text, never a locator, so it is
+    NOT URL-validated here (that is exactly why prose lives in its own field) and
+    is emitted verbatim for the reviewer-cleared file. The whole body is swept by
+    :func:`read_api.assert_no_raw_paths` in :func:`build_files_response`, so a
+    note carrying a vault path still fails LOUDLY at the boundary. ``links`` is
+    attached as an envelope key. The key-set assertion is the structural backstop.
     """
     card = {k: rec[k] for k in _WEB_SAFE_FILE_COLUMNS}
     origin_url = _web_url_or_none(card.get("origin_url"))
@@ -182,6 +189,9 @@ def _project_file(conn: sqlite3.Connection, rec: dict[str, Any]) -> dict[str, An
         card.pop("origin_url", None)
     else:
         card["origin_url"] = origin_url
+    note = card.get("provenance_note")
+    if not (isinstance(note, str) and note.strip()):
+        card.pop("provenance_note", None)  # no note -> omit the key entirely
     card["links"] = _web_safe_links(conn, rec["file_id"])
     return _assert_file_keys(card)
 
