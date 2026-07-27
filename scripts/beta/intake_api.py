@@ -150,6 +150,42 @@ def _json_body(raw_body: bytes) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _is_http_url(value: str) -> bool:
+    """True only for an absolute ``http(s)://`` URL with a host.
+
+    This is the exact shape ``origin_url`` (the validated locator column) is
+    allowed to hold; anything else a supplier types is free-text prose that
+    belongs in ``provenance_note``.
+    """
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def _route_provenance(origin_url: str | None, provenance_note: str | None,
+                      ) -> tuple[str | None, str | None]:
+    """Split a supplier's locator + note into ``(origin_url, provenance_note)``.
+
+    Contract (GOV-1625 / GOV-1624): ``origin_url`` may hold ONLY a validated
+    ``http(s)`` URL. Interim compatibility — the pre-split frontend still puts
+    free-text prose ("handed to me at the June meeting") in ``origin_url``;
+    rather than reject it (400) or store prose as a "link", that prose is ROUTED
+    into ``provenance_note``. A split-frontend caller may also send
+    ``provenance_note`` explicitly. Nothing is dropped: if both a prose
+    ``origin_url`` and a distinct explicit note arrive, they are joined so no
+    supplier text is lost. Deterministic, no model.
+    """
+    if origin_url is not None and not _is_http_url(origin_url):
+        prose, origin_url = origin_url, None  # prose in the locator slot is a note
+        if provenance_note is None:
+            provenance_note = prose
+        elif prose != provenance_note:
+            provenance_note = f"{provenance_note}\n{prose}"
+    return origin_url, provenance_note
+
+
 def load_known_bad(env: dict | None = None) -> frozenset[str]:
     """Read the known-bad sha256 denylist from the environment (lowercased)."""
     import os
@@ -236,6 +272,13 @@ def process_request(conn: sqlite3.Connection, store, *, method: str, path: str,
         captured_at = common.iso(common.utcnow())
     origin_url = body.get("origin_url")
     origin_url = origin_url.strip() if isinstance(origin_url, str) and origin_url.strip() else None
+    provenance_note = body.get("provenance_note")
+    provenance_note = (provenance_note.strip()
+                       if isinstance(provenance_note, str) and provenance_note.strip()
+                       else None)
+    # origin_url holds ONLY a validated http(s) URL; non-URL prose (from the
+    # pre-split frontend) is routed into provenance_note, never stored as a link.
+    origin_url, provenance_note = _route_provenance(origin_url, provenance_note)
 
     # Persist bytes (B1: content-addressed, immutable, encrypted at rest) then
     # the record (B2: always inserted 'pending', full provenance). supplied_by is
@@ -255,6 +298,7 @@ def process_request(conn: sqlite3.Connection, store, *, method: str, path: str,
             supplied_by=supplied_by,
             captured_at=captured_at,
             origin_url=origin_url,
+            provenance_note=provenance_note,
         )
     except file_records.FileRecordError:
         # Bytes are already preserved in B1 (immutable); a record failure means

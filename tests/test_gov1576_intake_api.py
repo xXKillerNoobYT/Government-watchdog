@@ -324,6 +324,90 @@ def test_dedupe_same_bytes_twice(conn, store):
     assert conn.execute("SELECT COUNT(*) FROM supplied_files").fetchone()[0] == 2
 
 
+# --- GOV-1625: provenance_note + origin_url URL/prose routing ----------------
+
+class TestProvenanceRouting:
+    def test_unit_is_http_url(self):
+        for good in ("https://alpinewy.gov/p.pdf", "http://example.com"):
+            assert intake_api._is_http_url(good)
+        for bad in ("handed to me in June", "ftp://x/y", "file:///Users/IA/x.pdf",
+                    "www.no-scheme.gov", ""):
+            assert not intake_api._is_http_url(bad)
+
+    def test_unit_route_keeps_url_and_note_separate(self):
+        assert intake_api._route_provenance(
+            "https://x.gov/p.pdf", "at the meeting"
+        ) == ("https://x.gov/p.pdf", "at the meeting")
+
+    def test_unit_route_moves_prose_into_note(self):
+        assert intake_api._route_provenance("handed to me in June", None) == (
+            None, "handed to me in June")
+
+    def test_unit_route_joins_prose_with_existing_note(self):
+        url, note = intake_api._route_provenance("paper copy", "from the clerk")
+        assert url is None
+        assert note == "from the clerk\npaper copy"
+
+    def test_unit_route_dedupes_identical(self):
+        assert intake_api._route_provenance("paper copy", "paper copy") == (
+            None, "paper copy")
+
+    def test_valid_url_stays_in_origin_url(self, conn, store):
+        _enable_gate(conn)
+        cookie = _session_cookie(conn)
+        status, payload, _ = _post(
+            conn, store,
+            body=_body(origin_url="https://alpinewy.gov/packet.pdf",
+                       provenance_note="scanned from the paper packet"),
+            cookie=cookie)
+        assert status == 201
+        rec = file_records.get_file_record(conn, payload["file_id"])
+        assert rec.origin_url == "https://alpinewy.gov/packet.pdf"
+        assert rec.provenance_note == "scanned from the paper packet"
+
+    def test_non_url_origin_url_is_routed_to_note(self, conn, store):
+        # Interim compatibility: a pre-split frontend puts prose in origin_url;
+        # it must NOT be stored as a link — it lands in provenance_note.
+        _enable_gate(conn)
+        cookie = _session_cookie(conn)
+        status, payload, _ = _post(
+            conn, store, body=_body(origin_url="handed to me at the June meeting"),
+            cookie=cookie)
+        assert status == 201
+        rec = file_records.get_file_record(conn, payload["file_id"])
+        assert rec.origin_url is None  # prose is never stored as a locator
+        assert rec.provenance_note == "handed to me at the June meeting"
+
+    def test_note_only_is_accepted(self, conn, store):
+        _enable_gate(conn)
+        cookie = _session_cookie(conn)
+        status, payload, _ = _post(
+            conn, store, body=_body(provenance_note="from the clerk by email"),
+            cookie=cookie)
+        assert status == 201
+        rec = file_records.get_file_record(conn, payload["file_id"])
+        assert rec.origin_url is None
+        assert rec.provenance_note == "from the clerk by email"
+
+    def test_blank_note_normalizes_to_none(self, conn, store):
+        _enable_gate(conn)
+        cookie = _session_cookie(conn)
+        status, payload, _ = _post(
+            conn, store, body=_body(provenance_note="   "), cookie=cookie)
+        assert status == 201
+        rec = file_records.get_file_record(conn, payload["file_id"])
+        assert rec.provenance_note is None
+
+    def test_absent_provenance_fields_are_none(self, conn, store):
+        _enable_gate(conn)
+        cookie = _session_cookie(conn)
+        status, payload, _ = _post(conn, store, cookie=cookie)  # no origin_url/note
+        assert status == 201
+        rec = file_records.get_file_record(conn, payload["file_id"])
+        assert rec.origin_url is None
+        assert rec.provenance_note is None
+
+
 # --- bind guard (GATE-PUB / INV-4) -------------------------------------------
 
 def test_serve_refuses_non_loopback(db_path):

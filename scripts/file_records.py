@@ -78,6 +78,7 @@ PROVENANCE_COLUMNS = (
     "supplied_by",
     "captured_at",
     "origin_url",
+    "provenance_note",
     "sha256",
     "mime",
     "byte_size",
@@ -88,7 +89,8 @@ PROVENANCE_COLUMNS = (
 )
 
 #: Provenance fields that must be present and non-blank on insert (fail-closed).
-#: origin_url is intentionally excluded (optional locator). byte_size/sha256 are
+#: origin_url and provenance_note are intentionally excluded (both optional: a
+#: validated locator and a free-text note respectively). byte_size/sha256 are
 #: validated separately (numeric range / hex format).
 _MANDATORY_TEXT_FIELDS = (
     "area",
@@ -132,6 +134,7 @@ class FileRecord:
     supplied_by: str
     captured_at: str
     origin_url: str | None
+    provenance_note: str | None
     sha256: str
     mime: str
     byte_size: int
@@ -177,6 +180,7 @@ def insert_file_record(
     supplied_by: str,
     captured_at: str,
     origin_url: str | None = None,
+    provenance_note: str | None = None,
     version_group_id: str | None = None,
     supersedes_id: str | None = None,
     file_id: str | None = None,
@@ -186,6 +190,12 @@ def insert_file_record(
 
     review_state is intentionally NOT a parameter — a new record is always
     ``pending``. Advance it only via :func:`set_review_state`.
+
+    ``origin_url`` is the validated locator and ``provenance_note`` the optional
+    free-text note (GOV-1625 / GOV-1624 contract). Both are optional and stored
+    as given; this layer does not validate the URL shape or route prose — that
+    split is the intake API's job (:mod:`beta.intake_api`), so a direct writer
+    keeps full control and the model stays a thin ledger.
 
     Versioning: if ``supersedes_id`` is given, the superseded record must exist;
     the new record inherits that record's ``version_group_id`` unless an explicit
@@ -231,12 +241,12 @@ def insert_file_record(
     conn.execute(
         "INSERT INTO supplied_files ("
         " file_id, area, source_type, original_filename, supplied_by, captured_at,"
-        " origin_url, sha256, mime, byte_size, review_state, version_group_id,"
-        " supersedes_id, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " origin_url, provenance_note, sha256, mime, byte_size, review_state,"
+        " version_group_id, supersedes_id, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             file_id, area, source_type, original_filename, supplied_by, captured_at,
-            origin_url, sha256, mime, byte_size, INITIAL_REVIEW_STATE,
+            origin_url, provenance_note, sha256, mime, byte_size, INITIAL_REVIEW_STATE,
             version_group_id, supersedes_id, created_at,
         ),
     )

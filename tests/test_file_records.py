@@ -267,6 +267,48 @@ class TestReviewLifecycle:
             fr.set_review_state(conn, rec.file_id, "web_safe")
 
 
+# --- GOV-1625: free-text provenance_note alongside validated origin_url -------
+
+class TestProvenanceNote:
+    def test_column_is_present_and_nullable(self, conn):
+        info = {row[1]: row[3] for row in conn.execute("PRAGMA table_info(supplied_files)")}
+        assert "provenance_note" in info
+        assert info["provenance_note"] == 0  # nullable, no default (optional note)
+
+    def test_defaults_to_none_when_absent(self, conn):
+        rec = fr.insert_file_record(conn, **GOOD)
+        assert rec.provenance_note is None
+
+    def test_round_trips_both_fields(self, conn):
+        rec = fr.insert_file_record(
+            conn, **dict(GOOD,
+                         origin_url="https://alpinewy.gov/packet.pdf",
+                         provenance_note="handed to me at the June council meeting"),
+        )
+        got = fr.get_file_record(conn, rec.file_id)
+        assert got.origin_url == "https://alpinewy.gov/packet.pdf"
+        assert got.provenance_note == "handed to me at the June council meeting"
+
+    def test_note_without_url_round_trips(self, conn):
+        rec = fr.insert_file_record(
+            conn, **dict(GOOD, origin_url=None, provenance_note="from the clerk by email"))
+        got = fr.get_file_record(conn, rec.file_id)
+        assert got.origin_url is None
+        assert got.provenance_note == "from the clerk by email"
+
+    def test_note_is_not_a_mandatory_field(self, conn):
+        # A blank note is NOT rejected the way a blank mandatory field is; the
+        # model stores it verbatim (the intake API normalizes blank -> None).
+        rec = fr.insert_file_record(conn, **dict(GOOD, provenance_note="   "))
+        assert rec.provenance_note == "   "
+
+    def test_note_column_is_not_ai_flavoured(self, conn):
+        # provenance_note carries no banned AI token (guards the AC3 denylist).
+        banned = ("ai", "model", "summary", "interpret", "classification", "claim",
+                  "extract", "confidence", "prediction", "score", "sentiment")
+        assert not any(tok in "provenance_note" for tok in banned)
+
+
 # --- idempotent migration ---------------------------------------------------
 
 def test_migration_is_rerunnable(tmp_path):

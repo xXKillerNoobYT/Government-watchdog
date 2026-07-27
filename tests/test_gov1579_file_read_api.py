@@ -142,6 +142,53 @@ class TestNoLeak:
             read_api.assert_no_raw_paths(response)
 
 
+# --- GOV-1625: web-safe provenance_note -------------------------------------
+
+class TestProvenanceNoteProjection:
+    def test_note_present_when_set(self, conn):
+        _make(conn, provenance_note="handed to me at the June council meeting")
+        [card] = api.web_safe_files(conn)
+        assert card["provenance_note"] == "handed to me at the June council meeting"
+
+    def test_note_omitted_when_absent(self, conn):
+        _make(conn)  # BASE has no provenance_note
+        [card] = api.web_safe_files(conn)
+        assert "provenance_note" not in card
+
+    def test_note_omitted_when_blank(self, conn):
+        _make(conn, provenance_note="   ")
+        [card] = api.web_safe_files(conn)
+        assert "provenance_note" not in card
+
+    def test_non_url_note_survives_verbatim_not_dropped(self, conn):
+        # Unlike origin_url (dropped unless a public URL), a non-URL note is FREE
+        # TEXT and is emitted verbatim — it is never treated as / coerced into a
+        # link. This is the backend half of the GOV-1609 §4.2 linkify guard: the
+        # projection hands the frontend plain prose, not a locator.
+        note = "call the clerk at 307-555-0100 for the original"
+        _make(conn, provenance_note=note)
+        [card] = api.web_safe_files(conn)
+        assert card["provenance_note"] == note
+        assert "origin_url" not in card  # nothing here is a URL
+
+    def test_note_and_url_coexist_in_split_shape(self, conn):
+        url = "https://web.archive.org/web/2026/packet.pdf"
+        _make(conn, origin_url=url, provenance_note="scanned from the paper packet")
+        [card] = api.web_safe_files(conn)
+        assert card["origin_url"] == url
+        assert card["provenance_note"] == "scanned from the paper packet"
+
+    def test_note_is_swept_by_transport_backstop(self, conn):
+        # Defense-in-depth: a note carrying a vault path still fails LOUDLY at the
+        # boundary (the reviewer gate is primary; the sweep is the backstop).
+        _make(conn, provenance_note="/Users/IA/Obsidian Vault/leak.pdf")
+        with pytest.raises(read_api.RawPathLeak):
+            api.build_files_response(conn)
+
+    def test_note_within_frozen_allowlist(self):
+        assert "provenance_note" in api.WEB_SAFE_FILE_FIELDS
+
+
 # --- AC3: server-side stripping ---------------------------------------------
 
 class TestServerSideStripping:
