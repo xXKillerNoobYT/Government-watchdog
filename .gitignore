@@ -98,6 +98,10 @@ Clone/
 # operational output (metric snapshots, decision packs, support JSONL) —
 # local/vault-only per the data-publication boundary, never committed (§5.2).
 Logs/pilot/
+# GOV-1637 (SPA co-sign, GOV-1625 backfill): the provenance_note --apply audit
+# log records before/after supplier prose (possibly private) per applied row —
+# reviewer/vault-only, never committed (data-publication boundary, F5/F9).
+Logs/backfill_*.log
 
 # GOV-1526 (P1b of GOV-1523): built web artifacts. The tarball carries projected
 # civic data lanes (data/reviewer_internal.json) — build output, never committed;
