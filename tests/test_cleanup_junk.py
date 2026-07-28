@@ -62,6 +62,14 @@ class TestRetainedEvidence:
         p.write_text("{}")
         assert cj.retained_evidence(p, tmp_path)[0] is False
 
+    def test_owner_retained_gov_watchdog_db_is_retained(self, tmp_path):
+        p = tmp_path / "Database" / "gov_watchdog.db"
+        p.parent.mkdir(parents=True)
+        p.write_text("sqlite bytes")
+        is_ret, reason = cj.retained_evidence(p, tmp_path)
+        assert is_ret is True
+        assert "GOV-693" in reason
+
 
 # --------------------------------------------------------------------------
 # Integration — iter_candidates + remove_candidate against a temp tree

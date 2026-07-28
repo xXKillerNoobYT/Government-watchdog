@@ -405,12 +405,19 @@ def _format_report(report: dict[str, Any], db_path: Path) -> str:
     x = report["correction_audit_trail"]
     p = report["completeness_gap_parity"]
     t = report["transport"]
+    grounding_status = "OK" if g["clean"] else f"BREAK ({len(g['orphans'])} orphan)"
+    verify_status = (
+        "OK"
+        if v["clean"]
+        else f"DRIFT ({len(v['mismatches'])} mismatch, bijection={v['bijection_ok']})"
+    )
+    correction_status = "OK" if x["clean"] else f"DANGLING ({len(x['dangling'])})"
     lines = [
         f"Stage 3 read-surface traceability + audit trail (GOV-406) — {db_path}",
         f"  served record cards                  : {report['served_count']}",
-        f"  1 card->source grounding             : {'OK' if g['clean'] else f'BREAK ({len(g['orphans'])} orphan)'}",
-        f"  2 verify-at-source parity            : {'OK' if v['clean'] else f'DRIFT ({len(v['mismatches'])} mismatch, bijection={v['bijection_ok']})'}",
-        f"  3 correction audit trail             : {'OK' if x['clean'] else f'DANGLING ({len(x['dangling'])})'} "
+        f"  1 card->source grounding             : {grounding_status}",
+        f"  2 verify-at-source parity            : {verify_status}",
+        f"  3 correction audit trail             : {correction_status} "
         f"(corrections={x['corrections']})",
         f"  4 completeness_gap parity            : {'OK' if p['clean'] else 'BREAK'} "
         f"(canonical={p['canonical_count']} projected={p['projected_count']} "
