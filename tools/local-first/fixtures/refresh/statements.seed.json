@@ -1,0 +1,30 @@
+[
+  {
+    "id": "stmt-grant-award",
+    "text": "The Council resolution sets the community grant award at $50,000.",
+    "kind": "fact_claim",
+    "evidenceLimits": "Source proves the quoted resolution line only; no wider claim about disbursement.",
+    "sourceLinks": [
+      {
+        "sourceUrl": "https://townofalpine.example.gov/resolutions/2026-14.pdf",
+        "quote": "The Council resolution sets the community grant award at $50,000.",
+        "page": 3,
+        "location": "item 4"
+      }
+    ]
+  },
+  {
+    "id": "stmt-grant-received",
+    "text": "The minutes record that the $50,000 grant was received and acknowledged.",
+    "kind": "fact_claim",
+    "evidenceLimits": "Source proves the minutes line only; does not establish how funds were spent.",
+    "sourceLinks": [
+      {
+        "sourceUrl": "https://townofalpine.example.gov/minutes/2026-06-05.pdf",
+        "quote": "The minutes record that the $50,000 grant was received and acknowledged.",
+        "page": 3,
+        "location": "item 4"
+      }
+    ]
+  }
+]

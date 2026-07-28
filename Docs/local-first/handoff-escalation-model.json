@@ -1,0 +1,106 @@
+{
+  "version": "5.15.0",
+  "note": "Stage 5.15 (GOV-585) reviewer-internal role-transition model + owner-gate set. Encodes the real Stage 5 chain (impl -> VSR -> Security -> CTO -> CEO) plus the trust-mechanic handoffs (corrections / hot-topic / source-change / future-fact verification) and the five Isaac owner gates. Read by the deterministic evaluator (src/handoff-escalation.js). Supplied as DATA — the evaluator never invents transitions. No public output; AI-boundary preserved (GOV-471/436/420). Alpine-only.",
+  "roles": ["impl", "Backend", "Automation", "VSR", "Security", "CTO", "CEO", "Owner"],
+  "triggers": [
+    "impl_complete",
+    "vsr_pass",
+    "sec_pass",
+    "cto_merge",
+    "correction_filed",
+    "hot_topic_flag",
+    "source_change_detected",
+    "future_fact_verified",
+    "ledger_flip_ready",
+    "owner_decision"
+  ],
+  "transitions": [
+    {
+      "from": "impl",
+      "to": "VSR",
+      "trigger": "impl_complete",
+      "requiredEvidenceKinds": ["facts", "summaries"],
+      "preservesReviewStatus": true,
+      "note": "Implementation complete -> verification. Carries source-grounded facts + the impl summary; review status preserved so VSR sees the impl self-review state."
+    },
+    {
+      "from": "VSR",
+      "to": "Security",
+      "trigger": "vsr_pass",
+      "requiredEvidenceKinds": ["facts"],
+      "preservesReviewStatus": true,
+      "note": "VSR invariant-pass -> privacy/publication-gate review."
+    },
+    {
+      "from": "Security",
+      "to": "CTO",
+      "trigger": "sec_pass",
+      "requiredEvidenceKinds": ["facts"],
+      "preservesReviewStatus": true,
+      "note": "Security pass -> CTO merge gate (non-author merge)."
+    },
+    {
+      "from": "CTO",
+      "to": "CEO",
+      "trigger": "cto_merge",
+      "requiredEvidenceKinds": ["facts"],
+      "preservesReviewStatus": true,
+      "note": "CTO merge -> CEO ledger flip / stage closeout. Merge commit SHA is a source-grounded fact."
+    },
+    {
+      "from": "Automation",
+      "to": "VSR",
+      "trigger": "correction_filed",
+      "requiredEvidenceKinds": ["facts", "summaries"],
+      "preservesReviewStatus": true,
+      "note": "Trust-mechanic: a filed correction (updates_statement_id spine, GOV-36) hands to review. Known-then context is never rewritten."
+    },
+    {
+      "from": "Automation",
+      "to": "VSR",
+      "trigger": "hot_topic_flag",
+      "requiredEvidenceKinds": ["facts"],
+      "preservesReviewStatus": true,
+      "note": "Trust-mechanic: a hot-topic salience flag (pure-arith) hands to review."
+    },
+    {
+      "from": "Automation",
+      "to": "VSR",
+      "trigger": "source_change_detected",
+      "requiredEvidenceKinds": ["facts"],
+      "preservesReviewStatus": true,
+      "note": "Trust-mechanic: a detected source change / Wayback lifecycle event hands to review."
+    },
+    {
+      "from": "Automation",
+      "to": "VSR",
+      "trigger": "future_fact_verified",
+      "requiredEvidenceKinds": ["facts", "laterVerification"],
+      "preservesReviewStatus": true,
+      "note": "Trust-mechanic: a past AI assumption later confirmed/refuted by a real-world outcome. laterVerification records the outcome WITHOUT rewriting the known-then record (GOV-36 typed-link discipline)."
+    },
+    {
+      "from": "CEO",
+      "to": "Owner",
+      "trigger": "ledger_flip_ready",
+      "requiredEvidenceKinds": ["facts"],
+      "preservesReviewStatus": true,
+      "note": "Stage parent ready to flip achieved + Stage-5 -> Stage-6 exit gate armed. Surfaced to the owner as a PROPOSAL, never an auto-unlock."
+    },
+    {
+      "from": "Owner",
+      "to": "CTO",
+      "trigger": "owner_decision",
+      "requiredEvidenceKinds": [],
+      "preservesReviewStatus": false,
+      "note": "Isaac's decision on an owner-gated condition returns to the CTO to action. The only transition that does not require a carried review status."
+    }
+  ],
+  "ownerGates": [
+    { "id": "gate_publication", "conditionKind": "publication", "severity": "high", "requiresOwner": true, "note": "Any public surface / send / web publish (GOV-420)." },
+    { "id": "gate_scope_expansion", "conditionKind": "scope_expansion_beyond_alpine", "severity": "high", "requiresOwner": true, "note": "Any expansion beyond Alpine (Wyoming/US/etc.)." },
+    { "id": "gate_ai_policy", "conditionKind": "ai_label_or_verification_policy_change", "severity": "high", "requiresOwner": true, "note": "Any change to AI labeling / verification policy (GOV-471)." },
+    { "id": "gate_legal_privacy", "conditionKind": "legal_privacy_on_individual", "severity": "high", "requiresOwner": true, "note": "Any legal/privacy decision about an individual." },
+    { "id": "gate_budget", "conditionKind": "budget", "severity": "high", "requiresOwner": true, "note": "Any budget commitment." }
+  ]
+}

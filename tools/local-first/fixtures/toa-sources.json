@@ -1,0 +1,59 @@
+[
+  {
+    "id": "toa-directive-verification-plan-v1",
+    "sourceUrl": "https://townofalpine.example.gov/directives/government-watchdog-verification-plan.pdf",
+    "sourceClass": "directive",
+    "title": "Government Watchdog Verification Plan",
+    "jurisdiction": "Town of Alpine",
+    "issuingBody": "Town of Alpine",
+    "publishedAt": "2026-06-05T00:00:00.000Z",
+    "capturedAt": "2026-06-05T08:00:00.000Z",
+    "toaLocalPath": "~/Documents/TOA/TownOfAlpine/directives/government-watchdog-verification-plan.md",
+    "capture": {
+      "method": "local_file",
+      "capturedBy": "BackendCoder",
+      "mimeType": "text/markdown"
+    },
+    "audit": {
+      "notes": ["Fixture path mirrors the active TOA directive location."]
+    }
+  },
+  {
+    "id": "toa-directive-verification-plan-v2",
+    "sourceUrl": "https://townofalpine.example.gov/directives/government-watchdog-verification-plan.pdf",
+    "sourceClass": "directive",
+    "title": "Government Watchdog Verification Plan",
+    "jurisdiction": "Town of Alpine",
+    "issuingBody": "Town of Alpine",
+    "publishedAt": "2026-06-05T00:00:00.000Z",
+    "capturedAt": "2026-06-05T10:00:00.000Z",
+    "toaLocalPath": "~/Documents/TOA/TownOfAlpine/directives/government-watchdog-verification-plan-recaptured.md",
+    "capture": {
+      "method": "local_file",
+      "capturedBy": "BackendCoder",
+      "mimeType": "text/markdown"
+    },
+    "audit": {
+      "notes": ["Same source URL with different local capture content should replace v1."]
+    }
+  },
+  {
+    "id": "toa-missing-agenda-after-capture",
+    "sourceUrl": "https://townofalpine.example.gov/agendas/2026-06-05.pdf",
+    "sourceClass": "agenda_packet",
+    "title": "Town of Alpine Agenda Packet",
+    "jurisdiction": "Town of Alpine",
+    "issuingBody": "Town of Alpine",
+    "publishedAt": "2026-06-05T00:00:00.000Z",
+    "capturedAt": "2026-06-05T09:00:00.000Z",
+    "toaLocalPath": "~/Documents/TOA/TownOfAlpine/agendas/2026-06-05-missing-after-capture.pdf",
+    "capture": {
+      "method": "local_file",
+      "capturedBy": "BackendCoder",
+      "mimeType": "application/pdf"
+    },
+    "audit": {
+      "notes": ["Missing local recapture should preserve provenance instead of deleting the source."]
+    }
+  }
+]
