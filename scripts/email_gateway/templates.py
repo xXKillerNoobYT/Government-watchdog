@@ -62,14 +62,17 @@ _TEMPLATES = {
             civic=False),
         # GOV-801 gated-beta front door. Both carry account-state strings only
         # (no civic data => civic=False). magic_link interpolates a one-time
-        # sign-in URL that expires in 15 minutes; the beta mailer sends both
-        # through the fail-closed null adapter until an owner enables a real one.
+        # sign-in URL AND a 6-digit code fallback (GOV-1538 — universal links
+        # need the Phase-3 domain's AASA file, absent in v1), both expiring in
+        # 15 minutes; the beta mailer sends through the fail-closed null adapter
+        # until an owner enables a real one.
         EmailTemplate(
             "magic_link",
             "Government Watchdog: your beta sign-in link",
             "Use this one-time link to sign in to the Government Watchdog "
             "beta. It expires in 15 minutes and works only once:\n\n"
             "{verify_url}\n\n"
+            "Or enter this 6-digit code in the app: {code}\n\n"
             "If you did not request this, you can ignore this email.",
             civic=False),
         EmailTemplate(

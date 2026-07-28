@@ -16,6 +16,9 @@ from datetime import datetime, timezone
 #: repeat callers for rate-limit forensics, too short to reverse to an address.
 IP_HINT_LEN = 16
 
+#: Digits in the numeric sign-in code — the universal-link fallback (GOV-1538).
+CODE_DIGITS = 6
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -48,6 +51,17 @@ def token_hash(raw_token: str) -> str:
 def new_raw_token() -> str:
     """A fresh URL-safe token; the caller's only copy (never stored/logged)."""
     return secrets.token_urlsafe(32)
+
+
+def new_numeric_code(digits: int = CODE_DIGITS) -> str:
+    """A cryptographically-random zero-padded numeric code (OTP fallback).
+
+    ``secrets.randbelow`` (not ``random``) so the code is unguessable; the
+    zero-pad keeps the full space (e.g. ``"004217"`` is valid). Hashed with
+    :func:`token_hash` before storage — the raw code, like a raw token, is
+    emailed once and never persisted.
+    """
+    return f"{secrets.randbelow(10 ** digits):0{digits}d}"
 
 
 def email_hash(email: str | None) -> str | None:

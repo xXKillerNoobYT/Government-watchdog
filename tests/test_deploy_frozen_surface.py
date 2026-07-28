@@ -29,7 +29,12 @@ FROZEN = [
 MIGRATION_ALLOWLIST = {
     "0025_accounts_cohorts_notifications.sql",
     "0026_beta_gate.sql",  # GOV-801: gated-beta front door (five beta_* tables)
-    "0027_access_decision_core.sql",  # ACCESS-2026: inert explicit access facts
+    "0027_beta_magic_code.sql",  # GOV-1538: 6-digit code columns on beta_magic_tokens
+    "0028_supplied_file_records.sql",  # GOV-1575 (B2): supplied_files record + provenance
+    "0029_supplied_file_links.sql",  # GOV-1577 (B4): supplied_file→subject linkage
+    "0030_supplied_file_versioning.sql",  # GOV-1578 (B5): supersede versioning + red-flag
+    "0031_supplied_file_provenance_note.sql",  # GOV-1625 (B3 schema evo): free-text provenance_note
+    "0032_access_decision_core.sql",  # ACCESS-2026: inert explicit access facts (renumbered from 0027)
 }
 
 

@@ -109,8 +109,16 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "beta_sessions",
         "beta_waitlist",
         "beta_audit_log",
-        # ACCESS-2026 v0.1 (0027): explicit, inert product/program/feature/
-        # exact-geography decision facts. No row is seeded by the migration.
+        # GOV-1575 (0028 / GOV-1566 B2): supplied-file record + provenance model.
+        "supplied_files",
+        # GOV-1577 (0029 / GOV-1566 B4): supplied-file → area/meeting/agenda linkage.
+        "supplied_file_links",
+        # GOV-1578 (0030 / GOV-1566 B5): supersede versioning + red-flag tables.
+        "supplied_file_dependencies",
+        "supplied_file_supersede_events",
+        # ACCESS-2026 v0.1 (0032, renumbered from 0027 past the supplied-file
+        # migrations): explicit, inert product/program/feature/exact-geography
+        # decision facts. No row is seeded by the migration.
         "access_plan_assignments",
         "access_program_assignments",
         "access_feature_grants",

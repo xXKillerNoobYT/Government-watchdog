@@ -10,7 +10,7 @@ import pytest
 import db
 
 ROOT = Path(__file__).resolve().parent.parent
-MIGRATION = ROOT / "Database" / "migrations" / "0027_access_decision_core.sql"
+MIGRATION = ROOT / "Database" / "migrations" / "0032_access_decision_core.sql"
 TABLES = {
     "access_plan_assignments",
     "access_program_assignments",
@@ -62,7 +62,7 @@ def test_four_tables_and_migration_ledger_row_exist(conn):
     assert TABLES <= names
     assert conn.execute(
         "SELECT 1 FROM schema_migrations WHERE version = ?",
-        ("0027_access_decision_core",),
+        ("0032_access_decision_core",),
     ).fetchone()
 
 
