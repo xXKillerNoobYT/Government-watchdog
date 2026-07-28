@@ -138,7 +138,7 @@ All four gates must pass for any candidate to be eligible for removal:
 |---|---|
 | Paperclip API unreachable | Gate 1 fails → preserve all candidates. Safe degradation. No retry needed — run again when API is available. |
 | Worktree lock/race (`.git/worktrees/<name>/locked`) | Git worktree remove will fail → logged as failed removal. **Never force-remove.** Re-check on next run. |
-| Branch delete fails (`-d` safety) | `git branch -d` refuses unmerged branches as a second safety layer. Logged. No retry — investigate manually. |
+| Branch delete fails (`-d` safety) | `git branch -d` refuses unmerged branches as a second safety layer. Logged. No retry — investigate manually. **Known limitation (GOV-1650):** because every PR here squash-merges, a squash-merged branch tip is *never* an ancestor of `origin/main`, so `git branch -d` refuses it even when gate 2 proved containment via `git cherry` (0 `+`). A branch eligible *only* via the GOV-537 squash-containment path therefore fails `--apply` and re-surfaces every run. Manual reclaim is safe when `git cherry origin/main <branch>` shows 0 `+` and the `GOV-NN … (#N)` squash commit is in `origin/main` (use `git branch -D`). GOV-1650 fixes `remove_branch` to use `-D` gated on proven containment. |
 | Missing repo root | Logged as warning, skipped. Coverage-reduced alert in output. |
 
 ### Failure handling at integration points
@@ -255,7 +255,7 @@ Create a Paperclip issue when:
 - **After each Trigger A run (per merge):** AutomationOpsEngineer skims the GitHub Actions step summary; if `failed_count > 0` or `would_remove_branches > 0`, they note it for the next daily routine review. CI-only inspection of the artifact does not authorise `--apply`.
 - **Daily (Trigger B):** AutomationOpsEngineer reviews dry-run output before optional `--apply`. Comments outcome on the routine's execution issue.
 - Weekly during active development: check `Logs/cleanup-merged-worktrees.log` for accumulating preserved candidates
-- **First `--apply` run (one-time gate):** CTO reviews dry-run output and confirms before AutomationOpsEngineer first issues `--apply` in the daily routine. After that one-time gate, daily reviewer-gated `--apply` is the steady-state.
+- **First `--apply` run (one-time gate) — DISCHARGED 2026-07-20 (GOV-794).** CTO reviewed the dry-run and signed off; the first `--apply` ran that day (removed `gov-789-ollama-policy-model`). Exercised again 2026-07-22 (GOV-1548 removed `GOV-1529-license`) and 2026-07-28 (GOV-1648 reclaimed `GOV-1625-provenance-note`). **Steady state:** the daily routine (Trigger B) auto-applies worktree removables under AutomationOps authority — do **not** re-open a CTO first-apply gate; that gate is spent. Only a change that *loosens* the quad-gate needs fresh approval (CEO).
 
 ## Named owner
 
@@ -264,7 +264,7 @@ Create a Paperclip issue when:
 | Script + tests + tool maintenance | AutomationOpsEngineer (`b9611d2e-d5d0-438e-9081-99f94cd65f06`) | `scripts/cleanup_merged_worktrees.py`, `tests/test_cleanup_merged_worktrees.py`, this workflow doc |
 | Daily routine (Trigger B, the apply lane) | AutomationOpsEngineer via Paperclip routine `804d7f7c-89c4-47a1-9146-32245c31ae6a` | Daily dry-run review → reviewer-gated `--apply` |
 | CI workflows (Trigger A, dry-run only) | CTO (`24fddc65-edca-462b-8647-61b596c8a46f`) | `.github/workflows/post-merge-cleanup.yml` in both Backend and Website repos |
-| First `--apply` one-time gate | CTO | One-time review before AutomationOpsEngineer first issues `--apply` |
+| First `--apply` one-time gate | CTO | **DISCHARGED 2026-07-20 (GOV-794)** — one-time review done; steady-state daily `--apply` is now AutomationOps-owned. Do not re-open. |
 | Owner-level scope/policy changes | CEO (`e618342a-fd40-46f9-918a-b562e8948b87`) | Anything that loosens the quad-gate or enables automated `--apply` outside Trigger B |
 
 ## Verification command + evidence path
