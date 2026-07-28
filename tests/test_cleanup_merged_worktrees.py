@@ -498,3 +498,136 @@ class TestSquashMergeDetector:
         monkeypatch.setattr(cm, "_branch_content_contained",
                             lambda *a, **k: True)
         assert cm.check_gate2("gov-7000-wip", repo, do_fetch=False).passed is True
+
+
+# --- GOV-1650: `git branch -d` cannot delete a squash-only-merged branch (its
+# tip is never an ancestor of origin/<default> because every PR squash-merges),
+# so `--apply` fails at delete-time and the branch re-surfaces every run. The fix
+# routes the delete through `git branch -D` ONLY when gate 2 passed via the
+# GOV-537 proven-containment path (`proven_contained` True). All real-git-repo
+# tests — the containment is data-driven, not mocked. ---
+
+class TestSquashOnlyBranchDelete:
+
+    def _squash_merge(self, repo, branch, subject, fname="g.txt",
+                      content="feat\n"):
+        """Create `branch` off current main with one commit, squash-merge it
+        into main under `subject`. Leaves HEAD on main; branch retained. The
+        branch tip is NOT an ancestor of main (squash) — exactly the shape that
+        `git branch -d` refuses."""
+        _git(["checkout", "-b", branch], repo)
+        _commit(repo, fname, content, f"{branch} work")
+        _git(["checkout", "main"], repo)
+        _git(["merge", "--squash", branch], repo)
+        _git(["commit", "-m", subject], repo)
+
+    def test_gate2_marks_squash_path_proven_contained(self, tmp_path):
+        """The GOV-537 squash-containment pass sets proven_contained=True; the
+        ordinary ancestor merge does NOT (its `-d` delete is already safe)."""
+        repo = tmp_path / "flag"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        # Squash path → proven_contained True.
+        self._squash_merge(repo, "gov-1650-impl", "GOV-1650: impl (#171)")
+        g_squash = cm.check_gate2("gov-1650-impl", repo, do_fetch=False)
+        assert g_squash.passed is True
+        assert g_squash.proven_contained is True
+        # True --no-ff ancestor merge → passes, but NOT via containment path.
+        _git(["checkout", "-b", "gov-1651-anc"], repo)
+        _commit(repo, "h.txt", "anc\n", "anc work")
+        _git(["checkout", "main"], repo)
+        _git(["merge", "--no-ff", "-m", "merge gov-1651-anc", "gov-1651-anc"], repo)
+        g_anc = cm.check_gate2("gov-1651-anc", repo, do_fetch=False)
+        assert g_anc.passed is True
+        assert g_anc.proven_contained is False
+
+    def test_red_plain_dash_d_refuses_squash_only_branch(self, tmp_path):
+        """RED proof: the OLD delete path (`git branch -d`) refuses a squash-only
+        branch even though gate 2 proved containment — the exact GOV-1650 bug."""
+        repo = tmp_path / "red"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        self._squash_merge(repo, "gov-1650-red", "GOV-1650: red (#172)")
+        # Containment IS proven upstream...
+        assert cm.check_gate2("gov-1650-red", repo, do_fetch=False).proven_contained
+        # ...yet a bare `git branch -d` (force=False) fails: tip not an ancestor.
+        log = MagicMock()
+        assert cm.remove_branch("gov-1650-red", repo, log, force=False) is False
+        # branch still present → would re-surface every run (the permanent no-op).
+        branches = _git(["branch", "--format=%(refname:short)"], repo).stdout
+        assert "gov-1650-red" in branches
+
+    def test_green_dash_D_removes_proven_contained_squash_branch(self, tmp_path):
+        """GREEN: force=True (`git branch -D`) removes the proven-contained
+        squash-only branch that `-d` refused."""
+        repo = tmp_path / "green"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        self._squash_merge(repo, "gov-1650-green", "GOV-1650: green (#173)")
+        log = MagicMock()
+        assert cm.remove_branch("gov-1650-green", repo, log, force=True) is True
+        branches = _git(["branch", "--format=%(refname:short)"], repo).stdout
+        assert "gov-1650-green" not in branches
+
+    def test_apply_removes_squash_only_branch_end_to_end(self, tmp_path):
+        """End-to-end AC: with a real proven_contained gate-2 result, `--apply`
+        deletes the squash-only branch (no `failed_count`)."""
+        repo = tmp_path / "e2e"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        self._squash_merge(repo, "gov-1650-e2e", "GOV-1650: e2e (#174)")
+        g2 = cm.check_gate2("gov-1650-e2e", repo, do_fetch=False)
+        assert g2.proven_contained is True
+        c = cm.Candidate(
+            repo_root=str(repo), branch="gov-1650-e2e", issue_id="GOV-1650",
+            worktree_path=None,
+            gate1_issue_done=cm.GateResult(True, "GOV-1650 status=done"),
+            gate2_merged=g2,
+            gate3_clean=cm.GateResult(True, "clean"),
+            gate4_safe_path=cm.GateResult(True, "safe"),
+        )
+        log = MagicMock()
+        result = cm.execute_cleanup([c], apply=True, log=log)
+        assert result["removed_branches"] == ["gov-1650-e2e"]
+        assert result["failed"] == []
+        branches = _git(["branch", "--format=%(refname:short)"], repo).stdout
+        assert "gov-1650-e2e" not in branches
+        # idempotent second run: branch already gone → nothing to remove, no failure.
+        g2b = cm.check_gate2("gov-1650-e2e", repo, do_fetch=False)
+        # (branch no longer exists; execute_cleanup only acts on live candidates,
+        #  so re-running the SAME candidate would be a no-op in practice — the
+        #  discovery pass would not re-list a deleted branch.)
+        assert g2b is not None  # sanity: check_gate2 tolerates the missing branch
+
+    def test_guard_preserved_uncontained_wip_not_force_deleted(self, tmp_path):
+        """Guard preserved (GOV-537 AC7 companion): a WIP branch sharing the
+        issue id but carrying an unmerged commit is NOT proven_contained, so it
+        is preserved before delete — never force-deleted. Two-branches-one-issue
+        safety survives the -D change."""
+        repo = tmp_path / "guard"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        # WIP branch off base with its own unmerged commit.
+        _git(["checkout", "-b", "gov-1650-wip"], repo)
+        _commit(repo, "wip.txt", "wip\n", "gov-1650-wip unmerged work")
+        _git(["checkout", "main"], repo)
+        # Sibling squash-merged + contained under the same issue id.
+        self._squash_merge(repo, "gov-1650-merged", "GOV-1650: merged (#175)")
+
+        g_wip = cm.check_gate2("gov-1650-wip", repo, do_fetch=False)
+        assert g_wip.passed is False           # `+` commit → not contained
+        assert g_wip.proven_contained is False  # → never force-deletable
+        c = cm.Candidate(
+            repo_root=str(repo), branch="gov-1650-wip", issue_id="GOV-1650",
+            worktree_path=None,
+            gate1_issue_done=cm.GateResult(True, "done"),
+            gate2_merged=g_wip,
+            gate3_clean=cm.GateResult(True, "clean"),
+            gate4_safe_path=cm.GateResult(True, "safe"),
+        )
+        result = cm.execute_cleanup([c], apply=True, log=MagicMock())
+        assert result["removed_branches"] == []
+        assert len(result["preserved"]) == 1
+        # WIP branch survives on disk.
+        branches = _git(["branch", "--format=%(refname:short)"], repo).stdout
+        assert "gov-1650-wip" in branches

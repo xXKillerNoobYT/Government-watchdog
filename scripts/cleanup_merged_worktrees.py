@@ -93,6 +93,13 @@ def extract_issue_id(branch_name: str) -> Optional[str]:
 class GateResult:
     passed: bool
     detail: str
+    # True only when gate 2 passed via the GOV-537 proven-containment path
+    # (`git cherry` reported zero `+` commits — every branch commit is already
+    # patch-equivalent upstream). This is the ONLY safe signal that authorises a
+    # forced `git branch -D` delete: a squash-merged branch tip is never an
+    # ancestor of origin/<default>, so `-d`'s ancestry check would false-negative
+    # even though containment is provably true. See remove_branch / GOV-1650.
+    proven_contained: bool = False
 
 
 @dataclass
@@ -309,7 +316,8 @@ def check_gate2(branch: str, repo_root: Path,
         return GateResult(
             True,
             f"squash-merge of {issue_id} in {merge_ref}, content fully "
-            f"contained (git cherry: 0 unmerged commits)")
+            f"contained (git cherry: 0 unmerged commits)",
+            proven_contained=True)
 
     return GateResult(False, f"branch not verified merged into {merge_ref}")
 
@@ -438,10 +446,24 @@ def remove_worktree(worktree_path: str, repo_root: Path,
 
 
 def remove_branch(branch: str, repo_root: Path,
-                  log: logging.Logger) -> bool:
+                  log: logging.Logger, force: bool = False) -> bool:
+    """Delete a local branch.
+
+    Default is the safe ``git branch -d`` (refuses a branch whose tip is not an
+    ancestor of HEAD/upstream — the second safety layer for the ancestor/no-
+    commits-ahead gate-2 paths). Pass ``force=True`` ONLY when gate 2 passed via
+    the GOV-537 proven-containment path (``proven_contained``): every PR here
+    squash-merges, so a squash-merged branch tip is never an ancestor of
+    ``origin/<default>`` and ``-d`` would refuse it even though ``git cherry``
+    already proved every commit is patch-equivalent upstream. In that case ``-d``
+    is a false negative and ``-D`` is correct — containment is proven, not merely
+    asserted. See GOV-1650.
+    """
+    flag = "-D" if force else "-d"
     try:
-        _run_git(["branch", "-d", branch], cwd=repo_root)
-        log.info("deleted branch: %s", branch)
+        _run_git(["branch", flag, branch], cwd=repo_root)
+        log.info("deleted branch: %s (git branch %s%s)", branch, flag,
+                 ", proven-contained squash" if force else "")
         return True
     except subprocess.CalledProcessError as e:
         log.error("failed to delete branch %s: %s", branch, e.stderr)
@@ -488,7 +510,8 @@ def execute_cleanup(candidates: list[Candidate], apply: bool,
                 continue
             removed_worktrees.append(c.worktree_path)
 
-        if not remove_branch(c.branch, repo, log):
+        if not remove_branch(c.branch, repo, log,
+                             force=c.gate2_merged.proven_contained):
             failed.append({"branch": c.branch, "error": "branch deletion failed"})
             continue
         removed_branches.append(c.branch)
