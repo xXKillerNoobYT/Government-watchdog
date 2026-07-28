@@ -353,7 +353,7 @@ async function bootstrapFromFixtures(fixturesDir, now) {
 async function main(argv) {
   const args = parseArgs(argv);
   const now = new Date();
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
   let priorRegistry;
   let statements;
@@ -373,7 +373,7 @@ async function main(argv) {
         capture: r.capture,
       }));
   } else {
-    const boot = await bootstrapFromFixtures(resolve(repoRoot, "fixtures/refresh"), now);
+    const boot = await bootstrapFromFixtures(resolve(packageRoot, "fixtures/refresh"), now);
     priorRegistry = boot.registry;
     statements = boot.statements;
     sourceDefs = boot.sourceDefs;
@@ -382,7 +382,7 @@ async function main(argv) {
   const result = await runWeeklyRefresh({ priorRegistry, statements, sourceDefs }, { now });
 
   // Run log is always written (both modes) — it is the gitignored run evidence.
-  const logPath = isAbsolute(args.log) ? args.log : resolve(repoRoot, args.log);
+  const logPath = isAbsolute(args.log) ? args.log : resolve(packageRoot, args.log);
   await mkdir(dirname(logPath), { recursive: true });
   await appendFile(logPath, renderRunLog(result, { dryRun: !args.apply }));
 
@@ -406,7 +406,7 @@ async function main(argv) {
       );
     }
     if (args.out) {
-      const outPath = isAbsolute(args.out) ? args.out : resolve(repoRoot, args.out);
+      const outPath = isAbsolute(args.out) ? args.out : resolve(packageRoot, args.out);
       await mkdir(dirname(outPath), { recursive: true });
       await writeFile(outPath, result.digest.body);
     }

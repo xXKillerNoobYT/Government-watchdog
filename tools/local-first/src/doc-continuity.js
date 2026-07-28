@@ -323,33 +323,45 @@ async function main() {
   const { readFile, readdir } = await import("node:fs/promises");
   const { dirname } = await import("node:path");
 
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const manifestPath = resolve(repoRoot, "Docs/doc-maintenance-manifest.json");
+  // This package was extracted out of a single-root local-first workspace, so
+  // its code and its committed docs now live under two different roots: code at
+  // tools/local-first/, prose + committed models at <repo>/Docs/local-first/.
+  // The manifest still speaks the original workspace's vocabulary ("Docs/…",
+  // "src/…", "README.md"), which stays the stable contract — so the two roots
+  // are re-joined here, at the I/O boundary, and the pure detector below never
+  // learns that the split happened.
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const docsRoot = resolve(packageRoot, "../..", "Docs/local-first");
+  const manifestPath = resolve(docsRoot, "doc-maintenance-manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
-  // fileSet: every committed prose doc + every src/test module (relative paths).
+  // fileSet: every committed prose doc + every src/test module, keyed by the
+  // manifest's relative paths regardless of which root actually holds them.
   const fileSet = [];
-  const collect = async (dir, filterExt) => {
+  // dir = where to read; prefix = the manifest key that directory maps onto.
+  // Keeping those separate is what lets one manifest vocabulary span two roots.
+  const collect = async (dir, prefix, filterExt) => {
     let dirents;
     try {
-      dirents = await readdir(resolve(repoRoot, dir), { withFileTypes: true });
+      dirents = await readdir(dir, { withFileTypes: true });
     } catch {
       return; // dir absent ⇒ contributes nothing (fail-closed)
     }
     for (const d of dirents) {
-      const rel = `${dir}/${d.name}`;
-      if (d.isDirectory()) await collect(rel, filterExt);
+      const rel = prefix ? `${prefix}/${d.name}` : d.name;
+      if (d.isDirectory()) await collect(resolve(dir, d.name), rel, filterExt);
       else if (!filterExt || d.name.endsWith(filterExt)) fileSet.push(rel);
     }
   };
-  await collect("Docs", null);
-  await collect("src", ".js");
-  await collect("test", ".js");
+  // "Docs/<x>" entries live under docsRoot; code entries under packageRoot.
+  await collect(docsRoot, "Docs", null);
+  await collect(resolve(packageRoot, "src"), "src", ".js");
+  await collect(resolve(packageRoot, "test"), "test", ".js");
 
   // Root-level required artifacts (e.g. README.md) — direct files only, so a
   // manifest entry whose path has no directory prefix resolves correctly.
   try {
-    const rootDirents = await readdir(repoRoot, { withFileTypes: true });
+    const rootDirents = await readdir(packageRoot, { withFileTypes: true });
     for (const d of rootDirents) {
       if (d.isFile()) fileSet.push(d.name);
     }
@@ -361,7 +373,7 @@ async function main() {
   // truth, no regex drift). Modules are pure at import time.
   const moduleExports = {};
   for (const path of fileSet.filter((p) => p.startsWith("src/") && p.endsWith(".js"))) {
-    const mod = await import(resolve(repoRoot, path));
+    const mod = await import(resolve(packageRoot, path));
     moduleExports[path] = Object.keys(mod).filter((k) => k !== "default").sort();
   }
 

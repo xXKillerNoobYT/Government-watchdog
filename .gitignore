@@ -102,6 +102,11 @@ Logs/pilot/
 # log records before/after supplier prose (possibly private) per applied row —
 # reviewer/vault-only, never committed (data-publication boundary, F5/F9).
 Logs/backfill_*.log
+# The extracted local-first tooling resolves DEFAULT_LOG_PATH against its own
+# package root, so `node src/refresh-runner.js` writes here rather than to the
+# repo-root Logs/ that the rules above cover. Same operational output over real
+# Alpine source data — local/vault-only, never committed.
+tools/local-first/Logs/
 
 # GOV-1526 (P1b of GOV-1523): built web artifacts. The tarball carries projected
 # civic data lanes (data/reviewer_internal.json) — build output, never committed;

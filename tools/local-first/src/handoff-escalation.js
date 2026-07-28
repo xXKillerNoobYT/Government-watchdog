@@ -553,8 +553,12 @@ async function main() {
   const { readFile } = await import("node:fs/promises");
   const { dirname } = await import("node:path");
 
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const modelPath = resolve(repoRoot, "Docs/handoff-escalation-model.json");
+  // This package was extracted out of a single-root local-first workspace, so
+  // its code and its committed docs now live under two different roots: code at
+  // tools/local-first/, prose + committed models at <repo>/Docs/local-first/.
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const docsRoot = resolve(packageRoot, "../..", "Docs/local-first");
+  const modelPath = resolve(docsRoot, "handoff-escalation-model.json");
   const model = JSON.parse(await readFile(modelPath, "utf8"));
 
   // Optional fixture: { request, action, snapshot } supplied via --fixture <path>.

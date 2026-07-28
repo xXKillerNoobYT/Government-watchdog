@@ -405,7 +405,7 @@ test("invalid structural input throws (not a silent empty verdict)", () => {
 // ── the REAL committed model drives the legitimate chain to allow/not_required ─
 
 test("real Docs/handoff-escalation-model.json: legit chain → allow / not_required", async () => {
-  const realModel = JSON.parse(await readFile(resolve(here, "../Docs/handoff-escalation-model.json"), "utf8"));
+  const realModel = JSON.parse(await readFile(resolve(here, "../../../Docs/local-first/handoff-escalation-model.json"), "utf8"));
 
   // Every modeled transition, given a minimal compliant bundle, is allowed.
   for (const t of realModel.transitions) {
