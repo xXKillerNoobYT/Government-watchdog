@@ -293,8 +293,9 @@ Routes:
                                 data/reviewer_internal.json lane; 403 otherwise.
   POST   /api/beta/magic-link/request  gated-beta front door (GOV-801/GOV-1544 wiring);
   GET    /api/beta/magic-link/verify   every /api/beta/* route answers a constant 404
-  POST   /api/beta/waitlist            until the owner-gated ``beta_gate_enabled``
-  DELETE /api/beta/sessions/current    flag row is enabled (fail closed, D1).
+  POST   /api/beta/magic-link/consume  until the owner-gated ``beta_gate_enabled``
+  POST   /api/beta/waitlist            flag row is enabled (fail closed, D1). The
+  DELETE /api/beta/sessions/current    consume route redeems the GOV-1538 6-digit code.
 
 Bind guard: refuses any host outside ALLOWED_BIND_HOSTS (127.0.0.1/localhost) —
 the service is never publicly addressable. All frozen serving logic is reused

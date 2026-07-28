@@ -1,9 +1,11 @@
 """HTTP transport for the gated-beta front door (GOV-801).
 
-Four loopback-only routes wiring the GOV-799 landing to :mod:`beta.service`:
+Five loopback-only routes wiring the GOV-799 landing to :mod:`beta.service`:
 
   * POST   /api/beta/magic-link/request  -> neutral 200 (never reveals allowlist)
   * GET    /api/beta/magic-link/verify   -> 302 /#/app + Set-Cookie, or 302 back
+  * POST   /api/beta/magic-link/consume  -> 200 + Set-Cookie (6-digit code), or
+                                            one neutral 401 (GOV-1538 fallback)
   * POST   /api/beta/waitlist            -> neutral 200
   * DELETE /api/beta/sessions/current    -> 200 + cleared cookie (sign out)
 
@@ -47,6 +49,9 @@ COOKIE_NAME = "gw_beta_session"
 BODY_OK = {"status": "ok"}
 BODY_404 = {"error": "not_found"}
 BODY_400 = {"error": "bad_request"}
+# One neutral rejection for the code consume: a wrong/expired code and a
+# never-requested (or non-allowlisted) email are indistinguishable here.
+BODY_401 = {"error": "invalid_code"}
 
 
 class BindError(Exception):
@@ -124,6 +129,20 @@ def process_request(conn: sqlite3.Connection, *, method: str, path: str,
             return 302, {}, {"Location": service.LOGIN_ERROR_REDIRECT}
         return 302, {}, {"Location": service.APP_REDIRECT,
                          "Set-Cookie": build_session_cookie(raw_session)}
+
+    if method == "POST" and route == service.MAGIC_LINK_CONSUME_ROUTE:
+        # 6-digit code fallback (GOV-1538). Unlike verify's GET redirect, this
+        # is an app-driven fetch: a JSON {email, code} in, a session cookie on
+        # success (200) or one neutral 401 on any failure — no allowlist signal.
+        body = _json_body(raw_body)
+        if (body is None or not isinstance(body.get("email"), str)
+                or not isinstance(body.get("code"), str)):
+            return 400, dict(BODY_400), {}
+        raw_session = service.consume_code(conn, body["email"], body["code"],
+                                           ip_hint=ip_hint)
+        if raw_session is None:
+            return 401, dict(BODY_401), {}
+        return 200, dict(BODY_OK), {"Set-Cookie": build_session_cookie(raw_session)}
 
     if method == "POST" and route == service.WAITLIST_ROUTE:
         body = _json_body(raw_body)

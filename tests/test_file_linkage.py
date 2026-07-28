@@ -1,0 +1,324 @@
+"""Tests for supplied-file linkage + gap-detection update (GOV-1577 / B4).
+
+Each issue acceptance criterion maps to a class below:
+
+  AC1 file links to area/meeting/agenda item          -> TestLinkage
+  AC2 linking a primary source flips the
+      no_primary_source signal (real-gap fixture)      -> TestGapClosesOnPrimaryLink
+  AC3 gap computation stays deterministic + source-
+      grounded (no AI)                                 -> TestDeterministicSourceGrounded
+
+Plus the structural / fail-closed guarantees B4 depends on:
+  schema + CHECK-vocab parity with 0029                -> TestSchema
+  upsert idempotency, fk to supplied_files, unlink     -> TestLinkage
+  reversibility + human-disposition respect            -> TestGapReversibilityAndDispositions
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import completeness  # noqa: E402
+import db  # noqa: E402
+import file_linkage as fl  # noqa: E402
+import file_records as fr  # noqa: E402
+
+SHA = hashlib.sha256(b"%PDF-1.4 Town of Alpine council packet 2026-06-23").hexdigest()
+SHA2 = hashlib.sha256(b"%PDF-1.4 supporting exhibit").hexdigest()
+
+# A real meeting folder date, matching how structure_real_corpus keys the gap
+# (subject_node_type='meeting', subject_node_id=<date>).
+MEETING_DATE = "2026-06-23"
+
+
+@pytest.fixture()
+def conn(tmp_path) -> sqlite3.Connection:
+    db_path = tmp_path / "b4.db"
+    db.apply_migrations(db_path)
+    c = db.open_db(db_path)
+    yield c
+    c.close()
+
+
+def _record(conn, *, sha=SHA, area="alpine", source_type="agenda_packet"):
+    """Insert a supplied_files row (B2) so it can be linked (B4)."""
+    return fr.insert_file_record(
+        conn,
+        area=area,
+        source_type=source_type,
+        original_filename="2026-06-23-packet.pdf",
+        sha256=sha,
+        mime="application/pdf",
+        byte_size=51234,
+        supplied_by="isaac",
+        captured_at="2026-06-23T00:00:00.000+00:00",
+    )
+
+
+def _seed_no_primary_source_gap(conn, subject_id=MEETING_DATE, subject_type="meeting"):
+    """The 'real gap' fixture: a deterministic no_primary_source gap, open, exactly
+    as the structuring detector (structure_real_corpus via completeness) emits it."""
+    return completeness.record_gap(
+        conn,
+        subject_node_id=subject_id,
+        subject_node_type=subject_type,
+        gap_type="no_primary_source",
+        detail="meeting folder has only derived material",
+    )
+
+
+# --- AC1: file links to area / meeting / agenda item ------------------------
+
+class TestSchema:
+    def test_table_exists_with_expected_columns(self, conn):
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(supplied_file_links)")}
+        assert cols == {
+            "link_id", "file_id", "subject_node_type", "subject_node_id",
+            "is_primary_source", "linked_by", "linked_at",
+        }
+
+    def test_subject_type_vocab_matches_check(self, conn):
+        # SSOT parity: the module vocabulary must be exactly what the 0029 CHECK
+        # allows (the concept_map/completeness parity-guard pattern).
+        rec = _record(conn)
+        for t in fl.LINK_SUBJECT_TYPES:
+            fl.link_file(
+                conn, file_id=rec.file_id, subject_node_type=t,
+                subject_node_id="x", linked_by="isaac",
+            )
+        # a type outside the vocab is rejected before any write
+        with pytest.raises(fl.UnknownSubjectType):
+            fl.link_file(
+                conn, file_id=rec.file_id, subject_node_type="planet",
+                subject_node_id="x", linked_by="isaac",
+            )
+
+
+class TestLinkage:
+    @pytest.mark.parametrize("subject_type", ["area", "meeting", "agenda_item"])
+    def test_link_to_each_subject_type(self, conn, subject_type):
+        rec = _record(conn)
+        link = fl.link_file(
+            conn, file_id=rec.file_id, subject_node_type=subject_type,
+            subject_node_id="subj-1", linked_by="isaac", is_primary_source=True,
+        )
+        assert link.subject_node_type == subject_type
+        assert link.is_primary_source is True
+        got = fl.links_for_subject(conn, subject_type, "subj-1")
+        assert [l.file_id for l in got] == [rec.file_id]
+
+    def test_link_requires_existing_file_record(self, conn):
+        # fk-in-spirit: cannot link a file that B2 never recorded (fail-closed)
+        with pytest.raises(fl.FileLinkageError):
+            fl.link_file(
+                conn, file_id="file-does-not-exist", subject_node_type="meeting",
+                subject_node_id=MEETING_DATE, linked_by="isaac",
+            )
+        # the FK also holds at the DB layer
+        assert conn.execute("SELECT COUNT(*) FROM supplied_file_links").fetchone()[0] == 0
+
+    def test_relink_is_idempotent_upsert(self, conn):
+        rec = _record(conn)
+        fl.link_file(
+            conn, file_id=rec.file_id, subject_node_type="meeting",
+            subject_node_id=MEETING_DATE, linked_by="isaac", is_primary_source=False,
+        )
+        # operator corrects the classification: same (file, subject) -> update in place
+        link2 = fl.link_file(
+            conn, file_id=rec.file_id, subject_node_type="meeting",
+            subject_node_id=MEETING_DATE, linked_by="mark", is_primary_source=True,
+        )
+        rows = fl.links_for_subject(conn, "meeting", MEETING_DATE)
+        assert len(rows) == 1  # no duplicate
+        assert rows[0].is_primary_source is True
+        assert rows[0].linked_by == "mark"
+        assert link2.link_id == rows[0].link_id
+
+    def test_links_for_file_lists_every_subject(self, conn):
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac")
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="area",
+                     subject_node_id="alpine", linked_by="isaac")
+        subjects = {(l.subject_node_type, l.subject_node_id)
+                    for l in fl.links_for_file(conn, rec.file_id)}
+        assert subjects == {("meeting", MEETING_DATE), ("area", "alpine")}
+
+    def test_unlink_removes_row(self, conn):
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac")
+        assert fl.unlink_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                              subject_node_id=MEETING_DATE) is True
+        assert fl.links_for_subject(conn, "meeting", MEETING_DATE) == []
+        # unlinking a non-existent link is a harmless False
+        assert fl.unlink_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                              subject_node_id=MEETING_DATE) is False
+
+
+# --- AC2: linking a primary source flips the no_primary_source signal --------
+
+class TestGapClosesOnPrimaryLink:
+    def test_primary_link_flips_open_gap_to_resolved(self, conn):
+        # Real gap fixture: an OPEN no_primary_source gap for the meeting.
+        gap_id = _seed_no_primary_source_gap(conn)
+        assert completeness.gaps_for(conn, gap_type="no_primary_source",
+                                     only_open=True)  # exists + open
+
+        # Supply + link a PRIMARY source to that same meeting.
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+
+        result = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+
+        assert result.has_primary_source is True
+        assert result.gap_id == gap_id
+        assert result.previous_status == "open"
+        assert result.new_status == "resolved"
+        assert result.changed is True
+        # the gap row itself is now resolved (no longer an open gap)
+        assert completeness.gaps_for(conn, gap_type="no_primary_source",
+                                     only_open=True) == []
+        row = conn.execute(
+            "SELECT resolved_status FROM completeness_gaps WHERE gap_id = ?", (gap_id,)
+        ).fetchone()
+        assert row[0] == "resolved"
+
+    def test_non_primary_link_does_not_close_gap(self, conn):
+        # A supporting (is_primary_source=False) file must NOT close the gap.
+        _seed_no_primary_source_gap(conn)
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=False)
+        result = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        assert result.has_primary_source is False
+        assert result.changed is False
+        assert result.new_status == "open"
+
+    def test_rejected_primary_source_does_not_count(self, conn):
+        # A repudiated (rejected) file is not a source: gap stays open.
+        _seed_no_primary_source_gap(conn)
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        fr.set_review_state(conn, rec.file_id, "rejected")
+        result = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        assert result.has_primary_source is False
+        assert result.new_status == "open"
+
+    def test_pending_primary_source_counts(self, conn):
+        # review_state and completeness are DISTINCT axes: a still-pending primary
+        # source means the bytes EXIST, so it closes the completeness gap.
+        _seed_no_primary_source_gap(conn)
+        rec = _record(conn)
+        assert rec.review_state == "pending"
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        result = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        assert result.has_primary_source is True
+        assert result.new_status == "resolved"
+
+    def test_refresh_never_creates_a_gap(self, conn):
+        # No pre-existing gap + a primary link -> nothing invented (B4 resolves,
+        # it does not author gaps).
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        result = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        assert result.gap_id is None
+        assert result.changed is False
+        assert conn.execute("SELECT COUNT(*) FROM completeness_gaps").fetchone()[0] == 0
+
+
+# --- AC3: deterministic + source-grounded (no AI) ---------------------------
+
+class TestDeterministicSourceGrounded:
+    def test_refresh_is_idempotent(self, conn):
+        _seed_no_primary_source_gap(conn)
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        first = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        second = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        assert first.new_status == "resolved" and first.changed is True
+        # re-running the same inputs changes nothing (deterministic + idempotent)
+        assert second.new_status == "resolved" and second.changed is False
+
+    def test_has_primary_source_reads_only_real_rows(self, conn):
+        # source-grounded: verdict is a pure function of the linked supplied_files
+        # rows — no linked primary source -> False.
+        assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is False
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is True
+
+    def test_produced_by_stays_deterministic(self, conn):
+        # B4 never rewrites provenance to 'ai'; the gap it moves remains a
+        # deterministic gap.
+        gap_id = _seed_no_primary_source_gap(conn)
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        row = conn.execute(
+            "SELECT produced_by FROM completeness_gaps WHERE gap_id = ?", (gap_id,)
+        ).fetchone()
+        assert row[0] == "deterministic"
+
+
+# --- reversibility + human dispositions -------------------------------------
+
+class TestGapReversibilityAndDispositions:
+    def test_unlink_reopens_resolved_gap(self, conn):
+        gap_id = _seed_no_primary_source_gap(conn)
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        # the primary source goes away (unlink / supersede in B5)
+        fl.unlink_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                       subject_node_id=MEETING_DATE)
+        result = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        assert result.previous_status == "resolved"
+        assert result.new_status == "open"  # gap never lies about a vanished source
+        assert result.changed is True
+
+    def test_human_wontfix_is_not_clobbered(self, conn):
+        # A reviewer-set disposition (wontfix/acknowledged) is left untouched even
+        # when a primary source is present.
+        gap_id = _seed_no_primary_source_gap(conn)
+        conn.execute(
+            "UPDATE completeness_gaps SET resolved_status = 'wontfix' WHERE gap_id = ?",
+            (gap_id,),
+        )
+        conn.commit()
+        rec = _record(conn)
+        fl.link_file(conn, file_id=rec.file_id, subject_node_type="meeting",
+                     subject_node_id=MEETING_DATE, linked_by="isaac",
+                     is_primary_source=True)
+        result = fl.refresh_no_primary_source_gap(conn, "meeting", MEETING_DATE)
+        assert result.gap_id is None  # not an owned gap -> B4 leaves it alone
+        assert result.changed is False
+        row = conn.execute(
+            "SELECT resolved_status FROM completeness_gaps WHERE gap_id = ?", (gap_id,)
+        ).fetchone()
+        assert row[0] == "wontfix"
