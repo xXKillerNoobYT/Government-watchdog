@@ -84,7 +84,7 @@ def plan_backfill(conn: sqlite3.Connection) -> list[PlannedChange]:
     planned: list[PlannedChange] = []
     rows = conn.execute(
         "SELECT file_id, review_state, origin_url, provenance_note "
-        "FROM supplied_files ORDER BY created_at, file_id"
+        "FROM supplied_files ORDER BY created_at, rowid"
     ).fetchall()
     for row in rows:
         origin_url = row["origin_url"]

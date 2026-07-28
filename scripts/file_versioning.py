@@ -309,7 +309,7 @@ def list_dependencies(conn: sqlite3.Connection, file_id: str) -> list[Dependency
     cur = _cursor(conn)
     rows = cur.execute(
         f"SELECT {', '.join(_DEPENDENCY_COLUMNS)} FROM supplied_file_dependencies"
-        " WHERE file_id = ? ORDER BY created_at, dependency_id",
+        " WHERE file_id = ? ORDER BY created_at, rowid",
         (file_id,),
     ).fetchall()
     return [DependencyRecord.from_row(r) for r in rows]
@@ -324,13 +324,13 @@ def list_needs_re_review(
     if version_group_id is None:
         rows = cur.execute(
             f"SELECT {', '.join(_DEPENDENCY_COLUMNS)} FROM supplied_file_dependencies"
-            " WHERE review_flag = 'needs_re_review' ORDER BY flagged_at, dependency_id"
+            " WHERE review_flag = 'needs_re_review' ORDER BY flagged_at, rowid"
         ).fetchall()
     else:
         rows = cur.execute(
             f"SELECT {', '.join(_DEPENDENCY_COLUMNS)} FROM supplied_file_dependencies"
             " WHERE review_flag = 'needs_re_review' AND version_group_id = ?"
-            " ORDER BY flagged_at, dependency_id",
+            " ORDER BY flagged_at, rowid",
             (version_group_id,),
         ).fetchall()
     return [DependencyRecord.from_row(r) for r in rows]
@@ -489,11 +489,16 @@ def get_supersede_event(conn: sqlite3.Connection, event_id: str) -> SupersedeEve
 def list_supersede_events(
     conn: sqlite3.Connection, version_group_id: str
 ) -> list[SupersedeEvent]:
-    """Every supersede event in a version group, oldest-first (the audit trail)."""
+    """Every supersede event in a version group, oldest-first (the audit trail).
+
+    Tie-broken on ``rowid`` (insertion order), never on ``event_id``: ``created_at``
+    is millisecond-granular and ``event_id`` is ``secrets.token_hex`` — random — so
+    an id tie-break returns same-millisecond events in a random order. These tables
+    are append-only, so ``rowid`` is monotonic arrival order. (GOV-1652 / #177.)"""
     cur = _cursor(conn)
     rows = cur.execute(
         f"SELECT {', '.join(_EVENT_COLUMNS)} FROM supplied_file_supersede_events"
-        " WHERE version_group_id = ? ORDER BY created_at, event_id",
+        " WHERE version_group_id = ? ORDER BY created_at, rowid",
         (version_group_id,),
     ).fetchall()
     return [SupersedeEvent.from_row(r) for r in rows]
