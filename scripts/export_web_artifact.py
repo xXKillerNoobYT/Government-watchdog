@@ -248,7 +248,9 @@ Single documented entrypoint for the pinned backend web artifact:
 
 Routes:
   GET    /api/health            liveness for the website build/proxy; zero civic data.
-  GET    /api/notifications     the existing GOV-771 endpoint (flag-gated, session-auth).
+  GET    /api/notifications     the existing GOV-771 endpoint (flag-gated, session-auth:
+                                account bearer OR a gw_beta_session cookie, never both
+                                — GOV-1653).
   GET    /api/reviewer-internal approved-tier civic data (accounts.gate) -> the pre-built
                                 data/reviewer_internal.json lane; 403 otherwise.
   POST   /api/beta/magic-link/request  gated-beta front door (GOV-801/GOV-1544 wiring);
@@ -349,16 +351,37 @@ def beta_request(conn: sqlite3.Connection, *, method: str, path: str,
         verify_base_url=verify_base_url or beta_service.DEFAULT_VERIFY_BASE_URL)
 
 
-def process_request(conn: sqlite3.Connection, *, path: str, authorization: str | None) -> tuple[int, dict]:
-    """Pure request core (no sockets) — the unit-testable router."""
+def _single_header(raw) -> str | None:
+    """The one value of a header, or None if absent OR repeated.
+
+    Repeated collapses to None deliberately: two Authorization headers is an
+    ambiguous credential, and a router that silently honors the first is
+    choosing for the caller. None denies on every route below.
+    """
+    if raw is None or isinstance(raw, str):
+        return raw
+    values = [value for value in raw if value is not None]
+    return values[0] if len(values) == 1 else None
+
+
+def process_request(conn: sqlite3.Connection, *, path: str,
+                    authorization=None, cookie_header=None) -> tuple[int, dict]:
+    """Pure request core (no sockets) — the unit-testable router.
+
+    ``authorization``/``cookie_header`` accept a single string (every existing
+    caller) or the list form from ``self.headers.get_all`` so repeated headers
+    survive to the route that must reject them (GOV-1653).
+    """
     route = urlsplit(path).path
     if route == HEALTH_ROUTE:
         return 200, health_payload()
     if route == NOTIFICATIONS_ROUTE:
         from notifications import http_api
-        return http_api.process_request(conn, path=path, authorization=authorization)
+        return http_api.process_request(conn, path=path,
+                                        authorization=authorization,
+                                        cookie_header=cookie_header)
     if route == REVIEWER_INTERNAL_ROUTE:
-        return reviewer_internal_payload(conn, authorization)
+        return reviewer_internal_payload(conn, _single_header(authorization))
     return 404, dict(BODY_404)
 
 
@@ -405,9 +428,14 @@ def make_handler(db_path: Path, *, verify_base_url: str | None = None):
                                 ip_hint=ip_hint,
                                 verify_base_url=verify_base_url)
                         elif method == "GET":
+                            # get_all, not get: a repeated credential header
+                            # must reach the route as two values so it can be
+                            # rejected as ambiguous instead of silently
+                            # resolving to the first one (GOV-1653).
                             status, payload = process_request(
                                 conn, path=self.path,
-                                authorization=self.headers.get("Authorization"))
+                                authorization=self.headers.get_all("Authorization"),
+                                cookie_header=self.headers.get_all("Cookie"))
                         else:
                             status, payload = 404, dict(BODY_404)
                     finally:
