@@ -92,6 +92,10 @@ def live_server(db_path):
     yield server.server_address[1]
     server.shutdown()
     thread.join(timeout=5)
+    # shutdown() only stops the serve_forever loop; the listening socket stays
+    # open until server_close(). Without it the fd leaks for the rest of the
+    # session and pytest reports ResourceWarning: unclosed socket.
+    server.server_close()
 
 
 # --- the acceptance contract test -------------------------------------------

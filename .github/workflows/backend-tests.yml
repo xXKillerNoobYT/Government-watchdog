@@ -15,6 +15,9 @@ on:
       - "tests/**"
       - "Database/migrations/**"
       - "requirements.txt"
+      - "pytest.ini"          # GOV-1661: load-bearing since the ResourceWarning
+                              # ratchet lives here — an edit that drops it must
+                              # re-run the suite, not silently skip CI.
       - ".github/workflows/backend-tests.yml"
 
 jobs:
