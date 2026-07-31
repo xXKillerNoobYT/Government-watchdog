@@ -118,16 +118,44 @@ def test_the_whole_corpus_actually_re_applies_against_a_populated_schema(tmp_pat
         "a re-apply changed the table count; a migration is not idempotent")
 
 
-def test_foreign_keys_are_enabled_on_both_connection_paths():
-    """INV-3. SQLite defaults `foreign_keys` OFF *per connection*.
+def test_foreign_keys_are_actually_in_effect_not_merely_present(tmp_path):
+    """INV-3, upgraded from a source-text count to a behavioural check.
 
-    A connection opened without it silently stops enforcing every REFERENCES
-    clause in the schema — no error, just unenforced integrity.
+    The previous version asserted `db.py` *contains* the string
+    "PRAGMA foreign_keys = ON" at least twice. **Presence is not effect**, and
+    SQLite makes that gap dangerous: the pragma is documented as a NO-OP inside
+    a transaction, and it fails **silently** — no error, no warning, just a
+    connection that stops enforcing every REFERENCES clause in the schema.
+
+    Measured: `conn.execute("PRAGMA foreign_keys = ON")` after a DML statement
+    leaves the value at **0**. So a refactor that moved the pragma below the
+    first write in `open_db` would keep the old text-matching guard green while
+    turning off referential integrity for every caller.
+
+    This asserts what actually matters — the value on a live connection, and a
+    real violation being rejected.
     """
-    db_src = (Path(__file__).resolve().parents[1] / "scripts" / "db.py").read_text(
-        encoding="utf-8")
-    assert db_src.count("PRAGMA foreign_keys = ON") >= 2, (
-        "expected PRAGMA foreign_keys = ON in BOTH apply_migrations and open_db")
+    import sqlite3
+
+    import db as db_mod
+
+    db_path = tmp_path / "fk.db"
+    db_mod.apply_migrations(db_path)
+
+    conn = db_mod.open_db(db_path)
+    try:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1, (
+            "open_db returned a connection with foreign_keys OFF — every "
+            "REFERENCES clause in the schema is unenforced on it")
+        # The end-to-end proof: a row pointing at a user that does not exist.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO access_grants (grant_id, user_id, tier, granted_utc)"
+                " VALUES ('g1', 'NO-SUCH-USER', 'none', '2026-01-01')")
+            conn.commit()
+    finally:
+        conn.rollback()
+        conn.close()
 
 
 # --- GOV-1680 (C1b): the three invariants C1 wrote but nothing pinned ----------
