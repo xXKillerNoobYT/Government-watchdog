@@ -688,3 +688,47 @@ def test_first_add_without_a_note_stores_null(conn):
     row = conn.execute("SELECT note FROM beta_allowlist WHERE email = ?",
                        ("note4@example.com",)).fetchone()
     assert row["note"] is None
+
+
+# --- GOV-1667 (C7b hunt): the front door had NO body cap at all -------------
+
+def test_front_door_body_is_capped(conn, live_server, monkeypatch):
+    """`http_api` accepted an arbitrarily large body before GOV-1667.
+
+    `intake_api` had `_READ_CAP`; this surface had nothing — `rfile.read(length)`
+    with no bound, so one unauthenticated POST could make the process buffer as
+    much as it cared to declare. Added because the red proof for the fix caught
+    that removing `MAX_BODY_BYTES` changed nothing observable: the cap existed
+    but nothing was watching it.
+    """
+    _enable_gate(conn)
+    monkeypatch.setattr(http_api, "MAX_BODY_BYTES", 64)
+
+    client = http.client.HTTPConnection("127.0.0.1", live_server)
+    client.request("POST", service.MAGIC_LINK_REQUEST_ROUTE,
+                   body=b"x" * 4096,
+                   headers={"Content-Type": "application/json"})
+    response = client.getresponse()
+    response.read()
+    client.close()
+
+    assert response.status == 413
+
+
+def test_front_door_normal_body_is_unaffected_by_the_cap(conn, live_server):
+    """The cap must not be so tight it rejects real traffic.
+
+    Pairs with the test above: a guard that returns 413 for everything would
+    satisfy it while breaking the surface entirely.
+    """
+    _enable_gate(conn)
+
+    client = http.client.HTTPConnection("127.0.0.1", live_server)
+    client.request("POST", service.MAGIC_LINK_REQUEST_ROUTE,
+                   body=json.dumps({"email": "capped@example.com"}).encode(),
+                   headers={"Content-Type": "application/json"})
+    response = client.getresponse()
+    response.read()
+    client.close()
+
+    assert response.status == 200

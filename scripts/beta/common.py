@@ -75,3 +75,35 @@ def ip_hint(ip: str | None) -> str | None:
     if not ip:
         return None
     return sha256_hex(ip)[:IP_HINT_LEN]
+
+
+def parse_content_length(raw: str | None) -> int | None:
+    """Caller-supplied ``Content-Length`` -> a usable byte count, or None.
+
+    Returns ``0`` when the header is absent or empty, a non-negative int when it
+    parses, and **None when the value is present but unusable** — non-numeric,
+    negative, or otherwise not a plain integer.
+
+    Both failure modes were live before GOV-1667 and both were reachable by an
+    unauthenticated caller, because the header is read before any gate:
+
+    * ``Content-Length: abc`` raised ``ValueError`` inside the request handler.
+      The connection died with a traceback and **no response at all**.
+    * ``Content-Length: -1`` slipped past a ``length > CAP`` guard (-1 is not
+      greater than anything) and reached ``rfile.read(-1)``, which reads **until
+      EOF** — so the size cap it was supposed to enforce did not apply. Measured:
+      a positive over-cap value returned 413 while ``-1`` returned 401, i.e. it
+      got past the guard and into the handler.
+
+    None is returned rather than 0-vs-error so the CALLER decides the status,
+    which matters: answering 400 here would leak that the surface exists while
+    the beta gate is off, and INV-2 says every request must be 404 then.
+    """
+    if raw is None or raw == "":
+        return 0
+    try:
+        length = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return length if length >= 0 else None
+

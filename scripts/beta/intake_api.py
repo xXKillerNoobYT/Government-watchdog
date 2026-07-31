@@ -330,11 +330,19 @@ def make_handler(db_path: Path):
             pass
 
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            if length > _READ_CAP:
+            length = common.parse_content_length(
+                self.headers.get("Content-Length"))
+            if length is None:
+                # Unusable header (non-numeric or negative). Read NOTHING and
+                # fall through: process_request answers 404 while the gate is
+                # off and 400 once it is on, so a malformed length can neither
+                # crash the handler nor reveal that the surface exists.
+                raw = b""
+            elif length > _READ_CAP:
                 # Refuse an over-size body at the socket — never buffer it.
                 return self._send(413, dict(BODY_413))
-            raw = self.rfile.read(length) if length else b""
+            else:
+                raw = self.rfile.read(length) if length else b""
             conn = _open(db_path)
             try:
                 status, payload, headers = process_request(

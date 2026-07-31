@@ -49,6 +49,13 @@ COOKIE_NAME = "gw_beta_session"
 BODY_OK = {"status": "ok"}
 BODY_404 = {"error": "not_found"}
 BODY_400 = {"error": "bad_request"}
+BODY_413 = {"error": "payload_too_large"}
+
+#: Every body this surface accepts is a small JSON object (an email, a 6-digit
+#: code). 64 KiB is orders of magnitude more than any of them and still bounds
+#: what one unauthenticated request can make the process buffer. Before
+#: GOV-1667 there was NO cap here at all.
+MAX_BODY_BYTES = 64 * 1024
 # One neutral rejection for the code consume: a wrong/expired code and a
 # never-requested (or non-allowlisted) email are indistinguishable here.
 BODY_401 = {"error": "invalid_code"}
@@ -172,8 +179,14 @@ def make_handler(db_path: Path, *,
             pass
 
         def _dispatch(self, method: str) -> None:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            raw = self.rfile.read(length) if length else b""
+            length = common.parse_content_length(
+                self.headers.get("Content-Length"))
+            if length is None:
+                raw = b""            # unusable header -> no body (see common)
+            elif length > MAX_BODY_BYTES:
+                return self._send(413, dict(BODY_413))
+            else:
+                raw = self.rfile.read(length) if length else b""
             # ip_hint is computed at the boundary — a raw IP never crosses into
             # the service or audit layers (privacy: truncated hash only).
             ip_hint = common.ip_hint(
@@ -186,6 +199,10 @@ def make_handler(db_path: Path, *,
                     verify_base_url=verify_base_url)
             finally:
                 conn.close()
+            self._send(status, payload, headers)
+
+        def _send(self, status: int, payload: dict, headers: dict | None = None) -> None:
+            headers = headers or {}
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             for name, value in headers.items():
