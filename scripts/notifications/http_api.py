@@ -37,7 +37,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -50,6 +50,12 @@ NOTIFICATIONS_HTTP_FLAG = "notifications_http_enabled"
 ALLOWED_BIND_HOSTS = frozenset({"127.0.0.1", "localhost"})
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+
+#: Cap on how long one connection may hold a worker (GOV-1677). Without this a
+#: client that opens a socket and never finishes its request line holds the
+#: thread until the OS gives up. Matches ``beta/http_api.py``'s 15s; this route
+#: only ever reads a request line and headers, so 15s is generous.
+REQUEST_TIMEOUT_SECONDS = 15
 
 # Backend kind -> FE wire kind (delta 2). A backend kind absent here (today:
 # "system") is NOT wire-visible: the FE enum is fail-closed on unknown kinds,
@@ -191,6 +197,9 @@ def make_handler(db_path: Path):
     """Build a request-handler class bound to one DB path."""
 
     class Handler(BaseHTTPRequestHandler):
+        #: Bounds how long one client may hold a worker thread (GOV-1677).
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def log_message(self, *args):  # silence default stderr spam
             pass
 
@@ -218,19 +227,37 @@ def _open(db_path: Path) -> sqlite3.Connection:
 
 
 def serve(db_path: Path, *, host: str = "127.0.0.1",
-          port: int = 8771) -> HTTPServer:
-    """Create (do not yet serve) an HTTPServer bound to loopback only.
+          port: int = 8771) -> ThreadingHTTPServer:
+    """Create (do not yet serve) a server bound to loopback only.
 
     Refuses any non-loopback host — GATE-PUB / INV-4, same guard as ingress.
     Returns the server so a caller/test can ``serve_forever`` or
     ``handle_request`` then shut down.
+
+    THREADING (GOV-1677): this route was still a plain ``HTTPServer``, which
+    serves one request at a time, so a single client that opened a socket and
+    never finished its request line denied the whole API. Measured, not feared:
+    baseline 200 requests in 1.669s, then one silent socket blocked the next
+    client for the full 6.003s timeout.
+
+    ``beta/http_api.py`` was fixed for exactly this in GOV-1669 and this route
+    was missed — the same defect on the second of two parallel HTTP surfaces.
+
+    Threading is safe here on the same terms beta's docstring sets out: the
+    handler shares no mutable state. ``do_GET`` opens and closes its own sqlite
+    connection per request, and the closure captures only ``db_path``, an
+    immutable ``Path``. (``intake_api`` remains deliberately un-threaded — its
+    handler closes over a ``RawObjectStore`` whose ``_append_link`` appends to a
+    shared ledger file that is not established as thread-safe, #206.)
     """
     if host not in ALLOWED_BIND_HOSTS:
         raise BindError(
             f"refusing to bind notifications API to {host!r};"
             " loopback only (127.0.0.1)"
         )
-    return HTTPServer((host, port), make_handler(db_path))
+    server = ThreadingHTTPServer((host, port), make_handler(db_path))
+    server.daemon_threads = True   # a stalled worker must not block shutdown
+    return server
 
 
 def main(argv: list[str] | None = None) -> int:

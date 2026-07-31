@@ -269,3 +269,56 @@ def test_serve_refuses_non_loopback_bind(db_path):
     for host in ("0.0.0.0", "192.168.1.10", "example.com", ""):
         with pytest.raises(http_api.BindError):
             http_api.serve(db_path, host=host)
+
+
+# --- GOV-1677 (C8): one stalled socket must not deny the API ------------------
+
+def test_a_single_stalled_client_does_not_deny_the_whole_api(conn, live_server):
+    """Measured, not feared. Before the fix, on plain ``HTTPServer``:
+
+        baseline: 200 requests in 1.669s
+        a single client is now mid-request and silent
+        second client BLOCKED for 6.003s -> TimeoutError
+
+    ``beta/http_api.py`` was fixed for exactly this in GOV-1669; this route --
+    the second of the two loopback HTTP surfaces -- was missed. A client needs
+    no token and no flag to open a socket, so the stall lands before any gate.
+    """
+    import socket
+    import time
+
+    _enable(conn)
+    _, token = _user_with_all_five_kinds(conn)
+
+    # Sanity: the endpoint answers normally to begin with.
+    assert _get(live_server, token=token)[0] == 200
+
+    stalled = socket.create_connection(("127.0.0.1", live_server), timeout=5)
+    try:
+        # A request line and nothing else, ever -- no terminating blank line.
+        stalled.sendall(f"GET {http_api.ROUTE} HTTP/1.1\r\n".encode())
+        time.sleep(0.2)
+
+        started = time.monotonic()
+        status, _, _ = _get(live_server, token=token)
+        elapsed = time.monotonic() - started
+    finally:
+        stalled.close()
+
+    assert status == 200, "a stalled peer changed the answer for everyone else"
+    assert elapsed < 2.0, (
+        f"second client waited {elapsed:.3f}s behind one silent socket — the "
+        "server is serving requests one at a time again")
+
+
+def test_the_handler_bounds_how_long_one_client_may_hold_a_worker():
+    """Threading alone is not enough — unbounded threads are their own DoS.
+
+    ``daemon_threads`` keeps a stalled worker from blocking shutdown, but
+    without a timeout each stalled client keeps a thread for as long as the OS
+    allows. The timeout is what makes the thread come back.
+    """
+    handler = http_api.make_handler(db_path=None)
+    assert handler.timeout == http_api.REQUEST_TIMEOUT_SECONDS
+    assert 0 < http_api.REQUEST_TIMEOUT_SECONDS <= 60, (
+        "a request timeout outside (0, 60] is either useless or an outage")
