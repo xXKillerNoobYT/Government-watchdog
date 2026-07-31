@@ -108,3 +108,20 @@ Logs/backfill_*.log
 # it ships only as a GitHub Release asset on a deliberate BACKEND_REF bump.
 dist/
 gw-web-artifact-*.tar.gz
+
+# GOV-1639 (AUTO GO): SQLite sidecar/backup copies of the evidence DB. `Database/*.db`
+# is ignored above because it carries civic statements and evidence links; a `.bak` or
+# `.backup` of that same file carries byte-identical content, and this repo is PUBLIC.
+# One `git add -A` in a working copy holding a backup would disclose the whole DB.
+Database/*.db.bak
+Database/*.db.backup
+Database/*.bak
+
+# GOV-1639: graphify knowledge-graph output. Machine-generated from a full walk of the
+# source tree (god nodes, community structure, cross-file relationships) and regenerated
+# by `graphify update .` — build output, never committed.
+graphify-out/
+
+# GOV-1639: local Hermes agent-tooling cache. Machine-local, may carry request/response
+# payloads from agent runs — local-only, never committed.
+.hermes/
