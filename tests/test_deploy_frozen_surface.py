@@ -116,3 +116,59 @@ def test_claude_md_states_the_required_python_version():
     text = (Path(__file__).resolve().parents[1] / "CLAUDE.md").read_text(encoding="utf-8")
     assert "3.12" in text
     assert "PEP-701" in text or "nested f-string" in text
+
+
+# --- GOV-1678 (C12): make CLAUDE.md's threading claim executable --------------
+
+#: Loopback HTTP surfaces that MUST be threaded with a request timeout, and the
+#: one that must NOT be. Derived from measurement, not preference: a plain
+#: ``HTTPServer`` serves one request at a time, so a single client that opens a
+#: socket and goes silent denies the whole API — measured at 6.003s on the beta
+#: gate (GOV-1669) and again, independently, on notifications (GOV-1677). The
+#: second one existed for two days after the first was fixed, which is why this
+#: is a list rather than a comment.
+THREADED_SURFACES = ("scripts/beta/http_api.py", "scripts/notifications/http_api.py")
+#: Deliberately single-threaded: its handler closes over a ``RawObjectStore``
+#: whose ``_append_link`` appends to a shared ledger file, not established as
+#: thread-safe (#206). This entry is the *exception*, and it is pinned too — an
+#: unexamined "consistency" edit threading it would be a real regression.
+UNTHREADED_SURFACES = ("scripts/beta/intake_api.py",)
+
+
+@pytest.mark.parametrize("rel", THREADED_SURFACES)
+def test_loopback_http_surfaces_are_threaded_with_a_timeout(rel):
+    """Both halves are load-bearing; neither alone is sufficient.
+
+    Threading without a timeout swaps one stalled connection for unbounded
+    stalled threads. A timeout without threading still blocks the single worker.
+    """
+    src = (Path(__file__).resolve().parents[1] / rel).read_text(encoding="utf-8")
+    assert "ThreadingHTTPServer(" in src, (
+        f"{rel} no longer constructs a ThreadingHTTPServer — one silent socket "
+        "denies the whole surface")
+    assert "daemon_threads" in src, f"{rel} must set daemon_threads"
+    assert "REQUEST_TIMEOUT_SECONDS" in src, (
+        f"{rel} has no request timeout; a stalled worker never comes back")
+
+
+@pytest.mark.parametrize("rel", UNTHREADED_SURFACES)
+def test_the_documented_single_threaded_exception_stays_single_threaded(rel):
+    src = (Path(__file__).resolve().parents[1] / rel).read_text(encoding="utf-8")
+    assert "ThreadingHTTPServer" not in src, (
+        f"{rel} is threaded, but its handler shares a RawObjectStore ledger "
+        "that is not established as thread-safe (#206) — see CLAUDE.md")
+
+
+def test_claude_md_documents_the_threading_rule_and_its_exception():
+    """The list above and CLAUDE.md are two hand-maintained copies of one fact.
+
+    Same drift shape as the frozen-surfaces list, and the same fix: if a surface
+    is added to one and not the other, this fails rather than decaying quietly.
+    """
+    text = (Path(__file__).resolve().parents[1] / "CLAUDE.md").read_text(encoding="utf-8")
+    for rel in THREADED_SURFACES + UNTHREADED_SURFACES:
+        name = rel.removeprefix("scripts/")
+        assert name in text, f"CLAUDE.md does not mention {name}"
+    assert "intake_api.py` is deliberately **not** threaded" in text, (
+        "CLAUDE.md must state the exception, not just the rule — an undocumented "
+        "exception reads as an oversight and invites a 'consistency' fix")
