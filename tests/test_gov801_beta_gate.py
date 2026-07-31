@@ -732,3 +732,66 @@ def test_front_door_normal_body_is_unaffected_by_the_cap(conn, live_server):
     client.close()
 
     assert response.status == 200
+
+
+# --- GOV-1668 (C8 hunt): pin what the pseudonyms ACTUALLY guarantee ---------
+#
+# These pin the properties the system relies on — determinism and normalisation
+# — and deliberately do NOT pin "non-reversible", because it is not true. The
+# old docstrings claimed it; C8 measured otherwise (see #204).
+
+def test_ip_hint_is_deterministic_and_bucketing():
+    """Rate-limit forensics need the SAME address to map to the SAME hint.
+
+    This is the property the column exists for, and the one a future change
+    (e.g. adding a per-call salt) would silently destroy while still looking
+    like a privacy improvement.
+    """
+    assert common.ip_hint("203.0.113.47") == common.ip_hint("203.0.113.47")
+    assert common.ip_hint("203.0.113.47") != common.ip_hint("203.0.113.48")
+    assert common.ip_hint(None) is None
+    assert common.ip_hint("") is None
+    assert len(common.ip_hint("203.0.113.47")) == common.IP_HINT_LEN
+
+
+def test_ip_hint_is_reversible_and_the_docs_must_not_claim_otherwise():
+    """The honest counterpart: a hint IS recoverable from a small search space.
+
+    Asserted rather than assumed, so the claim in the contract and docstrings
+    stays anchored to something executable. If a keyed digest lands (#204) this
+    test SHOULD start failing — that is the signal to update INV-6, not to
+    delete the test quietly.
+    """
+    import hashlib
+
+    target = "203.0.113.47"
+    hint = common.ip_hint(target)
+
+    recovered = [f"203.0.113.{n}" for n in range(256)
+                 if hashlib.sha256(f"203.0.113.{n}".encode()).hexdigest()
+                 [:common.IP_HINT_LEN] == hint]
+
+    assert recovered == [target], recovered
+    # ...and the module must not re-assert the disproved claim.
+    import inspect
+    doc = inspect.getdoc(common.ip_hint) or ""
+    assert "non-reversible" not in doc.lower()
+
+
+def test_email_hash_normalises_before_hashing(conn):
+    """INV-9 at the audit boundary: one address, one pseudonym, any casing."""
+    assert common.email_hash("A@Example.COM") == common.email_hash(" a@example.com ")
+    assert common.email_hash(None) is None
+    assert common.email_hash("") is None
+
+
+def test_audit_row_carries_the_pseudonym_not_the_address(conn):
+    """What INV-6 genuinely guarantees: plaintext never enters the column."""
+    audit.record(conn, event="waitlist_joined", email="Subject@Example.com",
+                 ip_hint=common.ip_hint("203.0.113.9"))
+
+    row = conn.execute("SELECT email_hash, ip_hint FROM beta_audit_log").fetchone()
+    assert row["email_hash"] == common.email_hash("subject@example.com")
+    assert "@" not in row["email_hash"]
+    assert row["ip_hint"] == common.ip_hint("203.0.113.9")
+    assert "203.0.113.9" not in (row["ip_hint"] or "")

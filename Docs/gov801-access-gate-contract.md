@@ -129,7 +129,15 @@ token-invalidation step exists or is needed.
 - **INV-5** Revoking an allowlist entry revokes that email's live sessions in the same
   call.
 - **INV-6** The audit log stores no raw email and no raw IP, and has no update or delete
-  path.
+  path. **Scope corrected 2026-07-31 (GOV-1668):** the two stored digests are *stable
+  pseudonyms, not confidentiality controls*. Both are unsalted, so INV-6 guarantees that the
+  audit trail is not the **source** of an address — it does **not** guarantee that a reader
+  holding the database cannot recover one. Measured: an `ip_hint` was reversed by enumerating
+  a single /16 in 0.04 s, and all 2^32 IPv4 addresses take ~0.6 core-hours in CPython (seconds
+  on a GPU) — expected 64-bit collisions across the whole space are ~0.5, so the preimage is
+  effectively unique. For `email_hash` the candidate list is `beta_allowlist` +
+  `beta_waitlist`, in the same file. Strengthening to a keyed digest is
+  [#204](https://github.com/xXKillerNoobYT/Government-watchdog/issues/204).
 - **INV-7** The front door reveals no allowlist membership through status code or body.
   *(Scope note: this is a statement about the response, not about latency — see §8.)*
 - **INV-8** No email leaves the machine while `email_adapter_enabled` is off.
