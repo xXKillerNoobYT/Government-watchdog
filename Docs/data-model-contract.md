@@ -64,11 +64,23 @@ violations today** — which is exactly why the guard went in now rather than af
 (`tests/test_migration_reruns.py`). A ratchet costs nothing while the count is zero and costs a
 cleanup project afterwards.
 
-### INV-3 — Foreign keys are ON, on every connection
+### INV-3 — Foreign keys are IN EFFECT, not merely configured
 
 `PRAGMA foreign_keys = ON` is set in **both** `apply_migrations` and `open_db`. SQLite defaults
 it **off** per connection, so a connection opened any other way silently stops enforcing every
 `REFERENCES` clause in the schema. Open databases through `db.open_db`.
+
+**Presence is not effect, and SQLite makes that gap dangerous.** The pragma is a documented
+**no-op inside a transaction**, and it fails *silently* — no error, no warning. Measured:
+issuing `PRAGMA foreign_keys = ON` after a DML statement leaves the value at **0**.
+
+So a refactor that merely *moved* the pragma below the first write in `open_db` would keep the
+text present and turn referential integrity off for every caller. The guard is therefore
+**behavioural** (`test_foreign_keys_are_actually_in_effect_not_merely_present`): it opens a real
+connection, asserts `PRAGMA foreign_keys` reads `1`, and asserts a row referencing a nonexistent
+user raises `IntegrityError`. Verified 2026-07-31: with the pragma still present **twice** but
+relocated after a DML statement, the old source-counting guard passed and the behavioural one
+failed.
 
 ### INV-4 — Changing a constraint means rebuilding the table
 
