@@ -6,7 +6,8 @@
 **Depends on:** GOV-716 (REQ-2026-COMM v1.0), GOV-720 (area economics / areas spine)  
 **Status:** **APPROVED** — CEO product/staging + CTO technical, 2026-07-16, both recorded on routing issue GOV-751 (CTO verdict comment `57cb400e`). v0.2 applies the 11 CTO amendments + decisions D1–D4; per the CTO verdict there is **no v0.2 re-review round** — the next checkpoint is the Leg-1 CTO migration review gate.  
 **Supersedes:** v0.1 (same file renamed; v0.1 text at commit `3f59cfe`)  
-**Next migration slot:** 0025  
+**Migration slot (consumed):** 0025 — landed as `0025_accounts_cohorts_notifications.sql`.  
+> **CORRECTED 2026-07-31 (GOV-1672, C1).** This line previously advertised 0025 as the *next* free slot, which was true when the plan was approved and false from the moment that migration merged — slots now run to 0031. A planning document that tells a reader which slot to take, and is stale, is exactly how two branches end up claiming the same one: PRs #199 and #132 both took 0032 this week. `tests/test_migration_slots.py` now checks this line, so it cannot rot again — a `consumed` slot must exist, and any `Next migration slot:` claim must still be free.  
 **Repos:** `xXKillerNoobYT/Government-watchdog` (backend) + `xXKillerNoobYT/Government-watchdog-website` (frontend — CTO local merge)
 
 ---
@@ -45,7 +46,7 @@ This card does **not** activate public launch, mass messaging, or cohort sizes b
 | Migration 0025 | **11 new tables**: users, waitlist_requests, access_grants, cohort_state, cohort_transitions, consent_preferences, notification_events, email_outbox, email_delivery_log, **feature_flags, auth_sessions** |
 | `scripts/accounts/` | Account service: create, approve, revoke, tier-check, cohort gate, session issue/verify/revoke |
 | `scripts/notifications/` | In-app notification writer + query endpoint |
-| `scripts/email/` | Provider-agnostic email abstraction + deliverability/abuse controls; adapter resolution via `feature_flags` (fail-closed) |
+| `scripts/email_gateway/` | Provider-agnostic email abstraction + deliverability/abuse controls; adapter resolution via `feature_flags` (fail-closed). **Path corrected 2026-07-31 (C1): the plan said `scripts/email/`, which was never built under that name — the module shipped as `scripts/email_gateway/` (adapters, flags, outbox, templates).** |
 | `tests/test_gov721_*.py` | RED-proof neuter suite; contract parity with serving modules |
 | `tests/test_deploy_frozen_surface.py` | **Deliberate Leg-1 update**: `test_leg2_added_no_new_migration` rewritten to pin an explicit migration allowlist (`0025_accounts_cohorts_notifications.sql`) rather than asserting zero migration diff — the guard stays, the allowlist grows |
 
