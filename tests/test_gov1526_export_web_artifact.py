@@ -10,12 +10,14 @@ staged tree to prove each clause is a real BUILD FAILURE, not a vacuous pass.
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import sqlite3
 import subprocess
 import sys
 import tarfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,10 @@ import export_web_artifact as ewa  # noqa: E402
 import statements as st  # noqa: E402
 from accounts import service as accounts_service  # noqa: E402
 from accounts import sessions  # noqa: E402
+from beta import allowlist as beta_allowlist  # noqa: E402
+from beta import http_api as beta_http_api  # noqa: E402
+from beta import sessions as beta_sessions  # noqa: E402
+from email_gateway import flags  # noqa: E402
 
 # A fake but well-formed 40-char SHA + fixed timestamp => deterministic manifest.
 FAKE_COMMIT = "a" * 40
@@ -333,6 +339,108 @@ def test_reviewer_internal_opens_for_approved_session(staged: Path, db_path: Pat
         assert [r["statement_id"] for r in records] == ["stmt-reviewer-internal"]
     finally:
         conn.close()
+
+
+def test_reviewer_internal_opens_for_beta_cookie_over_http(
+    staged: Path,
+    db_path: Path,
+) -> None:
+    """The staged artifact forwards Cookie and serves only after live beta gates."""
+    run = _load_run_module(staged)
+    conn = db.open_db(db_path)
+    try:
+        email = "artifact-beta@local.test"
+        beta_allowlist.add(
+            conn,
+            email,
+            owner_decision_ref="GOV-1526-beta-cookie-test",
+        )
+        flags.set_flag(
+            conn,
+            beta_http_api.BETA_GATE_FLAG,
+            enabled=True,
+            owner_decision_ref="GOV-1526-beta-cookie-on",
+        )
+        _, raw_token = beta_sessions.issue(conn, email)
+
+        user_id = accounts_service.create_user(
+            conn,
+            email="artifact-approved@local.test",
+        )
+        accounts_service.approve(
+            conn,
+            user_id,
+            owner_decision_ref="GOV-1526-duplicate-authorization-test",
+        )
+        _, bearer_token = sessions.issue_session(conn, user_id)
+    finally:
+        conn.close()
+
+    server = run.serve(db_path, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = http.client.HTTPConnection(
+        server.server_address[0],
+        server.server_address[1],
+        timeout=5,
+    )
+    try:
+        client.request(
+            "GET",
+            "/api/reviewer-internal",
+            headers={
+                "Cookie": f"{beta_http_api.COOKIE_NAME}={raw_token}",
+            },
+        )
+        response = client.getresponse()
+        body = json.loads(response.read())
+        assert response.status == 200
+        assert [
+            row["statement_id"]
+            for row in body["reviewer_internal_records"]
+        ] == ["stmt-reviewer-internal"]
+
+        client.putrequest("GET", "/api/reviewer-internal")
+        client.putheader(
+            "Cookie",
+            f"{beta_http_api.COOKIE_NAME}={raw_token}",
+        )
+        client.putheader(
+            "Cookie",
+            f"{beta_http_api.COOKIE_NAME}={raw_token}",
+        )
+        client.endheaders()
+        duplicate_response = client.getresponse()
+        duplicate_body = json.loads(duplicate_response.read())
+        assert duplicate_response.status == 403
+        assert duplicate_body == {"error": "access_denied"}
+
+        client.putrequest("GET", "/api/reviewer-internal")
+        client.putheader("Authorization", "")
+        client.putheader("Authorization", "Basic unsupported")
+        client.putheader(
+            "Cookie",
+            f"{beta_http_api.COOKIE_NAME}={raw_token}",
+        )
+        client.endheaders()
+        ambiguous_response = client.getresponse()
+        ambiguous_body = json.loads(ambiguous_response.read())
+        assert ambiguous_response.status == 403
+        assert ambiguous_body == {"error": "access_denied"}
+
+        client.putrequest("GET", "/api/reviewer-internal")
+        client.putheader("Authorization", f"Bearer {bearer_token}")
+        client.putheader("Authorization", "Basic unsupported")
+        client.endheaders()
+        duplicate_auth_response = client.getresponse()
+        duplicate_auth_body = json.loads(duplicate_auth_response.read())
+        assert duplicate_auth_response.status == 403
+        assert duplicate_auth_body == {"error": "access_denied"}
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def _serve_and_get(staged: Path, db_file: Path, routes: list[str]) -> dict[str, int]:
