@@ -311,7 +311,7 @@ def list_versions(conn: sqlite3.Connection, version_group_id: str) -> list[FileR
     cur.row_factory = sqlite3.Row
     rows = cur.execute(
         f"SELECT {', '.join(PROVENANCE_COLUMNS)} FROM supplied_files"
-        " WHERE version_group_id = ? ORDER BY created_at, file_id",
+        " WHERE version_group_id = ? ORDER BY created_at, rowid",
         (version_group_id,),
     ).fetchall()
     return [FileRecord.from_row(r) for r in rows]

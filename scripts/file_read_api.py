@@ -262,14 +262,18 @@ def supersede_views(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     both resolve and are ``review_state='web_safe'`` — so no unreviewed version's
     metadata crosses even as the "before" side. The diff is web-safe
     (:func:`_web_safe_diff`); only synthetic ids (file / version-group) travel.
-    Ordered deterministically. Reads ``event_id`` / ``version_group_id`` /
+    Ordered deterministically — ``created_at, rowid``, i.e. arrival order. NOT
+    ``created_at, event_id``: ``created_at`` is millisecond-granular and
+    ``event_id`` is random (``secrets.token_hex``), so an id tie-break served
+    same-millisecond supersedes in a random order (GOV-1652 / #177).
+    Reads ``event_id`` / ``version_group_id`` /
     ``superseded_file_id`` / ``new_file_id`` only — never ``diff_json`` /
     ``superseded_by``.
     """
     views: list[dict[str, Any]] = []
     for row in conn.execute(
         "SELECT version_group_id, superseded_file_id, new_file_id "
-        "FROM supplied_file_supersede_events ORDER BY created_at, event_id"
+        "FROM supplied_file_supersede_events ORDER BY created_at, rowid"
     ):
         prior = fr.get_file_record(conn, row["superseded_file_id"])
         new = fr.get_file_record(conn, row["new_file_id"])
