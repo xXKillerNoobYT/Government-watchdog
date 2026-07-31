@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import sqlite3
 
-from beta import allowlist, audit, common, mailer, ratelimit, sessions, tokens, waitlist
+from beta import (allowlist, audit, common, mailer, provision, ratelimit,
+                  sessions, tokens, waitlist)
 
 # Route paths (also the HTTP dispatch table in http_api).
 MAGIC_LINK_REQUEST_ROUTE = "/api/beta/magic-link/request"
@@ -83,6 +84,7 @@ def verify_magic_link(conn: sqlite3.Connection, raw_token: str, *,
         audit.record(conn, event="magic_link_rejected", email=email,
                      ip_hint=ip_hint, detail="not_allowed")
         return None
+    provision.provision_account(conn, email)  # GOV-1663: bridge to accounts
     _, raw_session = sessions.issue(conn, email)
     audit.record(conn, event="magic_link_verified", email=email,
                  ip_hint=ip_hint)
@@ -111,6 +113,7 @@ def consume_code(conn: sqlite3.Connection, email: str, code: str, *,
         audit.record(conn, event="magic_link_rejected", email=verified,
                      ip_hint=ip_hint, detail="not_allowed")
         return None
+    provision.provision_account(conn, verified)  # GOV-1663: bridge to accounts
     _, raw_session = sessions.issue(conn, verified)
     audit.record(conn, event="magic_link_verified", email=verified,
                  ip_hint=ip_hint)

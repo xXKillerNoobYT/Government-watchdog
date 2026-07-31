@@ -56,6 +56,20 @@ def is_allowed(conn: sqlite3.Connection, email: str) -> bool:
     return row is not None and row["status"] == "active"
 
 
+def decision_ref(conn: sqlite3.Connection, email: str) -> str | None:
+    """The owner_decision_ref of an ACTIVE allowlist row, else None.
+
+    Deliberately returns None for a revoked row as well as a missing one: the
+    caller (:mod:`beta.provision`) uses this as the authority for an accounts
+    approval, so "revoked" and "never added" must be indistinguishable to it.
+    """
+    row = conn.execute(
+        "SELECT owner_decision_ref FROM beta_allowlist"
+        " WHERE email = ? AND status = 'active'",
+        (common.normalize_email(email),)).fetchone()
+    return row["owner_decision_ref"] if row is not None else None
+
+
 def revoke(conn: sqlite3.Connection, email: str, *, owner_decision_ref: str,
            ip_hint: str | None = None) -> bool:
     """Revoke an email and cascade-revoke its sessions; True if it was active."""
