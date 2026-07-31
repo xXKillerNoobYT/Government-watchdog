@@ -172,17 +172,24 @@ The separation is deliberate and is stated in `beta/mailer.py:14-16`: the beta f
 `users` row and no `consent_preferences` row, so it deliberately bypasses the
 consent-gated `email_gateway.outbox`.
 
-**The consequence is not written down anywhere, so it is written here.** The reviewer-
-internal civic surface authorizes via `accounts.gate.guard_civic_request`, reading a
-`Bearer` token against `auth_sessions` (`scripts/export_web_artifact.py:314-325`). Nothing
-in the beta lane ever writes `auth_sessions`, `users` or `access_grants`. Therefore **a
-session obtained through the only HTTP login the system exposes cannot authorize a
-civic-data read.** The composition point between the lanes is unbuilt.
+**UPDATED 2026-07-30 (GOV-1663) — the AUTHORIZATION half of this is now built; the
+TRANSPORT half is not.** Owner decision, same day: the beta front door **provisions** an
+accounts row on first verified sign-in (`scripts/beta/provision.py`), carrying the beta
+allowlist's own `owner_decision_ref` onto an `access_grants` row, so `accounts.gate`
+remains the single civic gate. Provisioned users are **passwordless** by owner direction —
+`password_hash` stays NULL and `accounts.service.login` refuses such a row with its
+constant `LoginFailed`, so the magic link is the only credential. Provisioning may only
+ever open a door that was never opened: a `revoked` or `paused` accounts tier is left
+untouched, so a stale-but-active allowlist row cannot resurrect an account an owner shut.
 
-This is **fail-closed and leaks nothing** — it is the safe direction to be wrong in — but
-it means the served civic surface is presently unreachable by a real signed-in user.
+**What remains, stated precisely.** `accounts.gate` resolves a `Bearer` token against
+`auth_sessions` (`scripts/export_web_artifact.py:314-325`); a beta session lives in
+`beta_sessions` and nothing writes `auth_sessions` from this lane. So a beta cookie still
+does not *transport* an identity the civic gate accepts, even though the identity now
+exists and is approved. **A signed-in user still cannot read civic data** — fail-closed,
+leaking nothing, and the safe direction to be wrong in.
 
-**Do not fix this here.** Open PR
+**Do not fix the transport half here.** Open PR
 [#125](https://github.com/xXKillerNoobYT/Government-watchdog/pull/125) ("Accept beta cookie
 at reviewer export gate") owns exactly this seam, with
 [#132](https://github.com/xXKillerNoobYT/Government-watchdog/pull/132) (server-authoritative
@@ -216,9 +223,13 @@ built, under the names they currently have.
 
 ## 10. Open decision for the owner
 
-**Which lane is authoritative long-term?** Today the beta lane owns login and the accounts
-lane owns civic authorization, and nothing joins them. The three candidate resolutions —
-beta becomes a front end that provisions accounts rows; accounts absorbs the beta tables;
-or the two stay separate with an explicit documented bridge — have materially different
-migration and revocation consequences, and the choice is not the routine's to make. Filed
-as [#192](https://github.com/xXKillerNoobYT/Government-watchdog/issues/192).
+**ANSWERED 2026-07-30 by the owner: option 1 — the beta lane becomes a front end that
+provisions accounts rows, and `accounts.gate` stays the single civic gate.** Chosen over
+"accounts absorbs the beta tables" (which needs a data migration) and "two lanes with a
+documented bridge" (which keeps two revocation levers forever). One owner decision now
+admits a person in both lanes.
+
+Implemented for the authorization half in GOV-1663 (§7). The remaining open sub-question is
+**transport**: how a beta cookie comes to carry an identity `accounts.gate` accepts. That is
+where PRs #125 and #181 collide, and it is the part still to be reconciled —
+[#192](https://github.com/xXKillerNoobYT/Government-watchdog/issues/192) stays open for it.
