@@ -45,6 +45,33 @@ class LoginFailed(ValueError):
     """Unknown email, no password set, or wrong password — indistinguishable."""
 
 
+class InvalidPassword(ValueError):
+    """An empty password is never a credential (GOV-1674).
+
+    ``password_hash IS NULL`` means *passwordless*, and ``login`` refuses such a
+    row with a constant :class:`LoginFailed`. ``""`` used to take a different
+    path: it is falsy in Python but ``PasswordHasher().hash("")`` is a perfectly
+    valid argon2 PHC string, so the empty string became a **working credential**
+    and ``login(email, "")`` succeeded. The distinction the code drew was
+    ``password is not None``, which is exactly one character of intent away from
+    what it needed to draw.
+
+    Deliberately narrow: this rejects the empty string only. **Minimum length,
+    complexity, and reuse rules are product policy and belong to the owner**,
+    not to a fail-closed guard — inventing them here would be deciding something
+    that was never asked.
+    """
+
+
+class UnknownUser(ValueError):
+    """A user-scoped write matched no row (GOV-1674).
+
+    ``UPDATE ... WHERE user_id = ?`` against a nonexistent id affects zero rows
+    and returns normally, so a caller that believed it had set a credential got
+    no signal at all. On a security-relevant write, silence is the wrong answer.
+    """
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -63,10 +90,17 @@ def create_user(conn: sqlite3.Connection, *, email: str,
 
     Returns the new ``user_id``. Signup always lands on the waitlist
     (GATED_BETA_ACCESS_WORKFLOW): approval is a separate owner decision.
+
+    ``password=None`` is the passwordless posture and stores ``NULL``.
+    ``password=""`` is refused (:class:`InvalidPassword`) rather than quietly
+    coerced to ``NULL`` — a caller that passed the wrong thing should learn
+    that, not get a silently different account than it asked for.
     """
     norm = normalize_email(email)
     if not norm or "@" not in norm:
         raise ValueError("invalid email")
+    if password is not None and not password:
+        raise InvalidPassword("password must be non-empty; pass None for passwordless")
     user_id = str(uuid.uuid4())
     now = _utcnow()
     try:
@@ -164,8 +198,25 @@ def pause(conn: sqlite3.Connection, user_id: str, *, owner_decision_ref: str,
 # --- passwords + login (INV-7, D2) --------------------------------------------
 
 def set_password(conn: sqlite3.Connection, user_id: str, password: str) -> None:
-    conn.execute("UPDATE users SET password_hash = ? WHERE user_id = ?",
-                 (_HASHER.hash(password), user_id))
+    """Set a user's password. The ONLY exit from the passwordless posture.
+
+    Fail-closed on both arguments (GOV-1674):
+
+    * empty ``password`` → :class:`InvalidPassword`. This function is what turns
+      a ``NULL``-hash row that ``login`` always refuses into a row ``login``
+      accepts, so an empty value here mints a trivially reachable account.
+      ``None`` is refused for the same reason — un-setting a password is not
+      this function's job.
+    * ``user_id`` matching no row → :class:`UnknownUser`, instead of the silent
+      zero-row ``UPDATE`` that previously returned as if it had succeeded.
+    """
+    if not password:
+        raise InvalidPassword("password must be non-empty")
+    cur = conn.execute("UPDATE users SET password_hash = ? WHERE user_id = ?",
+                       (_HASHER.hash(password), user_id))
+    if cur.rowcount != 1:
+        conn.rollback()
+        raise UnknownUser(user_id)
     conn.commit()
 
 
