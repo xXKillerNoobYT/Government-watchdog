@@ -2,7 +2,8 @@
 
 ## 0. Document control
 
-**Status:** as-built, written 2026-07-31 (GOV-1679, AUTO GO C1 for area `data-model`).
+**Status:** as-built, written 2026-07-31 (GOV-1679, AUTO GO C1 for area `data-model`);
+**INV-8 added 2026-07-31 (GOV-1684, C9)**.
 Every claim below was measured against `main` @ `f4da543` before it was written; where a
 claim is checkable, the check is named. **This is a description of what IS, not a proposal.**
 
@@ -166,6 +167,44 @@ cleverer splitter breaks every database build at once. A simple, obviously-corre
 an enforced precondition is the smaller system. If someone does harden it later, delete this
 invariant and both its tests rather than keeping two mechanisms.
 
+### INV-8 — Unindexed foreign keys are safe only because nothing deletes
+
+SQLite auto-indexes a `UNIQUE` constraint (`sqlite_autoindex_*`) but gives a `REFERENCES`
+clause **nothing**. An unindexed FK child column makes every parent `DELETE` — and every
+`ON DELETE CASCADE` — full-scan the child table, silently, getting slower as data grows.
+
+**Measured 2026-07-31: 22 of 70 FK child columns are unindexed.** That number looks alarming
+and is currently **free**, because the data model is append-only in practice: all of `scripts/`
+contains **one** `DELETE FROM`, against `supplied_file_links`, which is not a parent of any
+unindexed FK.
+
+**So the answer is not "add 22 indexes."** Each one costs write amplification and another
+schema object, to solve a problem no code has — the same trap `CLAUDE.md` records for
+`CREATE INDEX` grepping. What is worth pinning is the *precondition that makes the absence
+safe*, exactly the call INV-7 makes about the splitter: **guard the corpus, do not harden the
+code.** `test_no_shipped_delete_targets_a_parent_with_unindexed_children` fails the moment
+someone adds the first `DELETE FROM` against a table other rows point at.
+
+**The four `ON DELETE CASCADE` edges get the stricter rule**, because a CASCADE is a delete the
+schema *designs* to happen — "nothing deletes today" is the one argument a CASCADE refuses.
+Three are indexed. The fourth is not:
+
+| CASCADE edge | Indexed? |
+|---|---|
+| `meeting_documents.meeting_id` → `meetings` | yes |
+| `agenda_items.meeting_id` → `meetings` | yes |
+| `transcript_segments.transcript_id` → `transcripts` | yes |
+| **`meeting_documents.document_id` → `documents`** | **no** |
+
+Cost of deleting **one** `documents` row, measured: **0.65 ms** at 10k child rows, **5.00 ms**
+at 100k — linear — against **0.33 ms** with the index. It is **allowlisted by name** in
+`_KNOWN_UNINDEXED_CASCADES` rather than omitted, because an allowlist you can read is a known
+gap and an absent assertion is an unknown one. The guard fails in *both* directions: a new
+unindexed CASCADE, and a stale entry left behind after one is fixed.
+
+**Blocked on the 0032 slot collision** — the index needs a migration, and so does [#217]. Both
+should land in the same one.
+
 ---
 
 ## 3. Adding a migration — the checklist this contract exists to make followable
@@ -189,6 +228,9 @@ invariant and both its tests rather than keeping two mechanisms.
 - **`email_outbox` has no index at all**, so its pending sweep is a full scan plus a temp sort —
   14.16 ms at 100k rows against 0.01 ms indexed, measured, on a sweep finding *zero* pending
   rows. Blocked on the 0032 collision ([#217]).
+- **`meeting_documents.document_id` is an unindexed `ON DELETE CASCADE`** — 5.00 ms per
+  cascading delete at 100k rows vs 0.33 ms indexed (INV-8). Allowlisted, not hidden; blocked
+  on the same 0032 collision as the `email_outbox` index.
 - **No down-migrations exist**, by construction. Rollback is restore-from-backup (DEPLOY-2026
   §5), not schema reversal. Stated so nobody goes looking for a `down()`.
 - **`schema_migrations` records the filename stem**, so renaming a merged migration file makes
