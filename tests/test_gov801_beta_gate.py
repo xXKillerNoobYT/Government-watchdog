@@ -422,3 +422,58 @@ def test_no_cookie_is_lax_or_missing_samesite():
         assert "SameSite=Lax" not in cookie
     source = inspect.getsource(http_api)
     assert "SameSite=Lax" not in source
+
+
+# --- C1b drift guard: the audit event enum exists twice (GOV-1664, #193) -----
+
+def _schema_audit_events(conn) -> set[str]:
+    """The event names the LIVE schema accepts, parsed from its own DDL.
+
+    Read from ``sqlite_master`` rather than from the migration file on disk: it
+    pins what the database actually enforces, which is what ``audit.record``
+    collides with. A migration file can be superseded, renamed or shadowed by a
+    later ALTER and this still tracks reality.
+    """
+    ddl = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'beta_audit_log'").fetchone()[0]
+    check = re.search(r"CHECK\s*\(\s*event\s+IN\s*\((.*?)\)\s*\)", ddl,
+                      re.DOTALL | re.IGNORECASE)
+    assert check, f"no CHECK(event IN (...)) found in beta_audit_log DDL:\n{ddl}"
+    return set(re.findall(r"'([^']+)'", check.group(1)))
+
+
+def test_audit_events_match_the_schema_enum(conn):
+    """``audit.EVENTS`` and the ``beta_audit_log`` CHECK enum are one list, twice.
+
+    They are hand-maintained in two places (#193) and the failure is asymmetric.
+    A name in Python that SQL rejects raises ``sqlite3.IntegrityError`` from
+    inside :func:`audit.record` — which runs on the *failure* branches of sign-in
+    (``service.py`` request/rate-limit/reject paths), i.e. a crash in the audit
+    trail of an access gate, on the paths that execute when something is already
+    going wrong. And because the log is append-only with no update path, a write
+    lost that way is not recoverable later.
+    """
+    assert audit.EVENTS == _schema_audit_events(conn)
+
+
+def test_every_declared_audit_event_is_actually_insertable(conn):
+    """Set equality is necessary but not sufficient — prove each name INSERTs.
+
+    Equality would still pass if both sides drifted identically, or if the CHECK
+    were parsed correctly but semantically unenforced. This writes one row per
+    declared event and lets the database be the judge.
+    """
+    for event in sorted(audit.EVENTS):
+        audit.record(conn, event=event, email="drift@example.com",
+                     ip_hint=None, detail="c1b-drift-guard")
+    written = {r["event"] for r in conn.execute(
+        "SELECT DISTINCT event FROM beta_audit_log")}
+    assert written == audit.EVENTS
+
+
+def test_an_event_outside_the_enum_is_refused_before_sql(conn):
+    """The Python guard fires first, so SQL never sees an unknown name."""
+    with pytest.raises(audit.UnknownAuditEvent):
+        audit.record(conn, event="magic_link_teleported", email="x@example.com")
+    assert conn.execute("SELECT COUNT(*) FROM beta_audit_log").fetchone()[0] == 0
