@@ -202,3 +202,56 @@ def test_free_form_bodies_are_not_a_thing(conn):
     uid, _ = _consented_user(conn)
     with pytest.raises(templates.UnknownTemplate):
         outbox.queue_email(conn, user_id=uid, template_id="totally-custom")
+
+
+# --- GOV-1673 (C1b): INV-5's "no env var is authoritative" half --------------
+
+def test_env_var_cannot_override_the_database_flag(conn, monkeypatch):
+    """D1/INV-5: `ENABLE_EMAIL_ADAPTER` was dropped ENTIRELY, not deprecated.
+
+    The flag tests prove the DB row decides correctly. None of them proves an
+    env var CANNOT decide instead — so re-introducing the override would leave
+    the suite green while reversing an explicit CTO decision: *one source of
+    truth; an env var cannot carry who/when/which-card.*
+
+    With no flag row and a real adapter registered, the env var set to every
+    plausible truthy spelling must still resolve to the null adapter.
+    """
+    adapters.register_adapter("envtest", RecordingAdapter)
+    try:
+        for value in ("1", "true", "TRUE", "yes", "on"):
+            monkeypatch.setenv("ENABLE_EMAIL_ADAPTER", value)
+            resolved = adapters.resolve_adapter(conn)
+            assert isinstance(resolved, adapters.NullAdapter), (
+                f"ENABLE_EMAIL_ADAPTER={value!r} reached the resolver")
+    finally:
+        adapters.unregister_adapter("envtest")
+
+
+def test_no_module_reads_the_dropped_env_var():
+    """The source half: nothing may READ it, even inertly.
+
+    A read that currently changes no behaviour is how the override comes back —
+    the next edit wires it to something. Matched only where the name appears
+    alongside an environment lookup, so `email_gateway/__init__.py`'s docstring
+    (which states the variable is dropped) does not trip the guard it describes.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+    reader = re.compile(r"(os\.environ|getenv|environ\.get)[^\n]*ENABLE_EMAIL_ADAPTER"
+                        r"|ENABLE_EMAIL_ADAPTER[^\n]*(os\.environ|getenv|environ\.get)")
+
+    offenders = [str(m.relative_to(root)) for m in sorted(root.rglob("*.py"))
+                 if reader.search(m.read_text(encoding="utf-8"))]
+    assert offenders == [], offenders
+
+    # Non-vacuous: the name must still be PRESENT somewhere (the docstring that
+    # records the decision), so deleting all mention of it fails instead of
+    # silently making this guard meaningless.
+    mentioned = [m for m in root.rglob("*.py")
+                 if "ENABLE_EMAIL_ADAPTER" in m.read_text(encoding="utf-8")]
+    assert mentioned, ("no module mentions ENABLE_EMAIL_ADAPTER any more — if D1 "
+                       "was reversed, update INV-5 and delete this test rather "
+                       "than leaving it to pass vacuously")

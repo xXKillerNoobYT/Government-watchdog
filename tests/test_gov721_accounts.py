@@ -163,3 +163,38 @@ def test_access_revoke_kills_all_live_sessions(conn):
     service.revoke(conn, uid, owner_decision_ref="card-b")
     assert sessions.verify_session(conn, t1) is None
     assert sessions.verify_session(conn, t2) is None
+
+
+# --- GOV-1673 (C1b): INV-4's SECOND half — append-only as a code property ----
+
+def test_no_code_path_updates_or_deletes_access_grants():
+    """INV-4 says `access_grants` IS append-only, not merely that it accumulates.
+
+    `test_decisions_append_rows_and_latest_wins` proves rows survive when the
+    SERVICE API is used. It cannot fail on a convenience helper added later —
+    a `correct_grant()` doing an UPDATE would pass it while destroying the audit
+    trail the tier resolution depends on. INV-4 is the reason
+    `current_tier` can trust "latest row wins"; if a row can be rewritten, the
+    history stops being evidence.
+
+    Swept across the whole `scripts/` tree, not just `accounts/`: the table is
+    read from seven files, and a helper in any of them breaks the invariant
+    equally. Matched on the SQL verb ADJACENT to the table name — prose and
+    docstrings that merely mention the rule must not trip it (learned three
+    times over: GOV-1665, GOV-1667, GOV-1672).
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+    offenders = []
+    for module in sorted(root.rglob("*.py")):
+        text = module.read_text(encoding="utf-8").upper()
+        for verb in ("UPDATE ACCESS_GRANTS", "DELETE FROM ACCESS_GRANTS"):
+            if verb in text:
+                offenders.append(f"{module.relative_to(root)}: {verb}")
+    assert offenders == [], offenders
+
+    # ...and the append path is still present, so this cannot pass vacuously
+    # by the table having been renamed out from under the sweep.
+    service_src = (root / "accounts" / "service.py").read_text(encoding="utf-8")
+    assert "INSERT INTO access_grants" in service_src
