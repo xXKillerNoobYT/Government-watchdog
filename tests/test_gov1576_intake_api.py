@@ -563,3 +563,20 @@ def test_live_malformed_content_length_still_gets_an_answer(db_path, conn, value
         thread.join(timeout=5)
         server.server_close()
 
+
+
+def test_intake_handler_has_a_finite_connection_timeout(db_path):
+    """GOV-1669: the upload surface must not hold a connection forever either.
+
+    ``intake_api`` is deliberately still single-threaded — its handler closes
+    over a ``RawObjectStore`` whose ``_append_link`` appends to a shared ledger
+    file, and that is not established as thread-safe (#206). That makes the
+    finite timeout MORE important here, not less: with one worker, an untimed
+    connection is the whole surface.
+
+    Added because the red proof for GOV-1669 caught that this constant had no
+    test — reverting it to the ``None`` default changed nothing observable.
+    """
+    handler = intake_api.make_handler(db_path)
+    assert handler.timeout is not None
+    assert 0 < handler.timeout <= 300

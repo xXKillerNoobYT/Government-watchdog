@@ -11,6 +11,8 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import pathlib
+import time
 import threading
 
 import pytest
@@ -795,3 +797,62 @@ def test_audit_row_carries_the_pseudonym_not_the_address(conn):
     assert "@" not in row["email_hash"]
     assert row["ip_hint"] == common.ip_hint("203.0.113.9")
     assert "203.0.113.9" not in (row["ip_hint"] or "")
+
+
+def db_path_for_thread_test():
+    """A migrated DB with the gate ON, outside the fixture (needs no cleanup)."""
+    import tempfile
+    path = pathlib.Path(tempfile.mkdtemp()) / "gov1669.db"
+    db.apply_migrations(path)
+    conn = db.open_db(path)
+    flags.set_flag(conn, http_api.BETA_GATE_FLAG, enabled=True,
+                   owner_decision_ref="test-card-gov1669")
+    conn.close()
+    return path
+
+
+# --- GOV-1669 (C9 hunt): one stalled client must not take the gate down -----
+
+def test_handler_has_a_finite_connection_timeout():
+    """BaseHTTPRequestHandler.timeout defaults to None, which means NEVER.
+
+    socketserver only calls ``settimeout`` when this is not None, so leaving the
+    default lets one connection hold the handler forever.
+    """
+    handler = http_api.make_handler(pathlib.Path("/nonexistent.db"))
+    assert handler.timeout is not None
+    assert 0 < handler.timeout <= 120
+
+
+def test_front_door_is_threaded_so_one_client_cannot_block_the_rest():
+    """The measured defect, as a test: a stalled client must not block others.
+
+    Before GOV-1669 this surface was a plain single-threaded ``HTTPServer``.
+    Measured then: baseline 200 in 0.004 s; with ONE client that sent 7 bytes of
+    a promised 100, a second client got nothing and timed out at 6 s. Here the
+    second client must still be served while the first is deliberately stuck.
+    """
+    import socket
+
+    server = http_api.serve(db_path_for_thread_test(), port=0)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    stalled = socket.create_connection(("127.0.0.1", port))
+    try:
+        stalled.sendall(
+            b"POST /api/beta/waitlist HTTP/1.1\r\nHost: t\r\n"
+            b"Content-Length: 100\r\n\r\npartial")   # 7 of 100, then silence
+        time.sleep(0.3)
+
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        client.request("GET", "/api/beta/nope")
+        response = client.getresponse()
+        response.read()
+        client.close()
+        assert response.status == 404      # served WHILE the other is stuck
+    finally:
+        stalled.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

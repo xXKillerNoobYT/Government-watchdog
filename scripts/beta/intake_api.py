@@ -76,6 +76,11 @@ ALLOWED_MIMES = frozenset({
 #: this bounds memory and the raw store. Over-size is a 413, not a silent trim.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
+#: Seconds one connection may hold the handler. See http_api's constant for the
+#: measurement. Larger here because this surface accepts real uploads; still
+#: finite, which is the whole point — the default is None, i.e. never.
+REQUEST_TIMEOUT_SECONDS = 60
+
 #: Base64 inflates ~4/3 and rides inside a JSON envelope; cap the raw request a
 #: little above that so an over-size body is refused at the socket, never buffered.
 _READ_CAP = MAX_UPLOAD_BYTES * 2 + 8192
@@ -326,6 +331,9 @@ def make_handler(db_path: Path):
     known_bad = load_known_bad()
 
     class Handler(BaseHTTPRequestHandler):
+        #: socketserver applies this to the connection when it is not None.
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def log_message(self, *args):  # silence default stderr spam
             pass
 
