@@ -206,8 +206,13 @@ decision core) and [#133](https://github.com/xXKillerNoobYT/Government-watchdog/
 2. **The waitlist is not an admission path.** `beta_waitlist` rows grant nothing; only
    `allowlist.add` admits. Two separate waitlists exist across the lanes
    (`beta_waitlist` and `waitlist_requests`) with no reconciliation between them.
-3. **`allowlist.add` overwrites `note` on re-add** — tracked as
-   [#185](https://github.com/xXKillerNoobYT/Government-watchdog/issues/185).
+3. ~~**`allowlist.add` overwrites `note` on re-add**~~ — **RESOLVED 2026-07-31 (GOV-1666,
+   [#185](https://github.com/xXKillerNoobYT/Government-watchdog/issues/185)).** `note` is now
+   three-state: `None` (the CLI default when `--note` is omitted) leaves the stored note
+   unchanged, a string replaces it, and `""` clears it deliberately. The failure modes are
+   not symmetric — a note surviving when the owner meant to drop it is visible and fixable;
+   a note silently erased on re-invite is unrecoverable and unaudited, since
+   `allowlist_added` records `owner_decision_ref` and never the note.
 4. **Duplicate cookie names resolve last-wins** on the beta and intake surfaces — tracked
    as [#182](https://github.com/xXKillerNoobYT/Government-watchdog/issues/182).
 

@@ -633,3 +633,58 @@ def test_no_email_leaves_the_machine_while_the_adapter_flag_is_off(conn):
         assert sink == [], f"email escaped with the adapter flag OFF: {sink}"
     finally:
         adapters.unregister_adapter("capture-off")
+
+
+# --- #185: re-adding without a note must not destroy it (GOV-1666) ----------
+
+def test_readd_without_note_preserves_the_existing_note(conn):
+    """The real owner workflow: allow --note ... / revoke / allow (no --note).
+
+    `--note` is optional on the CLI, so the third command carries None. Before
+    GOV-1666 that NULL overwrote the stored note — silently, with no audit of
+    the erasure, since `allowlist_added` records only `owner_decision_ref`.
+    """
+    allowlist.add(conn, "note@example.com", owner_decision_ref="GOV-784",
+                  note="pilot reviewer, Alpine")
+    allowlist.revoke(conn, "note@example.com", owner_decision_ref="GOV-900")
+
+    allowlist.add(conn, "note@example.com", owner_decision_ref="GOV-901")
+
+    row = conn.execute("SELECT note, status, owner_decision_ref FROM"
+                       " beta_allowlist WHERE email = ?",
+                       ("note@example.com",)).fetchone()
+    assert row["note"] == "pilot reviewer, Alpine"
+    assert row["status"] == "active"          # re-activation still works
+    assert row["owner_decision_ref"] == "GOV-901"  # ...and the ref DOES update
+
+
+def test_readd_with_a_new_note_replaces_it(conn):
+    allowlist.add(conn, "note2@example.com", owner_decision_ref="GOV-784",
+                  note="first")
+    allowlist.add(conn, "note2@example.com", owner_decision_ref="GOV-901",
+                  note="second")
+
+    row = conn.execute("SELECT note FROM beta_allowlist WHERE email = ?",
+                       ("note2@example.com",)).fetchone()
+    assert row["note"] == "second"
+
+
+def test_empty_string_note_clears_it_deliberately(conn):
+    """Erasing stays possible — it just has to be asked for."""
+    allowlist.add(conn, "note3@example.com", owner_decision_ref="GOV-784",
+                  note="to be removed")
+    allowlist.add(conn, "note3@example.com", owner_decision_ref="GOV-901",
+                  note="")
+
+    row = conn.execute("SELECT note FROM beta_allowlist WHERE email = ?",
+                       ("note3@example.com",)).fetchone()
+    assert row["note"] == ""
+
+
+def test_first_add_without_a_note_stores_null(conn):
+    """COALESCE must not invent a value when there is no prior row."""
+    allowlist.add(conn, "note4@example.com", owner_decision_ref="GOV-784")
+
+    row = conn.execute("SELECT note FROM beta_allowlist WHERE email = ?",
+                       ("note4@example.com",)).fetchone()
+    assert row["note"] is None

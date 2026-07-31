@@ -26,6 +26,19 @@ def add(conn: sqlite3.Connection, email: str, *, owner_decision_ref: str,
 
     Idempotent by email: a repeat add re-activates a previously revoked row and
     clears ``revoked_utc`` (an owner re-inviting someone).
+
+    ``note`` follows three-state semantics (GOV-1666, resolves #185):
+
+    * ``None`` (the CLI default when ``--note`` is omitted) — **leave the stored
+      note unchanged.** A re-invite that says nothing about the note is not a
+      statement that the note should be destroyed.
+    * a string — replace the stored note with it.
+    * ``""`` — clear it. Erasing stays possible, but only on purpose.
+
+    Chosen over full-upsert because the two failure modes are not symmetric: a
+    note that survives when the owner meant to drop it is visible and fixable,
+    while a note silently erased on re-invite is unrecoverable and unaudited —
+    ``allowlist_added`` records ``owner_decision_ref``, never the note.
     """
     if not owner_decision_ref:
         raise OwnerlessAllowlistChange(email)
@@ -39,7 +52,9 @@ def add(conn: sqlite3.Connection, email: str, *, owner_decision_ref: str,
         " ON CONFLICT(email) DO UPDATE SET status = 'active',"
         " owner_decision_ref = excluded.owner_decision_ref,"
         " added_utc = excluded.added_utc, revoked_utc = NULL,"
-        " note = excluded.note",
+        # COALESCE, not excluded.note: a NULL means "unspecified", so the
+        # stored note survives. Passing "" still clears it (#185).
+        " note = COALESCE(excluded.note, beta_allowlist.note)",
         (norm, owner_decision_ref, now, note),
     )
     conn.commit()
