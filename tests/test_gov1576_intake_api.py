@@ -471,3 +471,95 @@ def test_live_content_length_cap_is_413(db_path, conn, monkeypatch):
     finally:
         t.join(timeout=5)
         server.server_close()
+
+
+# --- GOV-1667 (C7b hunt): malformed Content-Length is unusable, not fatal ----
+
+def test_parse_content_length_rejects_unusable_values():
+    """The unit of the fix. Absent/empty -> 0; negative and non-numeric -> None.
+
+    Both rejected cases were live and both were reachable BEFORE any gate or
+    auth check, because the handler reads this header first.
+    """
+    from beta import common
+
+    assert common.parse_content_length(None) == 0
+    assert common.parse_content_length("") == 0
+    assert common.parse_content_length("0") == 0
+    assert common.parse_content_length("42") == 42
+
+    assert common.parse_content_length("-1") is None      # skipped the cap
+    assert common.parse_content_length("abc") is None     # raised ValueError
+    assert common.parse_content_length("1.5") is None
+    assert common.parse_content_length(" ") is None
+    assert common.parse_content_length("0x10") is None
+
+
+def test_negative_content_length_no_longer_bypasses_the_size_cap():
+    """`-1` must not be treated as 'small enough to read'.
+
+    Measured before the fix: a positive over-cap value returned 413 while `-1`
+    returned 401 — i.e. it slipped past `length > _READ_CAP` (nothing is greater
+    than -1) and reached `rfile.read(-1)`, which reads until EOF. The cap it was
+    meant to enforce simply did not apply.
+    """
+    from beta import common
+
+    assert common.parse_content_length("-1") is None
+    assert common.parse_content_length(str(-(intake_api.MAX_UPLOAD_BYTES))) is None
+    # ...and a positive over-cap value is still recognised as a number, so the
+    # handler can answer 413 rather than silently ignoring it.
+    over = intake_api._READ_CAP + 1
+    assert common.parse_content_length(str(over)) == over
+
+
+def _raw_post_status(port: int, content_length: str, body: bytes = b"x" * 64) -> str:
+    """Hand-built request with an arbitrary Content-Length; returns the status line.
+
+    http.client refuses to send a malformed Content-Length, so the socket is
+    driven directly — the point is precisely what a hostile client can put on
+    the wire.
+    """
+    import socket
+
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        sock.sendall(
+            (f"POST {intake_api.INTAKE_UPLOAD_ROUTE} HTTP/1.1\r\nHost: t\r\n"
+             f"Content-Length: {content_length}\r\n\r\n").encode() + body)
+        sock.shutdown(socket.SHUT_WR)
+        data = sock.recv(200)
+    finally:
+        sock.close()
+    return data.split(b"\r\n")[0].decode(errors="replace") if data else "<NO RESPONSE>"
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "1.5", " ", "0x10", "99999999999999999999999"])
+def test_live_malformed_content_length_still_gets_an_answer(db_path, conn, value):
+    """End-to-end: a caller-supplied header must never kill the handler.
+
+    Before GOV-1667, ``Content-Length: abc`` raised ValueError inside do_POST
+    and the client got **<NO RESPONSE>** plus a traceback on stderr — reachable
+    with no cookie and no gate, since the header is read first. ``-1`` was worse
+    than noisy: it slipped past ``length > _READ_CAP`` (nothing is greater than
+    -1) into ``rfile.read(-1)``, which reads until EOF, so the size cap did not
+    apply at all.
+
+    The assertion is deliberately weak on WHICH status comes back — the property
+    under test is that the process answers rather than dropping the connection.
+    ``test_live_content_length_cap_is_413`` already pins that a *positive*
+    over-cap value still gets 413, so this cannot pass by disarming the cap.
+    """
+    _enable_gate(conn)
+    conn.close()
+    server = intake_api.serve(db_path, host="127.0.0.1", port=0)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        status = _raw_post_status(port, value)
+        assert status.startswith("HTTP/"), f"Content-Length: {value!r} -> {status}"
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
