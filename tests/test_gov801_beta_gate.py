@@ -477,3 +477,159 @@ def test_an_event_outside_the_enum_is_refused_before_sql(conn):
     with pytest.raises(audit.UnknownAuditEvent):
         audit.record(conn, event="magic_link_teleported", email="x@example.com")
     assert conn.execute("SELECT COUNT(*) FROM beta_audit_log").fetchone()[0] == 0
+
+
+# --- C1b: pin the contract's unpinned invariants (GOV-1665) ------------------
+#
+# Docs/gov801-access-gate-contract.md §5 states eight numbered invariants. The
+# C1b drift sweep on 2026-07-31 mapped each to the suite and found FOUR with no
+# test behind them: INV-1, INV-3's schema half, INV-6's second half, and INV-8.
+# They all hold in the code today — this pins them so they keep holding.
+
+#: Every key any /api/beta/* body is allowed to contain. Deliberately tiny: the
+#: surface answers with fixed status constants, never with data.
+ALLOWED_BODY_KEYS = {"status", "error"}
+
+#: The full dispatch table, so INV-1 is checked EXHAUSTIVELY rather than route
+#: by route. A route added later is covered the moment it is added here — and if
+#: someone adds a route and forgets, `test_dispatch_table_covers_every_route`
+#: below fails, so the omission cannot pass silently either.
+ALL_BETA_REQUESTS = [
+    ("POST", service.MAGIC_LINK_REQUEST_ROUTE, b'{"email":"inv@example.com"}'),
+    ("POST", service.MAGIC_LINK_REQUEST_ROUTE, b"not json"),
+    ("GET", service.MAGIC_LINK_VERIFY_ROUTE + "?token=nope", b""),
+    ("POST", service.MAGIC_LINK_CONSUME_ROUTE, b'{"email":"inv@example.com","code":"000000"}'),
+    ("POST", service.MAGIC_LINK_CONSUME_ROUTE, b"{}"),
+    ("POST", service.WAITLIST_ROUTE, b'{"email":"inv@example.com"}'),
+    ("DELETE", service.SESSION_CURRENT_ROUTE, b""),
+    ("GET", "/api/beta/does-not-exist", b""),
+]
+
+
+def test_no_beta_route_body_can_carry_civic_data(conn):
+    """INV-1, exhaustively: every /api/beta/* body is a fixed status constant.
+
+    The area's headline promise is that the front door serves ZERO civic data.
+    Existing tests assert specific routes return `BODY_OK`, which is a weaker
+    claim: a route added tomorrow that returned a record would satisfy all of
+    them. This walks the whole dispatch table and asserts every body's key set
+    is a subset of {status, error} — so a body carrying a record, an email, or
+    an allowlist flag fails regardless of which route grew it.
+    """
+    _enable_gate(conn)
+    allowlist.add(conn, "inv@example.com", owner_decision_ref="GOV-1665")
+
+    for method, path, raw in ALL_BETA_REQUESTS:
+        status, body, _headers = http_api.process_request(
+            conn, method=method, path=path, raw_body=raw)
+        assert isinstance(body, dict), f"{method} {path} returned {type(body)}"
+        assert set(body) <= ALLOWED_BODY_KEYS, (
+            f"{method} {path} -> {status} leaked non-status keys: "
+            f"{sorted(set(body) - ALLOWED_BODY_KEYS)}")
+        for value in body.values():
+            assert isinstance(value, str) and len(value) <= 32, (
+                f"{method} {path} -> {status} body value looks like data, "
+                f"not a status constant: {value!r}")
+
+
+def test_dispatch_table_covers_every_route(conn):
+    """INV-1's own guard: the table above must list every route the module serves.
+
+    Without this, INV-1 could silently stop being exhaustive — someone adds a
+    route to `service.py`, does not add it here, and the sweep above still
+    passes while covering less than it claims.
+    """
+    declared = {name: value for name, value in vars(service).items()
+                if name.endswith("_ROUTE")}
+    covered = {path.split("?")[0] for _m, path, _b in ALL_BETA_REQUESTS}
+    missing = {name: value for name, value in declared.items()
+               if value not in covered}
+    assert not missing, f"routes declared but not swept by INV-1: {missing}"
+
+
+def test_schema_refuses_an_ownerless_allowlist_row(conn):
+    """INV-3's SECOND half: the DB refuses it too, not just the service layer.
+
+    `test_allowlist_add_check_and_owner_gate` proves the Python guard raises.
+    The contract claims defence in depth — that `owner_decision_ref` is NOT NULL
+    in-schema as well — and that half was asserted nowhere. Written as a direct
+    INSERT so it bypasses the service guard entirely and lets the database
+    answer.
+    """
+    import sqlite3
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO beta_allowlist (email, status, owner_decision_ref,"
+            " added_utc) VALUES (?, 'active', NULL, ?)",
+            ("ownerless@example.com", common.iso(common.utcnow())))
+        conn.commit()
+    conn.rollback()
+    assert conn.execute("SELECT COUNT(*) FROM beta_allowlist").fetchone()[0] == 0
+
+
+def test_audit_module_has_no_update_or_delete_path(conn):
+    """INV-6's SECOND half: append-only is a property of the CODE, not a wish.
+
+    The 'no raw email/IP' half is tested; 'there is deliberately no update or
+    delete path' was not. Holding today by absence is exactly the kind of
+    property that a future convenience helper erases without anyone noticing,
+    so it is pinned by sweeping the module source — same idiom as the existing
+    SameSite sweep at the end of this file.
+    """
+    import pathlib
+
+    # Sweep the whole `beta` package, not just audit.py: the property is "no
+    # code writes to this table except by appending", and a helper added in a
+    # sibling module would break it just as thoroughly.
+    #
+    # Matched with the SQL keyword adjacent to the table name. An earlier
+    # version searched for bare "UPDATE " / "DELETE " and failed on audit.py's
+    # OWN DOCSTRING, which says "there is deliberately no update or delete
+    # path" — a prose sentence describing the guarantee tripped the guard that
+    # enforces it. Keyword+table adjacency cannot be triggered by prose.
+    package = pathlib.Path(audit.__file__).parent
+    offenders = []
+    for module in sorted(package.glob("*.py")):
+        text = module.read_text(encoding="utf-8").upper()
+        for verb in ("UPDATE BETA_AUDIT_LOG", "DELETE FROM BETA_AUDIT_LOG"):
+            if verb in text:
+                offenders.append(f"{module.name}: {verb}")
+    assert offenders == [], offenders
+
+    # And the append path itself is still there, so this cannot pass vacuously
+    # by the table having been renamed out from under the sweep.
+    assert "INSERT INTO BETA_AUDIT_LOG" in (
+        pathlib.Path(audit.__file__).read_text(encoding="utf-8").upper())
+
+
+def test_no_email_leaves_the_machine_while_the_adapter_flag_is_off(conn):
+    """INV-8: with the flag off, a registered real adapter is NOT reachable.
+
+    The `capture` fixture deliberately turns the flag ON so other tests can read
+    the magic-link body. That leaves the shipped state — flag OFF, null adapter,
+    nothing leaves the machine — untested. Here the capturer is registered
+    WITHOUT enabling the flag: `resolve_adapter` must still hand back the null
+    adapter, so the sink stays empty even on the happy path that would otherwise
+    send two emails.
+    """
+    sink: list[dict] = []
+
+    class _Capturing:
+        name = "capture-off"
+
+        def send(self, *, to_email, subject, body_text, body_html):
+            sink.append({"to": to_email})
+            return "should-never-happen"
+
+    adapters.register_adapter("capture-off", _Capturing)
+    try:
+        _enable_gate(conn)
+        allowlist.add(conn, "quiet@example.com", owner_decision_ref="GOV-1665")
+
+        service.request_magic_link(conn, "quiet@example.com")
+        service.join_waitlist(conn, "quiet@example.com")
+
+        assert sink == [], f"email escaped with the adapter flag OFF: {sink}"
+    finally:
+        adapters.unregister_adapter("capture-off")
