@@ -72,3 +72,47 @@ def test_leg2_added_no_new_migration():
             f"existing migration modified/deleted ({status}): {path}")
         assert name in MIGRATION_ALLOWLIST, (
             f"migration added without an allowlist entry: {path}")
+
+
+# --- GOV-1671 (C12): CLAUDE.md's frozen-surface list must not rot ------------
+
+def test_claude_md_lists_exactly_the_frozen_surfaces():
+    """The repo's CLAUDE.md names the four frozen surfaces; FROZEN defines them.
+
+    Two hand-maintained copies of one list — the same drift shape as the beta
+    audit enum (#193). The failure here is quieter than a crash: CLAUDE.md is
+    the first thing an agent reads, so a stale list sends someone to edit a
+    surface believing it is unfrozen, or to treat a newly frozen one as fair
+    game. Documentation that cannot be checked decays silently; this makes the
+    claim executable.
+    """
+    import re
+    from pathlib import Path
+
+    claude_md = Path(__file__).resolve().parents[1] / "CLAUDE.md"
+    assert claude_md.exists(), "repo-level CLAUDE.md is missing"
+    text = claude_md.read_text(encoding="utf-8")
+
+    section = text.split("Four serving surfaces are frozen", 1)
+    assert len(section) == 2, "CLAUDE.md no longer has the frozen-surfaces claim"
+    # Paths are written as `scripts/...` inline code; take them up to the
+    # sentence that follows the list.
+    listed = set(re.findall(r"`(scripts/[A-Za-z0-9_/.]+)`", section[1][:400]))
+
+    assert listed == set(FROZEN), (
+        f"CLAUDE.md and FROZEN disagree.\n"
+        f"  only in CLAUDE.md: {sorted(listed - set(FROZEN))}\n"
+        f"  only in FROZEN:    {sorted(set(FROZEN) - listed)}")
+
+
+def test_claude_md_states_the_required_python_version():
+    """3.12 is a hard requirement (PEP-701 nested f-strings), not a preference.
+
+    Pinned because an agent that installs 3.11 gets a confusing failure in
+    stage2_traceability.py rather than a clear version error.
+    """
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "3.12" in text
+    assert "PEP-701" in text or "nested f-string" in text
