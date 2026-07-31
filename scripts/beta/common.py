@@ -1,9 +1,13 @@
 """Shared helpers for the gated-beta front door (GOV-801).
 
 Central home for the two privacy primitives the whole package leans on:
-``email_hash`` (audit identity that is never the address) and ``ip_hint`` (a
-truncated, non-reversible sha256 — never a raw IP). Also the single source of
-``token_hash`` so every ``beta_*`` token surface stores exactly one shape.
+``email_hash`` and ``ip_hint``. Both are **stable pseudonyms, not confidentiality
+controls** — see their docstrings. Also the single source of ``token_hash`` so
+every ``beta_*`` token surface stores exactly one shape.
+
+CORRECTED 2026-07-31 (GOV-1668, C8 security hunt). This module previously
+described ``ip_hint`` as "non-reversible" and "too short to reverse to an
+address". Both claims were false, and the reasoning behind them was inverted.
 """
 
 from __future__ import annotations
@@ -12,8 +16,10 @@ import hashlib
 import secrets
 from datetime import datetime, timezone
 
-#: Truncated-sha256 length for ip_hint. Coarse on purpose: enough to bucket
-#: repeat callers for rate-limit forensics, too short to reverse to an address.
+#: Truncated-sha256 length for ip_hint. Enough to bucket repeat callers for
+#: rate-limit forensics. It does NOT make the value hard to reverse — see
+#: :func:`ip_hint`. Truncation buys ambiguity only when the input space is large
+#: enough to collide, and IPv4's is not.
 IP_HINT_LEN = 16
 
 #: Digits in the numeric sign-in code — the universal-link fallback (GOV-1538).
@@ -65,13 +71,43 @@ def new_numeric_code(digits: int = CODE_DIGITS) -> str:
 
 
 def email_hash(email: str | None) -> str | None:
-    """Audit-log identity: correlate a subject's events without storing them."""
+    """Audit-log identity: correlate a subject's events without storing the address.
+
+    **A stable pseudonym, not a confidentiality control.** The digest is
+    unsalted, so anyone holding a candidate address can confirm a match by
+    hashing it — and on this system the candidate list is not hypothetical: it
+    is ``beta_allowlist`` and ``beta_waitlist``, in the same database file. A
+    reader who can see the audit log can already see the addresses.
+
+    What it does buy, and what INV-6 actually rests on: the plaintext address
+    never enters ``beta_audit_log``, so the audit trail cannot be the *source*
+    of a leak, and a caller cannot push an address in by mistake. Strengthening
+    this to a keyed digest is #204 — it needs a key-management decision.
+    """
     norm = normalize_email(email)
     return sha256_hex(norm) if norm else None
 
 
 def ip_hint(ip: str | None) -> str | None:
-    """A truncated, non-reversible fingerprint of a client IP (or None)."""
+    """A stable pseudonym for a client IP — **reversible, and that is measured**.
+
+    Do not read this as anonymisation. Measured 2026-07-31 on this machine:
+    a specific address was recovered from its hint by enumerating a single /16
+    in **0.04 s**, and the entire IPv4 space (2**32) takes ~0.6 core-hours in
+    plain CPython — seconds on a GPU.
+
+    The old docstring claimed the 64-bit truncation made it "too short to
+    reverse", which has the reasoning backwards: truncation creates ambiguity
+    only when the input space is large enough to collide into it. Across all
+    2**32 IPv4 addresses the expected number of 64-bit collisions is ~0.5, so
+    the preimage is effectively unique. **The security parameter is the size of
+    the input domain, not the length of the digest**, and IPv4's domain is tiny.
+
+    What it is genuinely for: bucketing repeat callers for rate-limit forensics,
+    stably, without the raw address being what sits in the column. Keeping that
+    property honest is what :func:`ip_hint`'s tests pin. A keyed digest would
+    make it a real control; that decision is #204.
+    """
     if not ip:
         return None
     return sha256_hex(ip)[:IP_HINT_LEN]
