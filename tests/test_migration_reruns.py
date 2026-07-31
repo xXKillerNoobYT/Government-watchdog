@@ -399,3 +399,150 @@ def test_column_exists_resolves_only_a_real_table_name(tmp_path):
             "a malformed identifier raised or matched instead of answering False")
     finally:
         conn.close()
+
+
+# --- GOV-1684 (C9, data-model): unindexed foreign keys are a LATENT cost -------
+#
+# SQLite auto-indexes a UNIQUE constraint (`sqlite_autoindex_*`) but gives a
+# REFERENCES clause **nothing**. An unindexed FK child column makes every parent
+# DELETE (and every ON DELETE CASCADE) full-scan the child table.
+#
+# Measured 2026-07-31: **22 of 70** FK child columns are unindexed. That sounds
+# alarming and is currently **free**, because the data model is append-only in
+# practice — shipped code under `scripts/` contains exactly **one** `DELETE FROM`,
+# against `supplied_file_links`, which is not a parent of any unindexed FK.
+#
+# So the answer is NOT "add 22 indexes". Each index costs write amplification and
+# another schema object, to solve a problem no code has. What is worth pinning is
+# the **precondition that makes the absence safe** — the same call INV-7 makes
+# about the statement splitter: guard the corpus, do not harden the code.
+
+#: Directories whose `.py` files are shipped behaviour (tests may delete freely).
+_SHIPPED = (Path(__file__).resolve().parents[1] / "scripts",)
+_DELETE_FROM = re.compile(r"DELETE\s+FROM\s+[\"']?(\w+)", re.I)
+
+
+def _leftmost_indexed_columns(conn, table: str) -> set[str]:
+    """Columns that are the FIRST column of some index on ``table``.
+
+    Leftmost is the part that matters: an index on ``(a, b)`` serves a lookup on
+    ``a`` but not one on ``b``. ``PRAGMA index_list`` includes the autoindexes
+    SQLite creates for UNIQUE, which is exactly why this asks the schema rather
+    than grepping for `CREATE INDEX` — `CLAUDE.md` records that under-reporting
+    as a live trap.
+    """
+    out: set[str] = set()
+    for _, name, *_ in conn.execute(f"PRAGMA index_list('{table}')"):
+        info = conn.execute(f"PRAGMA index_info('{name}')").fetchall()
+        if info:
+            out.add(info[0][2])
+    return out
+
+
+def _unindexed_foreign_keys(conn) -> list[tuple[str, str, str, str]]:
+    """(child_table, child_column, parent_table, on_delete) for unindexed FKs."""
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        " AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+    found = []
+    for t in tables:
+        indexed = _leftmost_indexed_columns(conn, t)
+        for fk in conn.execute(f"PRAGMA foreign_key_list('{t}')"):
+            # (id, seq, table, from, to, on_update, on_delete, match) — the two
+            # action columns are ADJACENT, and taking the wrong one is silent.
+            _, _, parent, child_col, _, _on_update, on_del, *_ = fk
+            if child_col not in indexed:
+                found.append((t, child_col, parent, on_del))
+    return found
+
+
+def test_no_shipped_delete_targets_a_parent_with_unindexed_children(tmp_path):
+    """The precondition that makes 22 unindexed FKs safe: nothing deletes.
+
+    This is the guard that has teeth, because it fires on the change that turns
+    a latent cost into a real one — someone adding the first `DELETE FROM` against
+    a table other rows point at. At that moment the delete is O(child rows), the
+    author has no reason to suspect it, and **SQLite reports nothing**: the delete
+    simply gets slower as the child table grows.
+
+    It deliberately does NOT assert "zero unindexed FKs". That assertion would be
+    red today for 22 columns nobody needs indexed, and a guard that is red on
+    arrival gets suppressed rather than obeyed.
+    """
+    import db as db_mod
+
+    db_path = tmp_path / "fk-perf.db"
+    db_mod.apply_migrations(db_path)
+    conn = db_mod.open_db(db_path)
+    try:
+        risky = {}
+        for child_t, child_c, parent, _ in _unindexed_foreign_keys(conn):
+            risky.setdefault(parent, []).append(f"{child_t}.{child_c}")
+
+        offenders = []
+        for root in _SHIPPED:
+            for py in sorted(root.rglob("*.py")):
+                for target in set(_DELETE_FROM.findall(py.read_text(encoding="utf-8"))):
+                    if target in risky:
+                        rel = py.relative_to(root.parents[0])
+                        offenders.append(
+                            f"{rel} deletes from `{target}`, whose children "
+                            f"{sorted(risky[target])} have NO index on the "
+                            f"referencing column — that delete is O(child rows)")
+        assert not offenders, (
+            "A shipped DELETE now targets a table with unindexed foreign-key "
+            "children. Add an index on each referencing column in a new "
+            "migration (next free slot), or route the removal through a "
+            "soft-delete flag:\n  " + "\n  ".join(offenders))
+    finally:
+        conn.close()
+
+
+#: The one CASCADE edge whose child column is unindexed, with its blocker.
+#:
+#: Named rather than omitted: an allowlist you can read is a known gap, an
+#: absent assertion is an unknown one. Deleting this entry is the definition of
+#: done, and it cannot happen until the 0032 migration-slot collision clears
+#: (#199 vs #132) — the same blocker as the `email_outbox` index (#217).
+_KNOWN_UNINDEXED_CASCADES = {("meeting_documents", "document_id")}
+
+
+def test_every_on_delete_cascade_child_column_is_indexed(tmp_path):
+    """A CASCADE is a delete the SCHEMA designs to happen.
+
+    "Nothing deletes today" is the argument that makes the other 21 unindexed
+    FKs acceptable, and it is precisely the argument a CASCADE edge refuses:
+    the schema itself declares that deleting the parent deletes these children.
+    So the four CASCADE edges get the stricter rule.
+
+    Three of the four are already indexed. The fourth,
+    `meeting_documents.document_id`, is not — measured cost of deleting **one**
+    `documents` row: **5.00 ms** against 100k rows, versus **0.33 ms** with the
+    index, scaling linearly (0.65 ms at 10k). It is allowlisted above rather
+    than hidden, because the fix needs a migration slot that is currently
+    contested.
+    """
+    import db as db_mod
+
+    db_path = tmp_path / "cascade.db"
+    db_mod.apply_migrations(db_path)
+    conn = db_mod.open_db(db_path)
+    try:
+        gaps = {(t, c) for t, c, _, on_del in _unindexed_foreign_keys(conn)
+                if on_del.upper() == "CASCADE"}
+
+        new = gaps - _KNOWN_UNINDEXED_CASCADES
+        assert not new, (
+            "A new ON DELETE CASCADE has an unindexed referencing column: "
+            f"{sorted(new)}. The schema says this delete WILL happen, so the "
+            "'nothing deletes today' argument does not cover it — add "
+            "`CREATE INDEX IF NOT EXISTS ... ON <child>(<column>)` in the same "
+            "migration that adds the CASCADE.")
+
+        stale = _KNOWN_UNINDEXED_CASCADES - gaps
+        assert not stale, (
+            f"{sorted(stale)} is allowlisted as an unindexed CASCADE but is now "
+            "indexed. Delete the entry from _KNOWN_UNINDEXED_CASCADES — a stale "
+            "allowlist silently widens what the guard permits.")
+    finally:
+        conn.close()
