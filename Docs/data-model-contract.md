@@ -88,12 +88,34 @@ deliberately name `statements` would be silently repointed at the scratch table.
 comment records this. **These two `DROP TABLE`s are a rebuild, not data destruction** — do not
 read the grep hit as a destructive migration.
 
-### INV-5 — A migration run is all-or-nothing, not per-migration
+### INV-5 — A failed run is PARTIALLY applied, and INV-2 is what rescues it
 
-`apply_migrations` commits **once**, after the whole loop, inside a `with sqlite3.connect(...)`
-block that rolls back on exception. So a failure in migration 20 of 31 leaves the database
-untouched — there is no half-applied state to repair, and equally **no partial progress**: the
-run restarts from the beginning.
+> **CORRECTED 2026-07-31 (GOV-1680, C1b) — supersedes the original claim that a run is
+> "all-or-nothing".** That was written from code structure (`with sqlite3.connect(...)`, one
+> commit after the loop) and **never tested**. The test written to pin it disproved it.
+
+`apply_migrations` commits once after the loop, inside a `with` block that rolls back on
+exception — but **DDL is not covered by that rollback**. Python's `sqlite3` opens its implicit
+transaction before **DML only** (the same rule as INV-2's neighbourhood, and the one that caused
+GOV-1676's cohort race). `CREATE TABLE` is DDL, so it runs in **autocommit**.
+
+The boundary is precise, and measured — three good migrations then a deliberately broken one:
+
+| What | Outcome |
+|---|---|
+| `0001`'s tables (`documents`, `crawl_runs`, `meetings`, `embeddings`, …) | **survive** — DDL, no transaction open yet |
+| `0001`'s `INSERT INTO schema_migrations` | **opens** the transaction (DML) |
+| `0003`'s `sources`, and the broken migration's table | **rolled back** — inside the transaction |
+| `schema_migrations` rows | **0** |
+
+So a failed run leaves **the first migration's schema durably applied with an empty ledger**.
+The retry therefore re-runs `0001` — and that is safe **only because of INV-2**: every statement
+is `IF NOT EXISTS`. **INV-2 is not merely hygiene; it is what makes a failed run recoverable.**
+
+Consequences worth stating: do not rely on a failed run leaving a clean database, and do not
+"fix" this by moving the commit inside the loop — that would make *every* migration durable
+independently and produce genuinely half-applied schemas with a ledger that agrees. The current
+behaviour plus INV-2 is recoverable; that combination is the property to preserve.
 
 ### INV-6 — Four serving surfaces are byte-frozen, and they read this schema
 

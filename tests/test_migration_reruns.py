@@ -128,3 +128,133 @@ def test_foreign_keys_are_enabled_on_both_connection_paths():
         encoding="utf-8")
     assert db_src.count("PRAGMA foreign_keys = ON") >= 2, (
         "expected PRAGMA foreign_keys = ON in BOTH apply_migrations and open_db")
+
+
+# --- GOV-1680 (C1b): the three invariants C1 wrote but nothing pinned ----------
+#
+# C1b mapped `Docs/data-model-contract.md`'s six invariants to the suite and
+# found three with nothing behind them — INV-4, INV-5, INV-6. Notably the three
+# that WERE pinned are the ones written a day earlier alongside the contract;
+# the inherited ones had no guard at all. Same shape as access-gate's C1b, where
+# 4 of 8 invariants turned out to be assertions nobody could fail.
+
+#: A rebuild migration is one that DROPs a table it is replacing.
+_REBUILDS = [p for p in MIGRATIONS if "DROP TABLE" in p.read_text(encoding="utf-8")]
+
+
+def test_rebuild_migrations_pair_legacy_alter_table_on_and_off():
+    """INV-4. The pragma is load-bearing and silent when omitted.
+
+    SQLite cannot ALTER a CHECK, a foreign key, or a column type, so changing one
+    means: create `<t>_new`, copy, `DROP TABLE <t>`, `RENAME <t>_new TO <t>`.
+
+    With `legacy_alter_table` OFF (the default), the RENAME "helpfully" rewrites
+    `REFERENCES` clauses in **other** tables to follow the rename — so tables
+    that deliberately point at `statements` get silently repointed at the scratch
+    table. Nothing errors. `0009`'s own comment records this, and until now
+    nothing enforced it.
+    """
+    assert _REBUILDS, "no rebuild migrations found — has the corpus moved?"
+    bad = []
+    for path in _REBUILDS:
+        sql = path.read_text(encoding="utf-8")
+        if sql.count("PRAGMA legacy_alter_table = ON") < 1 or \
+           sql.count("PRAGMA legacy_alter_table = OFF") < 1:
+            bad.append(path.name)
+    assert not bad, (
+        f"{bad} DROP a table without pairing PRAGMA legacy_alter_table ON/OFF. "
+        "Without it the RENAME rewrites REFERENCES clauses in OTHER tables. "
+        "See Docs/data-model-contract.md INV-4.")
+
+
+def test_a_failed_run_is_partially_applied_and_recoverable(tmp_path, monkeypatch):
+    """INV-5, as MEASURED — this test disproved the contract's original claim.
+
+    The contract first said a run was "all-or-nothing", written from code
+    structure (`with sqlite3.connect(...)`, one commit after the loop) and never
+    tested. It is false: `sqlite3` opens its implicit transaction before **DML
+    only**, so `CREATE TABLE` runs in autocommit. The first migration's DDL lands
+    durably; the first `INSERT INTO schema_migrations` then opens the transaction,
+    and everything after it rolls back.
+
+    What this pins is the property that actually matters: a failed run is
+    **recoverable**, because the ledger is empty and INV-2 makes re-running the
+    already-applied migration a no-op. Moving the commit inside the loop would
+    break that — every migration would become independently durable and a genuine
+    half-applied schema (with a ledger agreeing) becomes possible.
+    """
+    import sqlite3
+
+    import db as db_mod
+
+    staging = tmp_path / "migrations"
+    staging.mkdir()
+    for src in MIGRATIONS[:3]:
+        (staging / src.name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    (staging / "9999_deliberately_broken.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS ok_before_the_error (id TEXT);\n"
+        "THIS IS NOT SQL;\n", encoding="utf-8")
+    monkeypatch.setattr(db_mod, "MIGRATIONS_DIR", staging)
+
+    db_path = tmp_path / "partial.db"
+    with pytest.raises(sqlite3.OperationalError):
+        db_mod.apply_migrations(db_path)
+
+    assert db_path.exists(), "no database file — the test proved nothing"
+    conn = sqlite3.connect(db_path)
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        ledger = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+    finally:
+        conn.close()
+
+    # The autocommitted half: 0001 ran before any transaction existed.
+    assert "documents" in names, (
+        "0001's DDL did not survive — if apply_migrations now wraps DDL in a "
+        "transaction the contract's INV-5 needs updating again, in the other "
+        "direction")
+    # The transactional half: everything after the first ledger INSERT rolled back.
+    assert "sources" not in names, "0003's table survived; the rollback boundary moved"
+    assert "ok_before_the_error" not in names, "the broken migration's table survived"
+    # The recovery property — this is the one worth protecting.
+    assert ledger == 0, (
+        f"schema_migrations has {ledger} rows after a failed run. An empty "
+        "ledger plus INV-2 is what makes the retry safe; a populated one would "
+        "make the retry SKIP migrations whose DDL was rolled back")
+
+
+#: Tables the byte-frozen serving surfaces read. Extracted once, listed here on
+#: purpose: two hand-maintained copies of one fact fail loudly, a derived list
+#: that silently returns nothing does not.
+FROZEN_SURFACE_TABLES = (
+    "agenda_items", "agenda_threads", "completeness_gaps", "concept_edges",
+    "evidence_links", "meetings", "speaker_attributions", "statements",
+    "topics", "transcript_segments", "transcripts",
+)
+
+
+def test_every_table_a_frozen_surface_reads_still_exists(tmp_path):
+    """INV-6. The frozen-surface guard freezes FILE BYTES, not the schema.
+
+    `test_frozen_surfaces_byte0_vs_origin_main` proves `read_api.py` and friends
+    have not changed. It cannot notice that a migration renamed a table they
+    SELECT from — the file is byte-identical and now broken. **And the surface
+    cannot be edited to adapt, because it is frozen**, so this class of breakage
+    has no cheap fix once shipped.
+    """
+    import db as db_mod
+
+    db_path = tmp_path / "frozen.db"
+    db_mod.apply_migrations(db_path)
+    conn = db_mod.open_db(db_path)
+    try:
+        present = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        conn.close()
+    missing = sorted(t for t in FROZEN_SURFACE_TABLES if t not in present)
+    assert not missing, (
+        f"tables {missing} are read by a BYTE-FROZEN serving surface but no "
+        "longer exist after migrations. The surface cannot be edited to adapt "
+        "(tests/test_deploy_frozen_surface.py). See data-model-contract INV-6.")
