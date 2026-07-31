@@ -121,7 +121,13 @@ token-invalidation step exists or is needed.
 - **INV-1** No `/api/beta/*` response body ever contains civic data. Bodies are fixed
   constants or redirects (`beta/http_api.py:102-163`).
 - **INV-2** With `beta_gate_enabled` absent or off, every request to the surface is `404`,
-  regardless of method, route or credential.
+  regardless of method, route or credential — **including an over-size one**. Verified
+  2026-07-31 (GOV-1670, [#203](https://github.com/xXKillerNoobYT/Government-watchdog/issues/203)):
+  the read caps on both surfaces used to answer `413` *at the socket*, before the flag was
+  consulted, so a disabled gate replied `404` to a normal request and `413` to an over-size
+  one — an existence signal to an unauthenticated prober. Both now pass an `oversize` flag
+  into `process_request` and answer it **after** the flag check, so the body is still never
+  buffered and the constant-`404` promise holds.
 - **INV-3** An allowlist mutation without an `owner_decision_ref` is impossible — rejected
   in code *and* by the schema.
 - **INV-4** A magic token or numeric code redeems at most once, enforced by conditional

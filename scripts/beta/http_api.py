@@ -117,7 +117,8 @@ def _json_body(raw_body: bytes) -> dict | None:
 def process_request(conn: sqlite3.Connection, *, method: str, path: str,
                     raw_body: bytes = b"", cookie_header: str | None = None,
                     ip_hint: str | None = None,
-                    verify_base_url: str = service.DEFAULT_VERIFY_BASE_URL
+                    verify_base_url: str = service.DEFAULT_VERIFY_BASE_URL,
+                    oversize: bool = False,
                     ) -> tuple[int, dict, dict]:
     """The unit-testable heart of the surface: ``(status, body, headers)``.
 
@@ -126,6 +127,11 @@ def process_request(conn: sqlite3.Connection, *, method: str, path: str,
     """
     if not flags.is_enabled(conn, BETA_GATE_FLAG):
         return 404, dict(BODY_404), {}
+    if oversize:
+        # After the flag, never before — see intake_api.process_request (#203).
+        # GOV-1667 added this cap and put its 413 at the socket, reproducing the
+        # very leak this loop filed one iteration later. Corrected here.
+        return 413, dict(BODY_413), {}
     route = urlsplit(path).path
 
     if method == "POST" and route == service.MAGIC_LINK_REQUEST_ROUTE:
@@ -190,12 +196,13 @@ def make_handler(db_path: Path, *,
             pass
 
         def _dispatch(self, method: str) -> None:
+            oversize = False
             length = common.parse_content_length(
                 self.headers.get("Content-Length"))
             if length is None:
                 raw = b""            # unusable header -> no body (see common)
             elif length > MAX_BODY_BYTES:
-                return self._send(413, dict(BODY_413))
+                oversize, raw = True, b""   # never buffer; the flag decides
             else:
                 raw = self.rfile.read(length) if length else b""
             # ip_hint is computed at the boundary — a raw IP never crosses into
@@ -207,7 +214,7 @@ def make_handler(db_path: Path, *,
                 status, payload, headers = process_request(
                     conn, method=method, path=self.path, raw_body=raw,
                     cookie_header=self.headers.get("Cookie"), ip_hint=ip_hint,
-                    verify_base_url=verify_base_url)
+                    verify_base_url=verify_base_url, oversize=oversize)
             finally:
                 conn.close()
             self._send(status, payload, headers)

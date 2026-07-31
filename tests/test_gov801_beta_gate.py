@@ -856,3 +856,27 @@ def test_front_door_is_threaded_so_one_client_cannot_block_the_rest():
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+# --- GOV-1670 (#203): the front door had the same leak, added by GOV-1667 ----
+
+def test_front_door_oversize_is_404_while_the_gate_is_off(conn):
+    """The cap GOV-1667 added put its 413 before the flag check — same leak.
+
+    Recorded plainly because this loop filed #203 against `intake_api` one
+    iteration AFTER introducing an identical instance here. Both are fixed
+    together.
+    """
+    status, body, _ = http_api.process_request(
+        conn, method="POST", path=service.WAITLIST_ROUTE, oversize=True)
+
+    assert (status, body) == (404, http_api.BODY_404)
+
+
+def test_front_door_oversize_is_413_once_the_gate_is_on(conn):
+    _enable_gate(conn)
+
+    status, body, _ = http_api.process_request(
+        conn, method="POST", path=service.WAITLIST_ROUTE, oversize=True)
+
+    assert (status, body) == (413, http_api.BODY_413)

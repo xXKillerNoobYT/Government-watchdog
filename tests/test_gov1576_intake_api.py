@@ -580,3 +580,35 @@ def test_intake_handler_has_a_finite_connection_timeout(db_path):
     handler = intake_api.make_handler(db_path)
     assert handler.timeout is not None
     assert 0 < handler.timeout <= 300
+
+
+# --- GOV-1670 (#203): INV-2 holds for over-size bodies too -------------------
+
+def test_oversize_body_is_404_while_the_gate_is_off(conn, store):
+    """INV-2: with the flag off, EVERY request is 404 — including an over-size one.
+
+    Before GOV-1670 the cap replied 413 at the socket, before the flag was
+    consulted. A prober therefore learned the difference: 404 for a normal
+    request, 413 for an over-size one — which is exactly the existence signal
+    INV-2 exists to withhold.
+    """
+    status, body, _ = intake_api.process_request(
+        conn, store, method="POST", path=intake_api.INTAKE_UPLOAD_ROUTE,
+        raw_body=b"", oversize=True)
+
+    assert (status, body) == (404, intake_api.BODY_404)
+
+
+def test_oversize_body_is_413_once_the_gate_is_on(conn, store):
+    """...and the cap still bites when the surface genuinely exists.
+
+    Pairs with the test above: moving the 413 after the flag check must not
+    turn it into a 404 for everyone.
+    """
+    _enable_gate(conn)
+
+    status, body, _ = intake_api.process_request(
+        conn, store, method="POST", path=intake_api.INTAKE_UPLOAD_ROUTE,
+        raw_body=b"", oversize=True)
+
+    assert (status, body) == (413, intake_api.BODY_413)
