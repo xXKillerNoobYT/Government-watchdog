@@ -460,18 +460,23 @@ def _format_report(report: dict[str, Any], db_path: Path) -> str:
     a = report["ai_provenance"]
     r = report["raw_preservation"]
     t = report["transport"]
+    grounding_status = "OK" if g["clean"] else f"BREAK ({len(g['orphans'])} orphan)"
+    confidence_status = "OK" if c["clean"] else f"DRIFT ({len(c['drift'])})"
+    speaker_status = "OK" if s["clean"] else f"NAME LEAK ({len(s['leaks'])})"
+    ai_status = "OK" if a["clean"] else f"ORPHAN ({a['orphan_count']})"
+    raw_status = "OK" if r["clean"] else f"UNLINKED ({len(r['unlinked'])})"
     lines = [
         f"Stage 2 read-surface traceability audit (GOV-306) — {db_path}",
         f"  served statements                 : {report['served_count']}",
-        f"  1 statement->source grounding     : {'OK' if g['clean'] else f'BREAK ({len(g['orphans'])} orphan)'}",
-        f"  2 confidence_label provenance     : {'OK' if c['clean'] else f'DRIFT ({len(c['drift'])})'}",
-        f"  3 speaker_label provenance        : {'OK' if s['clean'] else f'NAME LEAK ({len(s['leaks'])})'}",
+        f"  1 statement->source grounding     : {grounding_status}",
+        f"  2 confidence_label provenance     : {confidence_status}",
+        f"  3 speaker_label provenance        : {speaker_status}",
         f"  4 completeness_gap parity         : {'OK' if p['clean'] else 'BREAK'} "
         f"(canonical={p['canonical_count']} projected={p['projected_count']} "
         f"no_primary_source={p['no_primary_source_count']})",
-        f"  5 AI provenance chain             : {'OK' if a['clean'] else f'ORPHAN ({a['orphan_count']})'} "
+        f"  5 AI provenance chain             : {ai_status} "
         f"(ai_rows={a['ai_statement_count']})",
-        f"  6 raw-preservation linkage        : {'OK' if r['clean'] else f'UNLINKED ({len(r['unlinked'])})'}",
+        f"  6 raw-preservation linkage        : {raw_status}",
         f"  7 transport (no raw path / PII)   : {'OK' if t['clean'] else 'LEAK'}",
         f"  TRACEABLE / CLEAN                  : {report['clean']}",
     ]

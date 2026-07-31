@@ -106,6 +106,9 @@ PROTECTED_DIR_NAMES = {
 # git-ignored). Only the explicit "evidence" segment or a keep-marker retains.
 RETAINED_SEGMENT_SUBSTRINGS = ("evidence",)
 KEEP_MARKER_NAMES = {".cleanup-keep"}
+OWNER_RETAINED_RELATIVE_PATHS = {
+    Path("Database/gov_watchdog.db"): "retained local state/evidence DB (34,696 statements/evidence links; owner decision GOV-693)",
+}
 
 @dataclass
 class Candidate:
@@ -206,8 +209,12 @@ def retained_evidence(path: Path, repo_root: Path) -> tuple[bool, str]:
     # ~/evidence-backups/) protect everything under it.
     try:
         scan_parts = resolved.relative_to(root).parts
+        relative_path = Path(*scan_parts)
     except ValueError:
         scan_parts = resolved.parts
+        relative_path = None
+    if relative_path in OWNER_RETAINED_RELATIVE_PATHS:
+        return True, OWNER_RETAINED_RELATIVE_PATHS[relative_path]
     for part in scan_parts:
         low = part.lower()
         for needle in RETAINED_SEGMENT_SUBSTRINGS:

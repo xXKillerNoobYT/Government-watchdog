@@ -585,19 +585,30 @@ def _format_report(report: dict[str, Any], db_path: Path) -> str:
     ov = report["stage3_overlay_presence_no_regression"]
     fl = report["stageN_field_floor"]
     dt = report["determinism_read_only"]
+    card_feed_status = "OK" if cf["clean"] else f"BACK-GAP ({len(cf['backgap'])})"
+    public_lane_status = "OK" if pu["clean"] else f"BACK-GAP ({len(pu['backgap'])})"
+    gap_status = (
+        "OK" if gp["clean"] else f"DROPPED ({len(gp['dropped']) + len(gp['feed_dropped'])})"
+    )
+    overlay_status = (
+        "OK"
+        if ov["clean"]
+        else f"MISSING ({len(ov['missing'])}, bijection={ov['bijection_ok']}, preservation={ov['preservation_present']})"
+    )
+    floor_status = "OK" if fl["clean"] else f"BREACH ({len(fl['breaches'])})"
     lines = [
         f"Stage 3 read-surface back-gap / coverage audit (GOV-411) — {db_path}",
         f"  served record cards                   : {report['served_count']}",
-        f"  1 card-feed back-gap                  : {'OK' if cf['clean'] else f'BACK-GAP ({len(cf['backgap'])})'} "
+        f"  1 card-feed back-gap                  : {card_feed_status} "
         f"(eligible={cf['eligible_count']} served={cf['served_count']})",
-        f"  2 public-lane back-gap                : {'OK' if pu['clean'] else f'BACK-GAP ({len(pu['backgap'])})'} "
+        f"  2 public-lane back-gap                : {public_lane_status} "
         f"(eligible={pu['eligible_count']} served={pu['served_count']} leaks={pu['public_lane_leaks']})",
-        f"  3 completeness-gap coverage parity    : {'OK' if gp['clean'] else f'DROPPED ({len(gp['dropped']) + len(gp['feed_dropped'])})'} "
+        f"  3 completeness-gap coverage parity    : {gap_status} "
         f"(canonical={gp['canonical_count']} projected={gp['projected_count']} "
         f"feed_gaps={gp['feed_gap_count']} no_primary_source={gp['no_primary_source_canonical']})",
-        f"  4 Stage-3 overlay presence            : {'OK' if ov['clean'] else f'MISSING ({len(ov['missing'])}, bijection={ov['bijection_ok']}, preservation={ov['preservation_present']})'} "
+        f"  4 Stage-3 overlay presence            : {overlay_status} "
         f"(checked={ov['checked']} units={ov['unit_count']})",
-        f"  5 Stage-1/2 field floor               : {'OK' if fl['clean'] else f'BREACH ({len(fl['breaches'])})'} "
+        f"  5 Stage-1/2 field floor               : {floor_status} "
         f"(checked={fl['checked']})",
         f"  6 determinism / read-only             : {'OK' if dt['clean'] else 'UNSTABLE'} "
         f"(byte_identical={dt['byte_identical']} row_counts_stable={dt['row_counts_stable']})",
