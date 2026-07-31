@@ -49,6 +49,28 @@ def test_unknown_kind_rejected(conn):
         notif.record(conn, user_id=uid, kind="marketing_blast", body_text="no")
 
 
+def test_notification_writer_can_join_and_rollback_a_caller_transaction(conn):
+    uid = service.create_user(conn, email="atomic@example.com")
+    nid = notif.record(
+        conn,
+        user_id=uid,
+        kind="system",
+        body_text="atomic",
+        commit=False,
+    )
+    assert conn.in_transaction is True
+    assert conn.execute(
+        "SELECT COUNT(*) FROM notification_events WHERE notif_id = ?",
+        (nid,),
+    ).fetchone()[0] == 1
+
+    conn.rollback()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM notification_events WHERE notif_id = ?",
+        (nid,),
+    ).fetchone()[0] == 0
+
+
 def test_query_unread_only_and_mark_read_own_rows_only(conn):
     uid = service.create_user(conn, email="q@example.com")
     other = service.create_user(conn, email="other@example.com")
