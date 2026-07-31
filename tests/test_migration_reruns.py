@@ -365,3 +365,37 @@ def test_no_migration_defeats_the_naive_splitter():
     assert not offenders, (
         "these defeat db._statements' naive split, and the error will surface on "
         f"the FOLLOWING statement rather than this line: {offenders}")
+
+
+def test_column_exists_resolves_only_a_real_table_name(tmp_path):
+    """GOV-1683: a malformed identifier must answer False, not probe another table.
+
+    `_column_exists` drives ADD COLUMN idempotency, so a wrong answer is a
+    silently-missing column rather than an error. Measured on the previous
+    interpolated form, `PRAGMA table_info({name})`:
+
+        't) --'  -> resolved to table `t` and returned True   (WRONG table)
+        't;x'    -> OperationalError                          (crash)
+
+    Both now return False, which is the truthful answer. This is a correctness
+    guard; it is not patching a live vulnerability — the name comes from
+    repo-authored migration text and Python's driver refuses stacked statements.
+    """
+    import db as db_mod
+
+    db_path = tmp_path / "colcheck.db"
+    db_mod.apply_migrations(db_path)
+    conn = db_mod.open_db(db_path)
+    try:
+        # Truthful positives and negatives on real names.
+        assert db_mod._column_exists(conn, "users", "email") is True
+        assert db_mod._column_exists(conn, "users", "no_such_column") is False
+        assert db_mod._column_exists(conn, "no_such_table", "email") is False
+        # The two shapes the interpolated form got wrong.
+        assert db_mod._column_exists(conn, "users) --", "email") is False, (
+            "a malformed identifier resolved to a real table — the name is "
+            "being interpolated into SQL again rather than bound")
+        assert db_mod._column_exists(conn, "users;x", "email") is False, (
+            "a malformed identifier raised or matched instead of answering False")
+    finally:
+        conn.close()
