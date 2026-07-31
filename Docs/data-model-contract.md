@@ -129,6 +129,31 @@ surface** — it is frozen. Either the migration stays additive, or the change n
 card that also re-derives the frozen allowlist. This is why `CLAUDE.md` pairs "renumber" with
 "re-derive the allowlist in `tests/test_deploy_frozen_surface.py`".
 
+### INV-7 — No migration may defeat the naive statement splitter
+
+`db._statements` strips **full-line** `--` comments and then splits on `;`. Its docstring calls
+this "adequate for the project's simple, trigger-free migration files" — and triggers really are
+**0**. But the assumption is broader than that sentence, and two shapes break it:
+
+| Input | What `_statements` returns |
+|---|---|
+| `CREATE TABLE t (id TEXT);  -- note; caveat` <br> `CREATE TABLE u (id TEXT);` | `['CREATE TABLE t (id TEXT)', '-- note', "caveat\nCREATE TABLE u (id TEXT)"]` — a bogus statement, **and the next real one corrupted by a prefix** |
+| `CREATE TABLE t (c TEXT DEFAULT 'a;b');` | `["CREATE TABLE t (c TEXT DEFAULT 'a", "b')"]` — split mid-literal, both halves invalid |
+
+**In both cases the error surfaces on the FOLLOWING statement**, not the line that caused it,
+which is what makes this worth guarding rather than leaving to be debugged.
+
+So: **an inline (end-of-line) `--` comment must not contain `;`, and no string literal may
+contain `;`.** Measured when written: **zero** violations across all 31 migrations — every
+`;`-bearing quote in the tree sits inside a full-line comment, which is stripped.
+`tests/test_migration_reruns.py::test_no_migration_defeats_the_naive_splitter` enforces it.
+
+**Why guard the corpus instead of hardening the splitter.** `_statements` runs on every
+migration apply, making it the highest-blast-radius function in the repo; a subtle bug in a
+cleverer splitter breaks every database build at once. A simple, obviously-correct splitter plus
+an enforced precondition is the smaller system. If someone does harden it later, delete this
+invariant and both its tests rather than keeping two mechanisms.
+
 ---
 
 ## 3. Adding a migration — the checklist this contract exists to make followable
@@ -137,6 +162,7 @@ card that also re-derives the frozen allowlist. This is why `CLAUDE.md` pairs "r
    too — `main` alone cannot show you a sibling branch's claim (INV-1's live example).
 2. Zero-pad to four digits. `NNNN_short_snake_name.sql`.
 3. Every `CREATE TABLE` / `CREATE INDEX` uses **`IF NOT EXISTS`** (INV-2, now guarded).
+   No `;` in an inline `--` comment or a string literal (INV-7, guarded).
 4. Prefer additive. If a constraint must change, use the rebuild pattern **with**
    `PRAGMA legacy_alter_table = ON` (INV-4).
 5. If it touches a table a frozen surface reads, say so in the PR and re-derive the allowlist

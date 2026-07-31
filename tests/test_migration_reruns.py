@@ -258,3 +258,82 @@ def test_every_table_a_frozen_surface_reads_still_exists(tmp_path):
         f"tables {missing} are read by a BYTE-FROZEN serving surface but no "
         "longer exist after migrations. The surface cannot be edited to adapt "
         "(tests/test_deploy_frozen_surface.py). See data-model-contract INV-6.")
+
+
+# --- GOV-1681 (C4): `_statements` is used by every apply and had no test ------
+#
+# C4 audited `scripts/db.py`: two public callables, both exercised by ~90 test
+# files, so the public surface is genuinely healthy. The gap was one level down —
+# `_statements` splits every migration file and had **no test of its own
+# behaviour**; existing references use it as a helper for 0025 assertions.
+#
+# Its docstring rests on an assumption: "Adequate for the project's simple,
+# trigger-free migration files." Triggers really are 0. But the assumption is
+# broader than the docstring says, and NOTHING enforced it.
+
+def test_statements_strips_full_line_comments_and_splits_on_semicolons():
+    """The behaviour the migration runner depends on, pinned directly."""
+    import db as db_mod
+
+    out = db_mod._statements(
+        "-- a comment; with a semicolon\n"
+        "    -- an indented one too\n"
+        "CREATE TABLE t (id TEXT);\n\n;\n"
+        "CREATE TABLE u (id TEXT);\n")
+    assert out == ["CREATE TABLE t (id TEXT)", "CREATE TABLE u (id TEXT)"], out
+
+
+def test_statements_is_fragile_in_two_documented_ways(request):
+    """Documents the REAL behaviour, so the corpus guard below has a reason.
+
+    Measured, not assumed — both produce errors that surface on the *following*
+    statement, far from the line that caused them:
+
+      inline comment with ';'  -> ['CREATE TABLE t (id TEXT)', '-- note',
+                                   'caveat\\nCREATE TABLE u (id TEXT)']
+                                  the NEXT statement is corrupted by a prefix
+      ';' inside a literal     -> ["CREATE TABLE t (c TEXT DEFAULT 'a", "b')"]
+                                  split mid-literal, both halves invalid
+
+    This test asserts the fragility rather than pretending it away. If someone
+    hardens the splitter, this test failing is the SIGNAL to delete it and the
+    corpus guard with it — not a regression.
+    """
+    import db as db_mod
+
+    inline = db_mod._statements(
+        "CREATE TABLE t (id TEXT);  -- note; caveat\nCREATE TABLE u (id TEXT);")
+    assert len(inline) == 3 and inline[1] == "-- note", (
+        f"splitter behaviour changed: {inline}. If it was hardened on purpose, "
+        "delete this test AND test_no_migration_defeats_the_naive_splitter.")
+
+    literal = db_mod._statements("CREATE TABLE t (c TEXT DEFAULT 'a;b');")
+    assert len(literal) == 2, f"splitter behaviour changed: {literal}"
+
+
+def test_no_migration_defeats_the_naive_splitter():
+    """The corpus assumption `_statements` rests on, made enforceable.
+
+    Measured when written: **zero** violations across all 31 migrations — every
+    `;`-bearing quote in the tree sits inside a full-line `--` comment, which the
+    splitter strips. Zero is when a ratchet is free.
+
+    Chose to guard the corpus rather than harden the splitter deliberately: this
+    function runs on every migration apply, so it is the highest-blast-radius
+    code in the repo, and a simple obviously-correct splitter plus an enforced
+    precondition beats a clever one. See Docs/data-model-contract.md INV-7.
+    """
+    import re
+
+    offenders = []
+    for path in MIGRATIONS:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("--"):
+                continue                      # stripped before splitting
+            if "--" in line and ";" in line.split("--", 1)[1]:
+                offenders.append(f"{path.name}:{lineno} inline comment contains ';'")
+            if re.search(r"'[^'\n]*;[^'\n]*'", line):
+                offenders.append(f"{path.name}:{lineno} string literal contains ';'")
+    assert not offenders, (
+        "these defeat db._statements' naive split, and the error will surface on "
+        f"the FOLLOWING statement rather than this line: {offenders}")
