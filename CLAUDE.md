@@ -48,6 +48,15 @@ is when it was last measured.
   under-reports and invites a "fix" for a problem that does not exist.
   (`email_outbox` genuinely has no index; that one is real, and blocked on a
   migration slot — [#217].)
+- **…but a `REFERENCES` clause gets NOTHING.** SQLite auto-indexes `UNIQUE`
+  and does *not* auto-index foreign keys, so an unindexed child column makes
+  every parent `DELETE` — and every `ON DELETE CASCADE` — full-scan the child
+  table. **22 of 70** FK child columns are unindexed and that is currently
+  **free**: all of `scripts/` holds exactly one `DELETE FROM`, against a table
+  nothing points at. Do not "fix" this by adding 22 indexes. The precondition
+  is guarded instead —
+  `test_no_shipped_delete_targets_a_parent_with_unindexed_children` fails on the
+  first `DELETE` against a pointed-at table. See INV-8.
 
 [#217]: https://github.com/xXKillerNoobYT/Government-watchdog/issues/217
 
@@ -107,6 +116,18 @@ the *empty* value means too.
 current `main` first. `tests/test_migration_slots.py` enforces it and names both
 files on a collision. A collision means renumber, update every reference, **and
 re-derive the allowlist in `tests/test_deploy_frozen_surface.py`**.
+
+**Before writing a migration, read `Docs/data-model-contract.md`.** It is the
+as-built contract for `Database/migrations/**` — eight numbered invariants, each
+with the guard that enforces it, plus a checklist for adding one. Three of them
+you will otherwise violate without any error telling you so: **INV-4** (changing
+a constraint means rebuilding the table, and the rebuild needs
+`PRAGMA legacy_alter_table = ON` or SQLite silently repoints other tables'
+`REFERENCES` at your scratch table), **INV-7** (`_statements` splits on `;` after
+stripping full-line comments, so a `;` inside an inline comment or a string
+literal corrupts the *following* statement), and **INV-5** (a failed run is
+**partially** applied — `CREATE TABLE` is DDL and runs in autocommit, outside the
+rollback; it is recoverable only because every statement is `IF NOT EXISTS`).
 
 **Four serving surfaces are frozen** (`tests/test_deploy_frozen_surface.py`):
 `scripts/read_api.py`, `scripts/ai_risk_gate.py`, `scripts/stage5_agenda_board.py`,

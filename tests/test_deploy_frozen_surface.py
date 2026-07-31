@@ -10,6 +10,7 @@ assertion into the allowlist form; the guard stays, the allowlist grows).
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -172,3 +173,67 @@ def test_claude_md_documents_the_threading_rule_and_its_exception():
     assert "intake_api.py` is deliberately **not** threaded" in text, (
         "CLAUDE.md must state the exception, not just the rule — an undocumented "
         "exception reads as an oversight and invites a 'consistency' fix")
+
+
+# --- GOV-1685 (C12, data-model): CLAUDE.md's pointers must stay true ----------
+#
+# CLAUDE.md's whole value is that it is accurate. A pointer to a moved file, or a
+# citation of an invariant that has been renumbered, is not a missing fact — it is
+# a *confident wrong* one, which is worse, because the reader stops looking.
+#
+# Deliberately NOT asserting "every Docs/ file is referenced from CLAUDE.md":
+# measured 2026-07-31, **63 of 64 are not**, and that is correct — CLAUDE.md is an
+# operating manual, not an index. A guard that is red on arrival gets suppressed
+# rather than obeyed.
+
+_DOCS_REF = re.compile(r"`(Docs/[A-Za-z0-9._-]+\.md)`")
+#: `INV-<n>` citations in CLAUDE.md, which must resolve in the contract.
+#:
+#: Matches the CITATION, not a formatting convention. The first version required
+#: bold (`\*\*INV-8\*\*`) and therefore silently ignored the plain "See INV-8." in
+#: the same file — caught by the red proof, which PASSED when it should have
+#: failed. Matching prose style rather than the token itself is the recurring
+#: trap on this repo; this is that trap inside a guard written to prevent it.
+_INV_REF = re.compile(r"\b(INV-\d+)\b")
+
+
+def test_every_docs_path_claude_md_names_actually_exists():
+    """Link rot in the one file everyone is told to read first.
+
+    Currently two references (the access-gate contract and the data-model
+    contract), so this is a ratchet at **zero** violations — cheapest possible
+    moment to install it.
+    """
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    named = sorted(set(_DOCS_REF.findall(text)))
+    assert named, (
+        "CLAUDE.md names no Docs/ file at all — either the pointers were deleted "
+        "or the regex stopped matching; both make this guard vacuous")
+    missing = [n for n in named if not (root / n).exists()]
+    assert not missing, (
+        f"CLAUDE.md points at {missing}, which do not exist. A stale pointer is "
+        "worse than none: the reader stops looking.")
+
+
+def test_claude_md_invariant_citations_resolve_in_the_data_model_contract():
+    """A renumbered invariant leaves the citation intact and the meaning wrong.
+
+    CLAUDE.md cites INV-4, INV-5, INV-7 and INV-8 by number to tell a migration
+    author which rules bite silently. Renumbering the contract would keep every
+    one of those tokens valid-looking while pointing at different rules — the
+    presence-vs-effect shape this repo has now hit several times.
+    """
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    contract = root / "Docs" / "data-model-contract.md"
+    assert contract.exists(), "the contract CLAUDE.md points at is gone"
+    body = contract.read_text(encoding="utf-8")
+
+    cited = sorted(set(_INV_REF.findall(text)))
+    assert cited, "CLAUDE.md cites no invariant — the pointer lost its specifics"
+    unresolved = [c for c in cited if f"### {c} —" not in body]
+    assert not unresolved, (
+        f"CLAUDE.md cites {unresolved}, which have no `### <INV> —` heading in "
+        f"{contract.name}. Either the invariant was renumbered (update CLAUDE.md) "
+        "or removed (update both).")
