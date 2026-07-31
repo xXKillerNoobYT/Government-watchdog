@@ -41,6 +41,65 @@ is when it was last measured.
 - **`pytest.ini` is load-bearing and in the CI path filter on purpose.** It
   carries the resource-leak ratchet (below); an edit that drops it must re-run
   the suite rather than silently skip CI.
+- **A `UNIQUE` constraint IS an index.** `auth_sessions.token_hash`,
+  `users.email` and `consent_preferences.unsubscribe_token` have no
+  `CREATE INDEX` line and are all indexed, via `sqlite_autoindex_*`. Audit
+  coverage with `EXPLAIN QUERY PLAN`, never by grepping `CREATE INDEX` — that
+  under-reports and invites a "fix" for a problem that does not exist.
+  (`email_outbox` genuinely has no index; that one is real, and blocked on a
+  migration slot — [#217].)
+
+[#217]: https://github.com/xXKillerNoobYT/Government-watchdog/issues/217
+
+## Concurrency and irreversible actions
+
+**`sqlite3`'s implicit transaction covers DML only.** Under
+`LEGACY_TRANSACTION_CONTROL` — the Python 3.12 default, which this repo uses
+everywhere — the module opens a transaction before `INSERT`/`UPDATE`/`DELETE`
+and **never before a `SELECT`**. So in *"read the count → decide → write"*, the
+read runs in **autocommit holding no lock**, and the transaction begins at the
+write, after the decision was already made. Two connections both read "one slot
+free" and both write.
+
+Any invariant enforced by reading-then-writing needs an explicit
+`conn.execute("BEGIN IMMEDIATE")` **before the first read**. Wrapping only the
+write is insufficient *and looks correct*: `accounts/cohorts.py` carried a
+comment asserting it was in-transaction for weeks, and no single-connection test
+could tell the difference. Proving a concurrency property takes a two-connection
+barrier — cheap, ~40 lines with `threading.Barrier` and a **file-backed** DB
+(in-memory connections do not share).
+
+**When the contended thing is ONE row, put the atomicity in the `WHERE` clause
+instead.** A single-winner conditional update needs no `BEGIN IMMEDIATE`,
+because the condition and the write are one statement:
+
+```python
+cur = conn.execute("UPDATE t SET status = 'x' WHERE id = ? AND status = 'pending'", ...)
+if cur.rowcount != 1:
+    ...  # someone else won; treat as already taken
+```
+
+Used by the magic-code single-use guard (`beta/tokens.py`) and the outbox claim.
+Reach for `BEGIN IMMEDIATE` only when the decision must read *other* rows — a
+`COUNT` against a cap.
+
+**`email_gateway.outbox` is at-most-once, and the claim is load-bearing.** A
+send is irreversible: an over-admitted cohort member can be corrected in the
+database, a delivered email cannot be undelivered. Each row is claimed —
+`status='failed'`, **committed** — before `adapter.send()` is called, and moved
+to `sent` only after the adapter returns. A crash therefore leaves a **visible
+stuck row** instead of silently re-delivering. Do not remove the claim, and do
+not move the commit back after the loop; that is exactly the shape that
+delivered duplicates. The commit between claim and send matters only on *hard*
+process death, so it is pinned by a subprocess test using `os._exit`.
+
+**`is not None` is not "is truthy", and credentials are where it bites.**
+`password=""` is not `None`, and `PasswordHasher().hash("")` returns a perfectly
+valid argon2 string — so an empty password briefly became a **working
+credential**. `create_user` and `set_password` now refuse it explicitly
+(`InvalidPassword`), and `set_password` raises `UnknownUser` rather than
+silently no-op'ing on an unknown id. When a sentinel means "absent", decide what
+the *empty* value means too.
 
 ## Rules with teeth
 
@@ -60,6 +119,27 @@ re-derive the allowlist in `tests/test_deploy_frozen_surface.py`**.
 collection where no exception can propagate and pytest re-emits it under the
 other class. An HTTP-server fixture must call `server_close()`, not just
 `shutdown()`; `shutdown()` stops the serve loop and leaves the listening socket.
+
+**A `DeprecationWarning` from OUR OWN modules also fails the suite.**
+`tests/conftest.py` installs `error::DeprecationWarning` scoped to a module regex
+**derived from `scripts/` at run time**, so a module added tomorrow is covered
+without anyone updating a list. Third-party deprecations stay warnings *on
+purpose* — CI must not break on someone else's release schedule. If a new module
+suddenly fails on a deprecation, that is this working, not a bug. One known gap,
+left open deliberately: a module-level `warnings.warn(..., stacklevel=2)` is
+attributed to the *importing* test module and escapes the filter.
+
+**Both loopback HTTP servers are threaded with a request timeout.**
+`beta/http_api.py` and `notifications/http_api.py` each use
+`ThreadingHTTPServer` + `daemon_threads` + a 15s handler timeout, because a
+plain `HTTPServer` serves one request at a time and **one client that opens a
+socket and goes silent denies the whole API** — measured at 6s on both. Safe
+only because each handler opens and closes its own sqlite connection per
+request. `beta/intake_api.py` is deliberately **not** threaded: its handler
+closes over a `RawObjectStore` whose `_append_link` appends to a shared ledger
+file that is not established as thread-safe ([#206]).
+
+[#206]: https://github.com/xXKillerNoobYT/Government-watchdog/issues/206
 
 **Fail-closed is the house style.** Unknown keys deny. Review gates re-check
 after SQL. Ambiguity is a refusal, not a guess. On a gated surface the **flag
