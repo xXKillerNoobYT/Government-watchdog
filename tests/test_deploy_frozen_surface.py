@@ -238,22 +238,30 @@ def test_claude_md_documents_the_threading_rule_and_its_exception():
 # rather than obeyed.
 
 _DOCS_REF = re.compile(r"`(Docs/[A-Za-z0-9._-]+\.md)`")
-#: `INV-<n>` citations in CLAUDE.md, which must resolve in the contract.
+
+#: The numbered-citation series CLAUDE.md carries — one row per contract.
 #:
-#: Matches the CITATION, not a formatting convention. The first version required
-#: bold (`\*\*INV-8\*\*`) and therefore silently ignored the plain "See INV-8." in
-#: the same file — caught by the red proof, which PASSED when it should have
-#: failed. Matching prose style rather than the token itself is the recurring
-#: trap on this repo; this is that trap inside a guard written to prevent it.
-_INV_REF = re.compile(r"\b(INV-\d+)\b")
-#: `P-<n>` citations, which resolve in the SUPPLIED-FILE contract — a different
-#: document with a different numbering series. `_INV_REF` above resolves only
-#: against the data-model contract, so a `P-` citation had no guard at all.
+#: MERGED 2026-08-01 (GOV-1705, C12). This was two near-identical test functions
+#: and adding the B6 series would have made three. The trap is the SAME in every
+#: series — renumbering a contract leaves the citation token looking valid while
+#: aiming at a different rule — so the series belongs in data, not in another
+#: copied function body. A fourth contract is now one row rather than 25 lines.
 #:
-#: The leading `\b` is load-bearing and was checked, not assumed: without it this
-#: matches the `P-701` inside `PEP-701`, which CLAUDE.md names in its very first
-#: section. Verified empirically — `PEP-701` and `HTTP-404` yield no match.
-_P_REF = re.compile(r"\bP-\d+\b")
+#: Each pattern matches the CITATION, not a formatting convention. The `INV-`
+#: version originally required bold (`\*\*INV-8\*\*`) and so silently ignored the
+#: plain "See INV-8." in the same file — caught by a red proof that PASSED when
+#: it should have failed. Matching prose style rather than the token itself is
+#: the recurring trap on this repo.
+#:
+#: The leading `\b` is load-bearing and was checked, not assumed: without it,
+#: `P-\d+` matches the `P-701` inside `PEP-701`, which CLAUDE.md names in its
+#: very first section. Verified empirically — `PEP-701`, `HTTP-404`: no match.
+_CITATION_SERIES = (
+    ("INV-", re.compile(r"\bINV-\d+\b"), "data-model-contract.md"),
+    ("P-", re.compile(r"\bP-\d+\b"), "supplied-file-provenance-contract.md"),
+    ("W-", re.compile(r"\bW-\d+\b"),
+     "gov1579-web-safe-read-projection-contract.md"),
+)
 
 
 def test_every_docs_path_claude_md_names_actually_exists():
@@ -275,54 +283,39 @@ def test_every_docs_path_claude_md_names_actually_exists():
         "worse than none: the reader stops looking.")
 
 
-def test_claude_md_invariant_citations_resolve_in_the_data_model_contract():
+@pytest.mark.parametrize(
+    "prefix,pattern,contract_name", _CITATION_SERIES,
+    ids=[row[0].rstrip("-") for row in _CITATION_SERIES])
+def test_claude_md_numbered_citations_resolve_in_their_contract(
+        prefix, pattern, contract_name):
     """A renumbered invariant leaves the citation intact and the meaning wrong.
 
-    CLAUDE.md cites INV-4, INV-5, INV-7 and INV-8 by number to tell a migration
-    author which rules bite silently. Renumbering the contract would keep every
-    one of those tokens valid-looking while pointing at different rules — the
-    presence-vs-effect shape this repo has now hit several times.
+    CLAUDE.md cites invariants BY NUMBER to tell a reader which rules bite
+    silently — so the number is the entire value of the pointer. Renumbering a
+    contract keeps every token valid-looking while aiming it somewhere else:
+    the presence-vs-effect shape this repo has hit several times.
+
+    Each series is checked against ITS OWN contract. Resolving a `P-` citation
+    against the data-model contract would fail for the wrong reason, which is
+    why the mapping is explicit data rather than one regex over one document.
     """
     root = Path(__file__).resolve().parents[1]
     text = (root / "CLAUDE.md").read_text(encoding="utf-8")
-    contract = root / "Docs" / "data-model-contract.md"
-    assert contract.exists(), "the contract CLAUDE.md points at is gone"
+    contract = root / "Docs" / contract_name
+    assert contract.exists(), (
+        f"the contract CLAUDE.md points at is gone: Docs/{contract_name}")
     body = contract.read_text(encoding="utf-8")
 
-    cited = sorted(set(_INV_REF.findall(text)))
-    assert cited, "CLAUDE.md cites no invariant — the pointer lost its specifics"
-    unresolved = [c for c in cited if f"### {c} —" not in body]
+    cited = sorted(set(pattern.findall(text)))
+    assert cited, (
+        f"CLAUDE.md cites no {prefix}<n> invariant. Either the pointer lost its "
+        "specifics (the numbers are what make it useful) or the regex stopped "
+        "matching — both make this guard vacuous.")
+    unresolved = [c for c in cited if f"### {c} \u2014" not in body]
     assert not unresolved, (
-        f"CLAUDE.md cites {unresolved}, which have no `### <INV> —` heading in "
-        f"{contract.name}. Either the invariant was renumbered (update CLAUDE.md) "
-        "or removed (update both).")
-
-
-def test_claude_md_p_citations_resolve_in_the_supplied_file_contract():
-    """The same renumbering trap as INV-, in a second contract with its own series.
-
-    CLAUDE.md cites **P-3** and **P-7** by number — the two supplied-file
-    invariants that bite silently, so the numbers are the whole value of the
-    pointer. Renumbering the contract leaves both tokens looking valid while
-    aiming at different rules.
-
-    Kept separate from the INV- guard on purpose: two contracts, two numbering
-    series, and resolving a `P-` citation against the data-model contract would
-    fail for the wrong reason.
-    """
-    root = Path(__file__).resolve().parents[1]
-    text = (root / "CLAUDE.md").read_text(encoding="utf-8")
-    contract = root / "Docs" / "supplied-file-provenance-contract.md"
-    assert contract.exists(), "the supplied-file contract CLAUDE.md points at is gone"
-    body = contract.read_text(encoding="utf-8")
-
-    cited = sorted(set(_P_REF.findall(text)))
-    assert cited, "CLAUDE.md cites no P- invariant — the pointer lost its specifics"
-    unresolved = [c for c in cited if f"### {c} —" not in body]
-    assert not unresolved, (
-        f"CLAUDE.md cites {unresolved}, which have no `### <P-n> —` heading in "
-        f"{contract.name}. Either the invariant was renumbered (update CLAUDE.md) "
-        "or removed (update both).")
+        f"CLAUDE.md cites {unresolved}, which have no `### <{prefix}n> \u2014` "
+        f"heading in {contract.name}. Either the invariant was renumbered "
+        "(update CLAUDE.md) or removed (update both).")
 
 
 # --- GOV-1694 (C8 hunt, PUBLIC REPO): nothing sensitive may become TRACKED ----

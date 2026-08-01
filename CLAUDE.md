@@ -232,6 +232,40 @@ Two invariants bite silently, and both are the kind a careful reader "fixes":
   field rename or a `review_state` change here can break a surface this area does
   not own. Check both ends before shipping.
 
+## The web-safe read projection (`file_read_api`)
+
+`Docs/gov1579-web-safe-read-projection-contract.md` is the as-built contract —
+ten invariants for **the sole Backend→Website crossing for supplied files**. It
+was written because a 350-line module whose entire job is deciding what leaves
+the building was named by none of `read-api`'s six bound contracts.
+
+- **`scripts/read_api.py` and `scripts/file_read_api.py` are different
+  modules.** The contracts bound to this area govern the first; the supplied-file
+  projection is the second, and it *imports* the first to reuse its transport
+  sweep. Grepping the wrong one is the easiest mistake here.
+- **W-4 — the field allowlist RAISES; it is not an `assert`.** `python -O`
+  deletes assert statements, and "a future edit adds a field" is precisely what
+  it exists to catch. Never soften it back.
+- **W-10 — there are TWO web-safe allowlists and they do not import each
+  other.** `publication.WEB_SAFE_FIELD_ALLOWLIST` is the SSOT for statements and
+  cards; `file_read_api` carries its own four sets for supplied files. They
+  overlap on exactly one field — `review_state`, which the SSOT calls
+  web-**unsafe**. It does not leak, for a precise reason rather than a lucky
+  one: W-1 filters to `web_safe` and re-checks after the SQL, so every projected
+  card carries the same value, and a constant carries no information. **That
+  puts the exemption's safety entirely on W-1**, with the structural allowlist
+  opened for that one field and unable to object if the state gate regressed.
+
+**One place inverts the fail-closed house style, deliberately.**
+`WEB_SAFE_DIFF_FIELDS` is `file_versioning.DIFF_FIELDS` *minus* a two-field
+denylist, so a field added to B5's diff is web-safe **by default**. Flipping it
+to an allowlist is a behaviour change — a new field would then vanish from diffs
+silently instead of appearing — so both directions are silent and neither is
+obviously right. Instead the membership is pinned by test
+(`TestDiffFieldsAdditionsForceAWebSafetyDecision`): touching `DIFF_FIELDS` stops
+the suite and makes a person choose. Contrast P-3, which merely *reads*
+fail-open and is correct as written; this one genuinely is.
+
 ## Working agreements
 
 - **Never commit to `main`.** Branch, push, open a PR.
