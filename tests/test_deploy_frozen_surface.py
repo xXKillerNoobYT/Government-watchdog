@@ -1,8 +1,18 @@
 """DEPLOY-2026 AC-7: frozen serving surfaces are byte-0 vs origin/main.
 
-GOV-722 is additive-only. The four frozen surfaces (read_api, ai_risk_gate,
+GOV-722 is additive-only. The four surfaces in ``FROZEN`` (read_api, ai_risk_gate,
 stage5_agenda_board, and the whole mcp_service package) must show an empty diff
-against ``origin/main``. Also guards the migrations directory: existing
+against ``origin/main``.
+
+**``FROZEN`` is not the whole frozen set, and reading it as such is the mistake
+this module now guards against.** Four further paths — ``publication.py`` (pinned
+by seven separate test files), ``stage4_newsletter_feed.py``,
+``stage4_newsletter_digest_assembler.py`` and ``statements.py`` — are pinned byte-0
+by scattered ``git diff origin/main`` assertions inside unrelated stage tests,
+belonging to no list at all. See
+``test_claude_md_names_every_byte_frozen_path_the_suite_enforces``.
+
+Also guards the migrations directory: existing
 migrations are immutable, and a new migration may land only via a deliberate
 allowlist entry (GOV-721 plan amendment #6 rewrote the original zero-diff
 assertion into the allowlist form; the guard stays, the allowlist grows).
@@ -77,33 +87,74 @@ def test_leg2_added_no_new_migration():
 
 # --- GOV-1671 (C12): CLAUDE.md's frozen-surface list must not rot ------------
 
-def test_claude_md_lists_exactly_the_frozen_surfaces():
-    """The repo's CLAUDE.md names the four frozen surfaces; FROZEN defines them.
+#: A `git diff origin/main -- <paths>` assertion, in the idiom the suite uses.
+#: Deliberately anchored to that call shape rather than to any list name: the
+#: whole point is to find freezes that belong to NO list.
+_BYTE0_CALL = re.compile(
+    r'"diff",\s*"origin/main",\s*"--",?(?P<args>[^\]]*)\]', re.S)
 
-    Two hand-maintained copies of one list — the same drift shape as the beta
-    audit enum (#193). The failure here is quieter than a crash: CLAUDE.md is
-    the first thing an agent reads, so a stale list sends someone to edit a
-    surface believing it is unfrozen, or to treat a newly frozen one as fair
-    game. Documentation that cannot be checked decays silently; this makes the
-    claim executable.
+
+def discovered_frozen_paths() -> set[str]:
+    """Every path the SUITE actually pins byte-0, not every path a list claims.
+
+    Union of `FROZEN` (the central list, expanded wherever a test splats it) and
+    each literal `scripts/...` argument to a git-diff-vs-origin/main assertion
+    anywhere under `tests/`.
+
+    **Known limit, stated rather than hidden:** this reads test source text, so a
+    freeze written in some other shape — a helper, an f-string, a path built at
+    run time — is invisible to it. That makes it under-report, never over-report,
+    which is the safe direction: a missed freeze leaves the status quo, whereas a
+    phantom one would demand CLAUDE.md document something that is not real.
     """
-    import re
-    from pathlib import Path
+    tests_dir = Path(__file__).resolve().parent
+    found = set(FROZEN)
+    for path in sorted(tests_dir.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for call in _BYTE0_CALL.finditer(source):
+            found.update(re.findall(r'"(scripts/[A-Za-z0-9_/.]+)"',
+                                    call.group("args")))
+    return found
 
+
+def test_claude_md_names_every_byte_frozen_path_the_suite_enforces():
+    """CLAUDE.md must name every frozen path — measured, not cross-copied.
+
+    **This replaced a guard that was green and wrong.** The previous version
+    compared CLAUDE.md against `FROZEN` — two hand-maintained copies of one list,
+    which agreed with each other and were both incomplete. Measured 2026-08-01:
+    FOUR more paths are pinned byte-0 by scattered `git diff origin/main`
+    assertions inside unrelated stage tests, `scripts/publication.py` by **seven**
+    separate files, and neither list mentioned any of them. So an agent read
+    CLAUDE.md, edited `publication.py`, and got seven failures from files whose
+    names never mention it.
+
+    Two lists agreeing is not ground truth. The fix is the same one this repo
+    reaches for elsewhere — **ask the thing that enforces, not the thing that
+    documents** (`EXPLAIN QUERY PLAN` over grepping `CREATE INDEX`; the planner
+    over the schema). Here that means deriving the set from the assertions.
+    """
     claude_md = Path(__file__).resolve().parents[1] / "CLAUDE.md"
     assert claude_md.exists(), "repo-level CLAUDE.md is missing"
     text = claude_md.read_text(encoding="utf-8")
 
-    section = text.split("Four serving surfaces are frozen", 1)
-    assert len(section) == 2, "CLAUDE.md no longer has the frozen-surfaces claim"
-    # Paths are written as `scripts/...` inline code; take them up to the
-    # sentence that follows the list.
-    listed = set(re.findall(r"`(scripts/[A-Za-z0-9_/.]+)`", section[1][:400]))
+    enforced = discovered_frozen_paths()
+    assert enforced >= set(FROZEN), "the central FROZEN list stopped being discovered"
+    assert len(enforced) > len(FROZEN), (
+        "no scattered per-test freeze was discovered — either they were all "
+        "removed (delete this guard with them) or _BYTE0_CALL stopped matching, "
+        "which would make this pass for the wrong reason")
 
-    assert listed == set(FROZEN), (
-        f"CLAUDE.md and FROZEN disagree.\n"
-        f"  only in CLAUDE.md: {sorted(listed - set(FROZEN))}\n"
-        f"  only in FROZEN:    {sorted(set(FROZEN) - listed)}")
+    section = text.split("byte-frozen against `origin/main`", 1)
+    assert len(section) == 2, "CLAUDE.md no longer has the frozen-surfaces claim"
+    listed = set(re.findall(r"`(scripts/[A-Za-z0-9_/.]+)`", section[1][:1400]))
+
+    unnamed = sorted(enforced - listed)
+    assert not unnamed, (
+        f"the suite pins {unnamed} byte-0 against origin/main, and CLAUDE.md does "
+        "not name them. An agent will edit one and get failures from test files "
+        "whose names do not mention it — which is exactly how this guard's "
+        "predecessor came to be green and wrong.")
 
 
 def test_claude_md_states_the_required_python_version():
@@ -195,6 +246,14 @@ _DOCS_REF = re.compile(r"`(Docs/[A-Za-z0-9._-]+\.md)`")
 #: failed. Matching prose style rather than the token itself is the recurring
 #: trap on this repo; this is that trap inside a guard written to prevent it.
 _INV_REF = re.compile(r"\b(INV-\d+)\b")
+#: `P-<n>` citations, which resolve in the SUPPLIED-FILE contract — a different
+#: document with a different numbering series. `_INV_REF` above resolves only
+#: against the data-model contract, so a `P-` citation had no guard at all.
+#:
+#: The leading `\b` is load-bearing and was checked, not assumed: without it this
+#: matches the `P-701` inside `PEP-701`, which CLAUDE.md names in its very first
+#: section. Verified empirically — `PEP-701` and `HTTP-404` yield no match.
+_P_REF = re.compile(r"\bP-\d+\b")
 
 
 def test_every_docs_path_claude_md_names_actually_exists():
@@ -235,6 +294,33 @@ def test_claude_md_invariant_citations_resolve_in_the_data_model_contract():
     unresolved = [c for c in cited if f"### {c} —" not in body]
     assert not unresolved, (
         f"CLAUDE.md cites {unresolved}, which have no `### <INV> —` heading in "
+        f"{contract.name}. Either the invariant was renumbered (update CLAUDE.md) "
+        "or removed (update both).")
+
+
+def test_claude_md_p_citations_resolve_in_the_supplied_file_contract():
+    """The same renumbering trap as INV-, in a second contract with its own series.
+
+    CLAUDE.md cites **P-3** and **P-7** by number — the two supplied-file
+    invariants that bite silently, so the numbers are the whole value of the
+    pointer. Renumbering the contract leaves both tokens looking valid while
+    aiming at different rules.
+
+    Kept separate from the INV- guard on purpose: two contracts, two numbering
+    series, and resolving a `P-` citation against the data-model contract would
+    fail for the wrong reason.
+    """
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    contract = root / "Docs" / "supplied-file-provenance-contract.md"
+    assert contract.exists(), "the supplied-file contract CLAUDE.md points at is gone"
+    body = contract.read_text(encoding="utf-8")
+
+    cited = sorted(set(_P_REF.findall(text)))
+    assert cited, "CLAUDE.md cites no P- invariant — the pointer lost its specifics"
+    unresolved = [c for c in cited if f"### {c} —" not in body]
+    assert not unresolved, (
+        f"CLAUDE.md cites {unresolved}, which have no `### <P-n> —` heading in "
         f"{contract.name}. Either the invariant was renumbered (update CLAUDE.md) "
         "or removed (update both).")
 
