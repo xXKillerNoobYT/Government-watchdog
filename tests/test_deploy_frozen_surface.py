@@ -237,3 +237,56 @@ def test_claude_md_invariant_citations_resolve_in_the_data_model_contract():
         f"CLAUDE.md cites {unresolved}, which have no `### <INV> —` heading in "
         f"{contract.name}. Either the invariant was renumbered (update CLAUDE.md) "
         "or removed (update both).")
+
+
+# --- GOV-1694 (C8 hunt, PUBLIC REPO): nothing sensitive may become TRACKED ----
+#
+# `.gitignore` is this repo's disclosure boundary and every entry states its
+# reason. But an ignore rule only helps while it is in place: a file committed
+# BEFORE its rule landed stays in public history forever, and `git rm --cached`
+# does not remove it.
+#
+# Measured 2026-08-01 across ALL history: of the paths the ignore file names as
+# carrying real civic data, **zero were ever committed**. Two Logs/ files were
+# (`acceptance.log`, `phase2-pilot-verification.log`), and the ignore file
+# justifies leaving them there as "summary-only evidence ... no raw corpus/PII".
+# That claim was VERIFIED rather than trusted: counters and AC pass/fail lines
+# only; the single quoted string over 40 chars is a public document TITLE
+# ("Annual financial report (2019-06-30)"); zero emails, zero absolute paths and
+# zero speech attributions in either file.
+#
+# This guard exists for the NEXT one. Ratchet at zero violations.
+
+#: Path fragments that, if TRACKED, would publish real civic data or secrets.
+#: Each mirrors a `.gitignore` entry whose comment states the same boundary.
+_MUST_NEVER_BE_TRACKED = (
+    ".db", ".db.bak", ".db.backup",
+    "Vault/", "Raw-Corpus/", "Raw-PDFs/", "Transcripts/",
+    "ai_provider.local.json",
+    "agent_inline_claims", "claims-batch", "batch3_claims", "batch4_claims",
+    "batch5_claims",
+    "Logs/backfill_", "Logs/control-plane/", "Logs/governance/", "Logs/pilot/",
+    ".hermes/", "graphify-out/", "dist/",
+)
+
+
+def test_no_tracked_file_carries_real_civic_data_or_secrets():
+    """This repository is PUBLIC. A tracked file is a published file.
+
+    `git rm --cached` unpublishes nothing — it only stops FUTURE commits. So the
+    check that matters runs on the index, before the disclosure happens.
+    """
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, check=False)
+    assert out.returncode == 0, f"git ls-files failed: {out.stderr}"
+    tracked = [p for p in out.stdout.splitlines() if p]
+    assert tracked, "git ls-files returned nothing — the guard would be vacuous"
+
+    offenders = sorted(
+        p for p in tracked if any(frag in p for frag in _MUST_NEVER_BE_TRACKED))
+    assert not offenders, (
+        "A file matching this repo's disclosure boundary is TRACKED. This "
+        "repository is PUBLIC, so committing it publishes it permanently — "
+        "`git rm --cached` later does NOT undo that. Remove it from the index "
+        "before committing:\n  " + "\n  ".join(offenders))

@@ -29,6 +29,17 @@ Logs/mcp-lens/
 # but are summary-only evidence (SHA256s + pass/fail counts, no raw corpus/PII);
 # untracked via `git rm --cached`, preserved in git history + on local disk.
 # This supersedes the prior "deliberately committed" note for acceptance.log.
+#
+# GOV-1694 (AUTO GO C8, 2026-08-01) — that "summary-only" claim is now VERIFIED,
+# not asserted. Both blobs were read out of history and probed: acceptance.log is
+# counters and timestamps only; phase2-pilot-verification.log is AC pass/fail
+# lines whose single quoted string over 40 chars is a public document TITLE
+# ("Annual financial report (2019-06-30)"). Zero emails, zero absolute paths,
+# zero speech attributions in either. Also measured across ALL history: of every
+# path named below as carrying real civic data, NONE was ever committed.
+# `tests/test_deploy_frozen_surface.py` now fails if any of them becomes tracked
+# — the check that matters runs on the INDEX, because `git rm --cached`
+# unpublishes nothing on a public repo.
 Logs/acceptance.log
 Logs/phase2-pilot-verification.log
 # Lane 2 AI gateway (GOV-89 / 1.09 §7.1, 1.11 §2.1): the local provider config
