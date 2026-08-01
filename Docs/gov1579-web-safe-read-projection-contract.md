@@ -40,6 +40,30 @@ area govern `read_api.py`. This one governs `file_read_api.py`, its supplied-fil
 `file_versioning.DIFF_FIELDS` (9) minus `{sha256, supplied_by}` = 7. A field added to B5's diff
 is therefore web-safe by default — see the gap in §4.
 
+### Measured cost — N+1, deliberately (GOV-1704, C9)
+
+One linkage `SELECT` per projected file. Measured 2026-08-01:
+
+| files | queries | ms |
+|---|---|---|
+| 1 | 3 | 0.2 |
+| 10 | 12 | 0.5 |
+| 100 | 102 | 4.4 |
+| 200 | 202 | 8.3 |
+
+**Left alone on purpose.** This is a build-time projection baked into a web artifact
+(`dataOrigin: reviewed_snapshot`), not a per-request path, over a corpus of human-uploaded
+packets — 8.3 ms at 200 files extrapolates to under a second at 20,000. Rewriting a serving
+surface for a cost nobody is paying is the error this contract's data-model sibling made in
+reverse (INV-8: 22 unindexed FKs, safe because nothing deletes).
+
+**What is guarded is the cliff, not the constant.** `TestProjectionQueryCostStaysLinear` bounds
+the *marginal* queries per file, so the current design passes and a per-link lookup inside the
+per-file loop — linear becoming quadratic — fails. Its companion test asserts the counter sees
+**cursor-issued** queries: the first attempt at this measurement wrapped only `conn.execute` and
+reported a flat 2 queries at every corpus size, because `file_linkage` issues every statement
+through `conn.cursor()`. A clean bill from a blind instrument.
+
 ---
 
 ## 2. Invariants
