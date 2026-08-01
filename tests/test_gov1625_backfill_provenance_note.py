@@ -127,3 +127,77 @@ def test_existing_note_is_joined_not_clobbered(conn, tmp_path):
     stored = fr.get_file_record(conn, rec.file_id)
     assert stored.origin_url is None
     assert stored.provenance_note == "from the clerk\npaper copy"  # nothing lost
+
+
+# --- GOV-1698 (C13): the row-count invariant survives `python -O` -------------
+#
+# The module docstring called the row count an "asserted invariant". It was a
+# bare `assert`, which `python -O` DELETES — so a reviewer-gated correction to
+# real civic records enforced its own integrity rule in a normal run and not at
+# all in an optimised one. Two tests, because the fix had two halves.
+
+
+def _force_a_row_count_change(conn):
+    """Make an UPDATE genuinely add a row, via a trigger — no mocking.
+
+    `sqlite3.Connection.commit` is read-only and cannot be monkeypatched, which
+    turned out to be a better constraint than a limitation: a trigger makes the
+    count change *through the database*, which is what the invariant is actually
+    watching for. SQLite leaves `recursive_triggers` off by default, so the
+    INSERT does not re-fire this trigger.
+    """
+    conn.execute(
+        "CREATE TRIGGER intruder AFTER UPDATE ON supplied_files BEGIN"
+        " INSERT INTO supplied_files (file_id, area, source_type,"
+        " original_filename, mime, byte_size, supplied_by, captured_at,"
+        " sha256, review_state, version_group_id, created_at) VALUES"
+        " ('intruder-' || NEW.file_id, 'alpine', 'agenda_packet', 'x.pdf',"
+        " 'application/pdf', 1, 'someone', '2026-06-23T00:00:00.000+00:00',"
+        " 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'pending', 'vg-intruder',"
+        " '2026-06-23T00:00:00.000+00:00');"
+        " END")
+    conn.commit()
+
+
+def test_a_row_count_change_RAISES_and_is_not_an_assert(conn, tmp_path):
+    """`assert` is not an integrity control on a module that rewrites records.
+
+    Pinned as a real exception type so the invariant holds under `python -O`,
+    where every assert statement is removed from the bytecode outright.
+    """
+    fr.insert_file_record(
+        conn, **dict(BASE, sha256=SHA, origin_url="handed to me at the June meeting"))
+    planned = bf.plan_backfill(conn)
+    assert planned, "fixture produced no planned change — the test would be vacuous"
+
+    _force_a_row_count_change(conn)
+
+    with pytest.raises(bf.BackfillIntegrityError, match="history count changed"):
+        bf.apply_backfill(conn, planned, reviewer_ref="GOV-1698 SPA+VSR",
+                          audit_log=tmp_path / "audit.log")
+
+
+def test_the_audit_log_SURVIVES_an_integrity_failure(conn, tmp_path):
+    """The run that misbehaves must not be the run that leaves no record.
+
+    The original raised before writing the log, so the single case where a
+    reviewer most needs to know what was attempted was the one case that
+    recorded nothing. The UPDATEs are committed by then; withholding the log
+    cannot un-apply them, it only destroys the evidence.
+    """
+    fr.insert_file_record(
+        conn, **dict(BASE, sha256=SHA, origin_url="handed to me at the June meeting"))
+    planned = bf.plan_backfill(conn)
+    audit = tmp_path / "audit.log"
+
+    _force_a_row_count_change(conn)
+
+    with pytest.raises(bf.BackfillIntegrityError):
+        bf.apply_backfill(conn, planned, reviewer_ref="GOV-1698 SPA+VSR",
+                          audit_log=audit)
+
+    assert audit.exists(), (
+        "the audit log was not written on the failing run — the reviewer has no "
+        "record of what the backfill attempted")
+    body = audit.read_text(encoding="utf-8")
+    assert "GOV-1698 SPA+VSR" in body and planned[0].file_id in body

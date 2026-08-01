@@ -54,6 +54,17 @@ from beta.intake_api import _route_provenance  # noqa: E402
 DEFAULT_AUDIT_LOG = Path(__file__).resolve().parent.parent / "Logs" / "backfill_provenance_note.log"
 
 
+class BackfillIntegrityError(Exception):
+    """The row-count invariant broke: the backfill was not an in-place UPDATE.
+
+    Deliberately NOT an ``assert``. `python -O` deletes assert statements
+    outright, so the module's documented invariant would be enforced in a normal
+    run and silently absent under an optimised one — on a reviewer-gated
+    correction to real civic records, whose whole justification is that it is
+    auditable (GOV-1698, area C13).
+    """
+
+
 class BackfillRefused(Exception):
     """An --apply run without the required reviewer reference (fail-closed)."""
 
@@ -114,9 +125,15 @@ def apply_backfill(
 
     Refuses (``BackfillRefused``) without a non-blank ``reviewer_ref`` — the
     SPA/VSR co-sign that authorizes the correction. Each change is appended to
-    the audit log with the reviewer ref and a UTC timestamp. Row count is
-    asserted invariant (in-place UPDATE, no insert/delete): history never
-    decreases.
+    the audit log with the reviewer ref and a UTC timestamp.
+
+    Row count is an enforced invariant (in-place UPDATE, no insert/delete):
+    history never decreases. A change raises ``BackfillIntegrityError`` — **not**
+    an ``assert``, which `python -O` would delete, leaving the invariant enforced
+    in a normal run and absent in an optimised one.
+
+    The audit log is written **before** the invariant is checked, so the run that
+    misbehaves is not the run that leaves no record.
     """
     if not (isinstance(reviewer_ref, str) and reviewer_ref.strip()):
         raise BackfillRefused(
@@ -143,15 +160,24 @@ def apply_backfill(
         }, sort_keys=True))
     conn.commit()
 
-    after_count = conn.execute("SELECT COUNT(*) FROM supplied_files").fetchone()[0]
-    assert after_count == before_count, (
-        f"history count changed ({before_count} -> {after_count}); backfill must "
-        "be an in-place UPDATE only")
-
+    # The audit log is written BEFORE the invariant is checked, and that order is
+    # deliberate. The previous version raised first, so the one run that misbehaved
+    # was the one run that left no record of what it had attempted — exactly
+    # backwards for a reviewer-gated correction. The UPDATEs are already committed
+    # by this point; refusing to write the log cannot un-apply them, it only
+    # destroys the evidence.
     if audit_log is not None and lines:
         audit_log.parent.mkdir(parents=True, exist_ok=True)
         with audit_log.open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
+
+    after_count = conn.execute("SELECT COUNT(*) FROM supplied_files").fetchone()[0]
+    if after_count != before_count:
+        raise BackfillIntegrityError(
+            f"history count changed ({before_count} -> {after_count}); backfill "
+            "must be an in-place UPDATE only. The changes are already committed "
+            "and the audit log has been written — reconcile from it.")
+
     return len(planned)
 
 
