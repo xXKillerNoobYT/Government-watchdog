@@ -140,6 +140,37 @@ public** and the log contains the before/after prose of real civic records. That
 disclosure boundary, not tidiness — the same rule `CLAUDE.md` states for `Database/*.db` and
 `Logs/`.
 
+### P-9 — The hot lookups are index-backed, and the two full scans are deliberate
+
+Measured 2026-08-01 with `EXPLAIN QUERY PLAN` — the planner is asked what it will *do*, never
+grepped for `CREATE INDEX` (`CLAUDE.md` records why that under-reports: a `UNIQUE` constraint
+is already an index).
+
+| lookup | plan |
+|---|---|
+| `has_primary_source` (per subject, on every gap refresh) | `SEARCH … idx_supplied_file_links_primary` |
+| `links_for_subject` | `SEARCH … idx_supplied_file_links_primary` |
+| `links_for_file` | `SEARCH … idx_supplied_file_links_file` |
+| `list_versions` (version group) | `SEARCH … idx_supplied_files_version_group` |
+| `list_dependencies` | `SEARCH … idx_sfdep_file` |
+
+**Two full scans are correct and must stay that way.** `verify_reproducibility` scans
+`documents` because it intends to visit *every* row — a full-corpus re-hash has no selective
+predicate — and `reconcile` scans `sources` to build a host→id map from all of them. **A `SCAN`
+is only a defect when the query is selective**; adding an index for either would be a fix for a
+problem no caller has.
+
+**Why this is guarded rather than noted.** If a later migration renames or drops one of those
+indexes, or a query changes shape, the plan degrades from `SEARCH` to `SCAN` **silently** — no
+error, no failing test, just a surface that gets slower as the corpus grows. That is the same
+"correct answer, wrong cost" class as the unindexed `ON DELETE CASCADE` in data-model INV-8.
+
+Measured cost of the full-corpus path, for scale: `verify_reproducibility` is **linear at
+~0.30 ms per 256 KiB artifact** — 500 documents / 125 MiB in **152 ms**. It is I/O-and-hash
+bound, and `sha256_file` streams in chunks rather than slurping, so memory is flat in file size.
+The upload path into the store is capped at **25 MiB** (`MAX_UPLOAD_BYTES`) with a socket read
+cap of 2×+8 KiB, answering **413** rather than trimming silently.
+
 ---
 
 ## 3. Changing this chain — the checklist

@@ -398,3 +398,68 @@ def test_make_link_id_is_deterministic_and_is_the_uniqueness_key(conn):
     assert a != fl.make_link_id("meeting", MEETING_DATE, "file-2")
     assert a != fl.make_link_id("area", MEETING_DATE, "file-1")
     assert a != fl.make_link_id("meeting", "2026-01-01", "file-1")
+
+
+# --- GOV-1695 (C9 hunt): P-9 — the hot lookups must stay index-backed ---------
+#
+# Measured with EXPLAIN QUERY PLAN, because grepping `CREATE INDEX` under-reports
+# (a UNIQUE constraint is already an index — CLAUDE.md records that trap).
+#
+# The failure this guards is SILENT: a migration that renames or drops an index,
+# or a query that changes shape, degrades SEARCH -> SCAN with no error and no
+# failing test — just a surface that gets slower as the corpus grows. Same
+# "correct answer, wrong cost" class as data-model INV-8.
+
+#: (label, sql, params, index-name-fragment) — each MUST use an index.
+_INDEX_BACKED = [
+    ("has_primary_source",
+     "SELECT 1 FROM supplied_file_links l JOIN supplied_files f ON f.file_id = l.file_id"
+     " WHERE l.subject_node_type=? AND l.subject_node_id=? AND l.is_primary_source=1"
+     " LIMIT 1", ("area", "alpine"), "idx_supplied_file_links"),
+    ("links_for_subject",
+     "SELECT link_id FROM supplied_file_links WHERE subject_node_type=? AND"
+     " subject_node_id=? ORDER BY linked_at, link_id", ("area", "alpine"),
+     "idx_supplied_file_links"),
+    ("links_for_file",
+     "SELECT link_id FROM supplied_file_links WHERE file_id=? ORDER BY linked_at,"
+     " link_id", ("f",), "idx_supplied_file_links_file"),
+    ("list_versions",
+     "SELECT file_id FROM supplied_files WHERE version_group_id=? ORDER BY"
+     " created_at, file_id", ("g",), "idx_supplied_files_version_group"),
+    ("list_dependencies",
+     "SELECT dependency_id FROM supplied_file_dependencies WHERE file_id=?", ("f",),
+     "idx_sfdep_file"),
+]
+
+
+def _plan(conn, sql, params) -> str:
+    return " | ".join(r[-1] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, params))
+
+
+class TestHotLookupsStayIndexBacked:
+    """`Docs/supplied-file-provenance-contract.md` P-9."""
+
+    @pytest.mark.parametrize("label,sql,params,index_frag", _INDEX_BACKED,
+                             ids=[q[0] for q in _INDEX_BACKED])
+    def test_lookup_uses_an_index(self, conn, label, sql, params, index_frag):
+        plan = _plan(conn, sql, params)
+        assert "SEARCH" in plan, (
+            f"{label} degraded to a full scan — plan: {plan}. A selective lookup "
+            "that scans is a silent cost regression: same answer, wrong cost.")
+        assert index_frag in plan, (
+            f"{label} no longer uses an index named like {index_frag!r} — "
+            f"plan: {plan}. If the index was deliberately renamed, update P-9.")
+
+    # A sibling test asserting the two full-corpus queries "stay scans" was written
+    # here and then DELETED, because its red proof exposed it as both weak and
+    # wrong-headed (GOV-1695):
+    #
+    #   * weak — `"SCAN" in plan` cannot tell `SCAN documents` from
+    #     `SCAN documents USING COVERING INDEX ...`; adding an index left it green;
+    #   * wrong-headed — tightening it to reject `USING` would fail on a COVERING
+    #     INDEX, which is a pure win here: the same rows visited, less I/O. A guard
+    #     that fails on a legitimate improvement obstructs rather than protects.
+    #
+    # The property actually wanted — "this query has no selective predicate, so it
+    # visits every row" — belongs to the QUERY, not the plan, and no plan assertion
+    # states it cleanly. It is documented in P-9 instead, where a reader can act on it.
