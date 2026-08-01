@@ -369,3 +369,61 @@ def test_cli_emits_reviewer_internal_digest_and_overlay(conn: sqlite3.Connection
     assert overlay["access"] == "reviewer_internal"
     assert overlay["sections_complete"] is True
     assert overlay["chronology_ok"] is True
+
+
+# --- GOV-1701 (C4): the fingerprint's VALUE was asserted nowhere --------------
+#
+# C4 for `read-api` flagged 17 public callables as unreferenced by name. A
+# raise-on-entry mutation showed all 17 are EXECUTED — the name audit's
+# false-positive rate on this area was 100%, worse than the ~90% #213 estimates.
+#
+# "Executed" is the weaker claim. Replacing this function's body with
+# `return "MUTANT"` — same type, wrong value — left the suite **green**.
+#
+# That matters more here than for a display label. A fingerprint exists **only**
+# to detect change; one whose value nothing checks cannot fail visibly, it just
+# stops meaning anything. And `assert_reproducible` computes the same digest
+# INLINE (`hashlib.sha256(first.encode("utf-8")).hexdigest()`) rather than
+# calling `digest_fingerprint` — two copies of one definition, with nothing
+# holding them together. The last test below is what holds them together.
+
+
+class TestDigestFingerprint:
+
+    def test_it_is_the_sha256_of_the_canonical_digest_object(self, conn: sqlite3.Connection) -> None:
+        """Pins the definition, not merely the shape — `_is_hex64` would pass on any hash."""
+        import hashlib
+
+        out = digest.assemble_digests(conn)
+        expected = hashlib.sha256(digest._canonical(out).encode("utf-8")).hexdigest()
+        assert digest.digest_fingerprint(out) == expected
+
+    def test_it_changes_when_the_digest_content_changes(self, conn: sqlite3.Connection) -> None:
+        """The entire point of a fingerprint. A constant return would pass every
+        other test in this file and fail only this one."""
+        out = digest.assemble_digests(conn)
+        before = digest.digest_fingerprint(out)
+        mutated = json.loads(json.dumps(out))
+        mutated["scope"] = "not-alpine"
+        assert digest.digest_fingerprint(mutated) != before
+
+    def test_it_is_stable_across_key_insertion_order(self, conn: sqlite3.Connection) -> None:
+        """Canonicalisation, not `str(dict)` — two equal objects built in different
+        orders must fingerprint identically or re-assembly would look like drift."""
+        out = digest.assemble_digests(conn)
+        reordered = {k: out[k] for k in sorted(out, reverse=True)}
+        assert digest.digest_fingerprint(reordered) == digest.digest_fingerprint(out)
+
+    def test_it_agrees_with_the_hash_assert_reproducible_computes_INLINE(
+            self, conn: sqlite3.Connection) -> None:
+        """The duplicate definition, pinned to the shared one.
+
+        `assert_reproducible` returns a digest it hashes itself instead of calling
+        `digest_fingerprint`. Both are "the fingerprint of this corpus", so a change
+        to one and not the other silently produces two different answers to the same
+        question. Nothing else in the suite compares them.
+        """
+        assert digest.assert_reproducible(conn) == digest.digest_fingerprint(
+            digest.assemble_digests(conn)), (
+            "assert_reproducible's inline sha256 and digest_fingerprint disagree — "
+            "they are two copies of one definition and have drifted")
