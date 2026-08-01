@@ -102,6 +102,34 @@ def _walk_json_keys(obj):
             yield from _walk_json_keys(item)
 
 
+def _walk_json_strings(obj):
+    """Yield decoded JSON string keys and values recursively."""
+
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str):
+                yield key
+            yield from _walk_json_strings(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk_json_strings(item)
+
+
+def _reject_json_constant(value: str):
+    raise ValueError(f"non-finite JSON constant {value!r}")
+
+
+def _reject_duplicate_json_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
 def allowed_file_set(root: Path) -> set[str]:
     """The closed allowlist for a staged artifact (§2 clause 5).
 
@@ -154,11 +182,19 @@ def deny_list_violations(root: Path) -> list[str]:
     else:
         violations.append("clause2 published.json is not a JSON array")
 
-    # Clauses 3/4 — no plaintext emails, no reviewer-note keys anywhere in data/.
+    # Clauses 1/3/4 on decoded data prevent JSON escapes from hiding a path,
+    # plaintext email address, or reviewer-note field from the raw-text scan.
     for name, lane in ((PUBLISHED_NAME, published), (REVIEWER_INTERNAL_NAME, reviewer_internal)):
-        raw = (root / name).read_text(encoding="utf-8", errors="replace") if (root / name).exists() else ""
-        for match in EMAIL_RE.finditer(raw):
-            violations.append(f"clause3 plaintext email in {name}: {match.group(0)!r}")
+        for value in _walk_json_strings(lane):
+            for match in ABSOLUTE_PATH_RE.finditer(value):
+                violations.append(
+                    f"clause1 decoded absolute path in {name}: "
+                    f"{match.group(0)!r}"
+                )
+            for match in EMAIL_RE.finditer(value):
+                violations.append(
+                    f"clause3 plaintext email in {name}: {match.group(0)!r}"
+                )
         for key in _walk_json_keys(lane):
             if key in DENIED_DATA_KEYS:
                 violations.append(f"clause4 reviewer-note key {key!r} in {name}")
@@ -169,7 +205,11 @@ def deny_list_violations(root: Path) -> list[str]:
 def _load_json(path: Path):
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(
+        path.read_text(encoding="utf-8"),
+        parse_constant=_reject_json_constant,
+        object_pairs_hook=_reject_duplicate_json_keys,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -628,7 +668,8 @@ def write_tarball(files: dict[str, bytes], out_path: Path) -> Path:
     with open(out_path, "wb") as raw:
         import gzip
 
-        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+        # Empty filename avoids embedding the output path in the gzip header.
+        with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz:
             with tarfile.open(fileobj=gz, mode="w") as tar:  # type: ignore[arg-type]
                 for rel in sorted(files):
                     data = files[rel]
