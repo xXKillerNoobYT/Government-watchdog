@@ -298,3 +298,74 @@ def test_local_ref_written_but_not_web_projected(conn: sqlite3.Connection) -> No
     assert "local_ref" not in flat
     assert vault not in flat
     assert "/Users/" not in flat
+
+
+# --- GOV-1702 (C7b, read-api): the registry guards must survive `python -O` ----
+#
+# C7b hunted runtime safety across read-api's 14 bound modules. Four classes came
+# back clean (no division, no unguarded `json.loads`, three indexing candidates all
+# verified unreachable, and `assert_no_pii` RAISES despite its name). The one real
+# finding was here.
+#
+# `concept_map` carried **eight** module-level `assert` statements under a comment
+# reading "Import-time drift guards (fail at import, not at runtime)". `python -O`
+# deletes assert statements outright, so they held in a normal run and were absent
+# in an optimised one. This registry is the vocabulary every edge is validated
+# against, and `read_api` — a byte-frozen serving surface — imports it.
+#
+# Same class as the four in `publication.py` (#229), which stay open only because
+# that module is byte-frozen and converting them needs an unfreeze. `concept_map`
+# is not frozen, so this half needed no decision — which narrows #229 to the part
+# that genuinely does.
+
+
+class TestRegistryGuardsSurviveOptimisation:
+
+    def test_the_module_carries_no_bare_assert_at_all(self):
+        """The property, stated structurally rather than by grepping prose.
+
+        `-O` cannot delete what is not an assert. Checking the AST is what makes
+        this hold for guards added later, not just the eight converted here.
+        """
+        import ast
+
+        tree = ast.parse(Path(cm.__file__).read_text(encoding="utf-8"))
+        asserts = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Assert)]
+        assert not asserts, (
+            f"concept_map.py has bare `assert` at line(s) {asserts}. `python -O` "
+            "deletes them; use `_require(...)` so the guard survives optimisation.")
+
+    def test_a_broken_registry_raises_under_O_as_well_as_normally(self):
+        """The claim measured, not asserted — compile the module both ways.
+
+        A source-level check alone would not prove the guard still FIRES under
+        `-O`; this compiles a deliberately-inconsistent registry at optimize=0 and
+        optimize=2 and requires the same refusal from both.
+        """
+        import textwrap
+
+        broken = textwrap.dedent('''
+            class RegistryConsistencyError(RuntimeError):
+                pass
+            def _require(condition, message):
+                if not condition:
+                    raise RegistryConsistencyError(message)
+            ALLOWED = {"a"}
+            _require("b" in ALLOWED, "unknown edge 'b'")
+        ''')
+        for optimize in (0, 1, 2):
+            code = compile(broken, "<registry>", "exec", optimize=optimize)
+            try:
+                exec(code, {})
+            except RuntimeError as exc:
+                assert "unknown edge" in str(exc)
+            else:
+                raise AssertionError(
+                    f"the registry guard did NOT fire at optimize={optimize} — "
+                    "this is exactly the `assert` failure mode it replaced")
+
+    def test_the_real_registry_is_consistent(self):
+        """Non-vacuity: the guards above protect a registry that actually passes."""
+        for etype, (froms, tos) in cm.EDGE_ENDPOINTS.items():
+            assert etype in cm.ALLOWED_EDGE_TYPES
+            assert not (froms | tos) - cm.ALLOWED_NODE_TYPES
