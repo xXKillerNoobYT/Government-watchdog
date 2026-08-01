@@ -116,6 +116,13 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         # GOV-1578 (0030 / GOV-1566 B5): supersede versioning + red-flag tables.
         "supplied_file_dependencies",
         "supplied_file_supersede_events",
+        # ACCESS-2026 v0.1 (0032, renumbered from 0027 past the supplied-file
+        # migrations): explicit, inert product/program/feature/exact-geography
+        # decision facts. No row is seeded by the migration.
+        "access_plan_assignments",
+        "access_program_assignments",
+        "access_feature_grants",
+        "access_geography_grants",
     }
 
 

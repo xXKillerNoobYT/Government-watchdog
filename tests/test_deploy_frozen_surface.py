@@ -45,6 +45,7 @@ MIGRATION_ALLOWLIST = {
     "0029_supplied_file_links.sql",  # GOV-1577 (B4): supplied_file→subject linkage
     "0030_supplied_file_versioning.sql",  # GOV-1578 (B5): supersede versioning + red-flag
     "0031_supplied_file_provenance_note.sql",  # GOV-1625 (B3 schema evo): free-text provenance_note
+    "0032_access_decision_core.sql",  # ACCESS-2026: inert explicit access facts (renumbered from 0027)
 }
 
 
