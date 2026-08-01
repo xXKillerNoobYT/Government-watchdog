@@ -49,9 +49,19 @@ is therefore web-safe by default — see the gap in §4.
 The query filters `review_state = 'web_safe'`, and every row is checked again before projection
 (`web_safe_files`). `pending`, `reviewing`, `held` and `rejected` are never served.
 
-**The re-check is not redundant.** It is the house rule (`CLAUDE.md`: *review gates re-check
-after SQL*) applied here: a state flipped mid-read, or a mis-typed query, cannot leak an
-unreviewed file. Guards: `TestWebSafeStateGate` (4 tests, incl. `held` after `web_safe`).
+**The re-check is not redundant** — it is the house rule (`CLAUDE.md`: *review gates re-check
+after SQL*) applied here. But note precisely *which* threat it answers: `review_state` is TEXT
+with BINARY collation under a five-value `CHECK`, so **no stored row can satisfy the WHERE and
+then compare unequal in Python**. Storage cannot lie here. The reachable threat is the other one
+the module's docstring names — **a mis-typed query**.
+
+Guards: `TestWebSafeStateGate` (4 tests — the *outcome*) **and
+`TestStateGateSurvivesAQueryThatStoppedFiltering` (the *mechanism*)**. The second class exists
+because C1b measured the first to be insufficient: **deleting the re-check outright left all 65
+tests green**, since the WHERE clause still did the work and every state-gate test asserted the
+outcome. It is now exercised by handing the projection a connection whose SELECT has lost its
+filter — with a non-vacuity test proving the stand-in really does defeat the filter, so the
+guard cannot pass merely because the SQL is still doing the job.
 
 ### W-2 — A supersede view requires BOTH versions `web_safe`
 

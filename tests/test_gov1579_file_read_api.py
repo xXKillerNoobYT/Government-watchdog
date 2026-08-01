@@ -346,3 +346,79 @@ class TestDeterminism:
         first = json.dumps(api.build_files_response(conn), sort_keys=True)
         second = json.dumps(api.build_files_response(conn), sort_keys=True)
         assert first == second
+
+
+# --- GOV-1700 (C1b): W-1's SECOND half — the re-check after the SQL ----------
+#
+# C1b broke each of the B6 contract's nine invariants in turn and ran the suite.
+# Eight were caught. **W-1 was not**: deleting the post-SQL re-check entirely left
+# all 65 tests green, because the WHERE clause still did the work and every
+# existing state-gate test asserts the OUTCOME ("a held file is not served")
+# rather than the MECHANISM.
+#
+# That is exactly the shape of thing a later reader deletes as redundant — and
+# `CLAUDE.md` states "review gates re-check after SQL" as a house rule, so the
+# claim was load-bearing in the docs and unenforced in the suite.
+#
+# The threat it defends against is NOT storage lying: `review_state` is TEXT with
+# BINARY collation and a CHECK constraint over five values, so no stored row can
+# satisfy `WHERE review_state = 'web_safe'` and then compare unequal in Python.
+# The reachable threat is the one the module's own docstring names — **a mis-typed
+# query** — and that is what this simulates: the projection is handed a connection
+# whose SELECT has lost its filter, and must still refuse to serve anything
+# unreviewed.
+
+
+class _QueryThatForgotToFilter:
+    """A connection whose `SELECT … WHERE review_state = ?` lost its WHERE.
+
+    Not a mock of the projection — a faithful stand-in for the one edit that
+    would silently disarm the state gate. Everything else forwards untouched.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params=()):
+        if "WHERE review_state = ?" in sql:
+            return self._conn.execute(sql.replace("WHERE review_state = ? ", ""), ())
+        return self._conn.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class TestStateGateSurvivesAQueryThatStoppedFiltering:
+
+    def test_the_unfiltered_query_really_would_return_everything(self, conn):
+        """Non-vacuity: prove the stand-in defeats the SQL filter.
+
+        Without this, a typo in the replacement string would make the test below
+        pass for the wrong reason — the SQL would still be filtering and the
+        re-check would never be exercised at all.
+        """
+        for state in ("pending", "reviewing", api.WEB_SAFE_STATE, "held", "rejected"):
+            _make(conn, state=state, sha256=hashlib.sha256(state.encode()).hexdigest())
+        leaky = _QueryThatForgotToFilter(conn)
+        rows = leaky.execute(
+            f"SELECT {', '.join(api._WEB_SAFE_FILE_COLUMNS)} FROM supplied_files "
+            "WHERE review_state = ? ORDER BY version_group_id, created_at, file_id",
+            (api.WEB_SAFE_STATE,),
+        ).fetchall()
+        assert len(rows) == 5, (
+            f"the stand-in did not defeat the filter (got {len(rows)} rows, want 5) — "
+            "the re-check test below would prove nothing")
+
+    def test_only_web_safe_is_served_even_when_the_query_does_not_filter(self, conn):
+        """W-1's defense in depth, isolated from the SQL that normally hides it."""
+        for state in ("pending", "reviewing", api.WEB_SAFE_STATE, "held", "rejected"):
+            _make(conn, state=state, sha256=hashlib.sha256(state.encode()).hexdigest())
+
+        served = api.web_safe_files(_QueryThatForgotToFilter(conn))
+
+        assert len(served) == 1, (
+            "the post-SQL re-check did not hold: with an unfiltered query the "
+            f"projection served {len(served)} files instead of 1. Deleting that "
+            "re-check is invisible while the WHERE clause is intact — which is "
+            "precisely why it needs its own guard.")
+        assert served[0]["review_state"] == api.WEB_SAFE_STATE
