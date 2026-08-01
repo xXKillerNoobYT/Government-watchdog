@@ -508,3 +508,133 @@ class TestAllowlistsAgreeWithTheNamedUnsafeSet:
             "It is allowlisted ONLY because W-1 makes it carry no information; a "
             "varying value means the projection is reporting reviewer posture to the "
             "website.")
+
+
+# --- GOV-1704 (C9 hunt): the projection is N+1, and that is FINE — but pin it --
+#
+# C9 measured query count against corpus size with a proxy that wraps BOTH
+# `conn.execute` AND `conn.cursor()`. That detail is the finding behind the
+# finding: the first proxy wrapped only `conn.execute` and reported a flat **2
+# queries at every size**, because `file_linkage._rows` issues every one of its
+# statements through `conn.cursor()`. A clean bill from a blind instrument.
+#
+# Corrected, the shape is unambiguous — one linkage SELECT per projected file:
+#
+#     files    queries      ms
+#         1          3     0.2
+#        10         12     0.5
+#       100        102     4.4
+#       200        202     8.3
+#
+# **N+1, and deliberately left alone.** This is a build-time projection baked into
+# a web artifact (`dataOrigin: reviewed_snapshot`), not a per-request path, and the
+# corpus is human-uploaded packets. 8.3 ms at 200 files extrapolates to ~0.8 s at
+# 20,000. Rewriting a serving surface for a cost nobody is paying is the mistake
+# C9 made in reverse at iteration 55, where two full scans turned out correct by
+# design.
+#
+# What is NOT fine is the **cliff**: linear -> quadratic. A per-link lookup added
+# inside the loop would take 200 files from 202 queries to 800+ and nothing would
+# notice. So the guard bounds the MARGINAL cost per file rather than demanding a
+# constant — it permits the design that exists and fails the degradation.
+
+
+class _CountingCursor:
+    def __init__(self, cur, tally):
+        object.__setattr__(self, "_cur", cur)
+        object.__setattr__(self, "_tally", tally)
+
+    def execute(self, sql, params=()):
+        self._tally(); return self._cur.execute(sql, params)
+
+    def __getattr__(self, name): return getattr(self._cur, name)
+
+    def __setattr__(self, name, value): setattr(self._cur, name, value)
+
+    def __iter__(self): return iter(self._cur)
+
+
+class _CountingConn:
+    """Counts statements via `execute` AND `cursor()`.
+
+    Wrapping only `execute` is the trap this guard was born from: it misses every
+    query a module issues through a cursor, and reports a flat count that looks
+    like an absence of N+1.
+    """
+
+    def __init__(self, conn):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "count", 0)
+
+    def _tally(self): object.__setattr__(self, "count", self.count + 1)
+
+    def execute(self, sql, params=()):
+        self._tally(); return self._conn.execute(sql, params)
+
+    def cursor(self): return _CountingCursor(self._conn.cursor(), self._tally)
+
+    def __getattr__(self, name): return getattr(self._conn, name)
+
+
+def _seed_web_safe_files(conn, n, links_each=3):
+    for i in range(n):
+        rec = _make(conn, sha256=hashlib.sha256(f"perf-{i}".encode()).hexdigest())
+        for j in range(links_each):
+            fl.link_file(conn, file_id=rec.file_id, subject_node_type="area",
+                         subject_node_id=f"alpine-{j}", is_primary_source=(j == 0),
+                         linked_by="operator")
+
+
+class TestProjectionQueryCostStaysLinear:
+    """Not "no N+1" — the marginal cost per file, which is what can cliff."""
+
+    #: One linkage SELECT per file today. The bound leaves room for a second
+    #: per-file query without failing, and fails a per-LINK query (3 links each).
+    _MAX_QUERIES_PER_FILE = 2.0
+
+    def _measure(self, conn, n):
+        _seed_web_safe_files(conn, n)
+        counting = _CountingConn(conn)
+        response = api.build_files_response(counting)
+        assert len(response["files"]) == n, "seed did not project as expected"
+        assert all(card["links"] for card in response["files"]), (
+            "no links projected — the linkage path would not be exercised and this "
+            "measurement would be hollow")
+        return counting.count
+
+    def test_marginal_query_cost_per_file_is_bounded(self, conn, tmp_path):
+        """Measure at two sizes; the SLOPE is the property, not the intercept."""
+        small = self._measure(conn, 8)
+
+        big_path = tmp_path / "perf-big.db"
+        db.apply_migrations(big_path)
+        big_conn = db.open_db(big_path)
+        try:
+            big = self._measure(big_conn, 40)
+        finally:
+            big_conn.close()
+
+        marginal = (big - small) / (40 - 8)
+        assert marginal <= self._MAX_QUERIES_PER_FILE, (
+            f"the projection now issues {marginal:.2f} queries per additional file "
+            f"({small} at 8 files, {big} at 40). It has always been N+1 and that is "
+            "accepted for a build-time projection — but the cost per file has grown, "
+            "which is the linear->quadratic cliff this guard exists to catch. A "
+            "per-LINK query inside the per-FILE loop is the usual cause.")
+
+    def test_the_counter_sees_cursor_issued_queries(self, conn):
+        """Non-vacuity, and it is the whole reason this class exists.
+
+        `file_linkage` runs every statement through `conn.cursor()`. A proxy that
+        wraps only `conn.execute` counts none of them and reports a flat cost at
+        any corpus size — a clean bill from a blind instrument. This asserts the
+        counter actually grows with the corpus.
+        """
+        counting = _CountingConn(conn)
+        before = counting.count
+        _seed_web_safe_files(conn, 5)
+        api.build_files_response(counting)
+        assert counting.count - before >= 5, (
+            f"only {counting.count - before} statements counted for 5 files — the "
+            "counter is not seeing cursor-issued queries, so any cost measured "
+            "with it is meaningless")
