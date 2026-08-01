@@ -204,3 +204,76 @@ def test_dry_run_writes_nothing(fresh_db: Path) -> None:
     with db.open_db(fresh_db) as conn:
         total = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
     assert total == 0
+
+
+# --- GOV-1690 (C4): idempotency was checked by ROW COUNT, not by CONTENT -------
+
+
+def test_upsert_is_content_idempotent_except_registered_utc(fresh_db: Path) -> None:
+    """`test_loader_idempotent_no_duplicates` counts rows; it never compares values.
+
+    A count-based idempotency check passes even if every re-run silently rewrites
+    the registry's contents — the same count-vs-content blind spot found in the
+    verify-at-source drill-down (GOV-1689). This compares the rows.
+
+    **It also PINS a real asymmetry rather than calling it a bug.** `registered_utc`
+    IS refreshed on every upsert, because it sits in `_SEED_COLUMNS` and the
+    `DO UPDATE SET` covers every column except `source_id`. That is acceptable
+    today — the field is reviewer-operational, `publication.WEB_UNSAFE_FIELDS`
+    keeps it off the frontend entirely, and **nothing reads it for logic**. Pinning
+    it means a future change to make it immutable becomes a deliberate, visible
+    edit instead of an accident.
+    """
+    si.load(fresh_db)
+    with db.open_db(fresh_db) as conn:
+        before = {r[0]: dict(zip([c[0] for c in conn.execute(
+            "SELECT * FROM sources LIMIT 0").description], r))
+            for r in conn.execute("SELECT * FROM sources")}
+    si.load(fresh_db)
+    with db.open_db(fresh_db) as conn:
+        after = {r[0]: dict(zip([c[0] for c in conn.execute(
+            "SELECT * FROM sources LIMIT 0").description], r))
+            for r in conn.execute("SELECT * FROM sources")}
+
+    assert before.keys() == after.keys(), "a re-run changed the source set"
+    drifted: dict[str, list[str]] = {}
+    for sid in before:
+        changed = [k for k in before[sid]
+                   if before[sid][k] != after[sid][k] and k != "registered_utc"]
+        if changed:
+            drifted[sid] = changed
+    assert not drifted, (
+        "a re-run rewrote content-bearing registry columns — the loader claims to "
+        f"be idempotent and a row-count check would not have seen this: {drifted}")
+
+
+def test_a_seed_may_pin_registered_utc_because_seed_keys_win(fresh_db: Path) -> None:
+    """`{"registered_utc": now, **seed}` — the seed is spread LAST, so it wins.
+
+    That precedence is the escape hatch: a caller that needs a stable
+    registration timestamp can supply one. Pinned because reversing the spread
+    order would silently take that ability away.
+    """
+    db.apply_migrations(fresh_db)
+    pinned = "2020-01-01T00:00:00.000+00:00"
+    with db.open_db(fresh_db) as conn:
+        si.upsert_sources(conn, [{
+            "source_id": "alpine-pinned", "name": "Pinned", "scope": "alpine",
+            "registered_utc": pinned,
+        }])
+        got = conn.execute(
+            "SELECT registered_utc FROM sources WHERE source_id = 'alpine-pinned'"
+        ).fetchone()[0]
+    assert got == pinned, (
+        "a seed-supplied registered_utc must win over the generated one — "
+        "the seed dict is spread last precisely so a caller can pin it")
+
+
+def test_upsert_rejects_a_seed_with_no_name(fresh_db: Path) -> None:
+    """The identity half of the scope lock; only the scope half was covered."""
+    db.apply_migrations(fresh_db)
+    with db.open_db(fresh_db) as conn:
+        with pytest.raises(ValueError, match="missing name"):
+            si.upsert_sources(conn, [{"source_id": "x", "scope": "alpine"}])
+        with pytest.raises(ValueError, match="missing source_id"):
+            si.upsert_sources(conn, [{"name": "x", "scope": "alpine"}])
