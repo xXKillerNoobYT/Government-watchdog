@@ -58,6 +58,15 @@ is when it was last measured.
   `test_no_shipped_delete_targets_a_parent_with_unindexed_children` fails on the
   first `DELETE` against a pointed-at table. See INV-8.
 
+- **`Path(root) / value` DISCARDS `root` when `value` is absolute.**
+  `Path("/repo") / "/etc/passwd"` is `/etc/passwd` — no error, no warning. Every
+  stored-path column in this repo is *intended* to be repo-relative, and that
+  intent was enforced at the write sites and checked at **none** of the read
+  sites until GOV-1693. If a stored value is ever absolute, the join silently
+  reads outside the repo. Containment belongs at the consumer:
+  `candidate.resolve().is_relative_to(root.resolve())`, raising rather than
+  clamping.
+
 [#217]: https://github.com/xXKillerNoobYT/Government-watchdog/issues/217
 
 ## Concurrency and irreversible actions
@@ -129,10 +138,28 @@ literal corrupts the *following* statement), and **INV-5** (a failed run is
 **partially** applied — `CREATE TABLE` is DDL and runs in autocommit, outside the
 rollback; it is recoverable only because every statement is `IF NOT EXISTS`).
 
-**Four serving surfaces are frozen** (`tests/test_deploy_frozen_surface.py`):
-`scripts/read_api.py`, `scripts/ai_risk_gate.py`, `scripts/stage5_agenda_board.py`,
-`scripts/mcp_service/`. Changes are additive elsewhere; these stay byte-0 against
-`origin/main` unless a card explicitly says otherwise.
+**Eight paths are byte-frozen against `origin/main`, by TWO different mechanisms**,
+and only the first is easy to find. Changes are additive elsewhere; these stay
+byte-0 unless a card explicitly says otherwise.
+
+*Central list* — `FROZEN` in `tests/test_deploy_frozen_surface.py` (and a subset in
+`tests/test_mcp_frozen_surface.py`): `scripts/read_api.py`,
+`scripts/ai_risk_gate.py`, `scripts/stage5_agenda_board.py`, `scripts/mcp_service/`.
+
+*Scattered per-test assertions* — a `git diff origin/main -- <path>` assertion
+inside an unrelated stage test, naming no central list:
+`scripts/publication.py` (pinned by **seven** separate test files),
+`scripts/stage4_newsletter_feed.py` (three),
+`scripts/stage4_newsletter_digest_assembler.py`, and `scripts/statements.py`.
+
+**The second mechanism is the one that bites**, because nothing announces it. An
+edit to `publication.py` fails seven tests in files whose names do not mention it,
+and `git grep publication.py tests/test_deploy_frozen_surface.py` finds nothing.
+This list was wrong until 2026-08-01: it read *"four serving surfaces"* and named
+only the central four, while `test_claude_md_lists_exactly_the_frozen_surfaces`
+reported green — because it compared this file against `FROZEN`, and **both lists
+were incomplete in the same way.** Two lists agreeing is not ground truth. The
+guard now derives the set from the assertions the suite actually makes.
 
 **Leaked resources fail the suite.** `pytest.ini` promotes `ResourceWarning`
 **and** `PytestUnraisableExceptionWarning` to errors. Both lines are required —
@@ -181,6 +208,29 @@ but the **transport** half is still open ([#192]). `accounts.gate` remains the
 single civic-data gate.
 
 [#192]: https://github.com/xXKillerNoobYT/Government-watchdog/issues/192
+
+## Supplied-file provenance (`file_records` / `file_linkage` / `file_versioning`)
+
+`Docs/supplied-file-provenance-contract.md` is the as-built contract for the
+GOV-1566 B-series — nine numbered invariants, the review-state map, and the
+measured query plans. Read it before touching a supplied-file table. It exists
+because **B1 got a spec and B2–B6 got none**: 1,460 lines whose design lived only
+in module docstrings and eight merged PR bodies.
+
+Two invariants bite silently, and both are the kind a careful reader "fixes":
+
+- **P-3 — the `no_primary_source` gap tracks COVERAGE, not publishability.**
+  `NON_COUNTING_REVIEW_STATES` contains **only `rejected`**, so a `pending`,
+  entirely unreviewed file *closes* the gap. That reads fail-open in a fail-closed
+  house and is not: the gap asks *"does this subject have a source at all?"*, not
+  *"may we publish it?"* Publishability is a separate gate — the web-safe read
+  projection. Widening the default silently redefines "gap closed" across the
+  whole completeness surface.
+- **P-7 — the chain spans THREE areas, and this one owns neither end.** Intake is
+  `scripts/beta/intake_api.py` (access gate); the read projection is
+  `scripts/file_read_api.py`, which is **the sole Backend→Website crossing**. A
+  field rename or a `review_state` change here can break a surface this area does
+  not own. Check both ends before shipping.
 
 ## Working agreements
 
