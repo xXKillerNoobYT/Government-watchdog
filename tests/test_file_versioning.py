@@ -327,3 +327,13 @@ class TestMigration:
             names = {r[0] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"supplied_file_dependencies", "supplied_file_supersede_events"} <= names
+
+
+def test_get_supersede_event_round_trips_and_returns_none_for_an_unknown_id(conn):
+    """C4 (GOV-1688): `get_supersede_event` had no test reference.
+
+    Small, but it is the read side of P-4's immutable audit row — the thing a
+    reviewer follows to see what a supersede actually changed.
+    """
+    import file_versioning as fv_mod
+    assert fv_mod.get_supersede_event(conn, "no-such-event") is None
