@@ -159,7 +159,13 @@ def _web_safe_links(conn: sqlite3.Connection, file_id: str) -> list[dict[str, An
             "subject_node_id": link.subject_node_id,
             "is_primary_source": link.is_primary_source,
         }
-        assert set(entry) <= WEB_SAFE_LINK_FIELDS  # structural, defense-in-depth
+        # Structural allowlist, defense-in-depth. NOT `assert`: `python -O`
+        # deletes assert statements, and "a future edit adds a field" is exactly
+        # the scenario this exists for (GOV-1687). Mirrors _assert_file_keys.
+        _extra = set(entry) - WEB_SAFE_LINK_FIELDS
+        if _extra:
+            raise FieldLeak(
+                f"non-web-safe field(s) in supplied-file link: {sorted(_extra)!r}")
         out.append(entry)
     return out
 

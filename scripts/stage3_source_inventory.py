@@ -100,10 +100,13 @@ SOURCE_INVENTORY_FIELDS: frozenset[str] = frozenset(_INVENTORY_COLUMNS)
 # column to _INVENTORY_COLUMNS that is not web-safe, the module refuses to import
 # rather than silently projecting an unsafe field. publication is consumed
 # read-only — this never mutates the allowlist.
-assert SOURCE_INVENTORY_FIELDS <= pub.WEB_SAFE_FIELD_ALLOWLIST, (
-    "source inventory projects a non-web-safe field: "
-    f"{sorted(SOURCE_INVENTORY_FIELDS - pub.WEB_SAFE_FIELD_ALLOWLIST)}"
-)
+_UNSAFE = SOURCE_INVENTORY_FIELDS - pub.WEB_SAFE_FIELD_ALLOWLIST
+if _UNSAFE:  # NOT `assert` — see GOV-1687: `python -O` deletes assert entirely,
+    # so an assert cannot "refuse to import". Measured: under -O the leak survives
+    # and the process exits 0.
+    raise RuntimeError(
+        f"source inventory projects a non-web-safe field: {sorted(_UNSAFE)}")
+del _UNSAFE
 
 # ---------------------------------------------------------------------------
 # §2 — the derived coverage metric (fail-closed, read-time)
