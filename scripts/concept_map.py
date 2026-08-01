@@ -164,21 +164,44 @@ ALLOWED_ALIAS_TYPES = frozenset({
 # Import-time drift guards (fail at import, not at runtime).
 # ---------------------------------------------------------------------------
 
+
+class RegistryConsistencyError(RuntimeError):
+    """The node/edge vocabulary is internally inconsistent. Raised at IMPORT.
+
+    Deliberately NOT ``assert``: `python -O` deletes assert statements outright, so
+    these guards would hold in a normal run and be **absent** in an optimised one —
+    exactly the condition under which a future edit goes unchecked. That matters here
+    because this registry is the vocabulary every edge is validated against, and
+    ``read_api`` (a byte-frozen serving surface) imports it (GOV-1702, read-api C7b).
+    """
+
+
+def _require(condition: object, message: str) -> None:
+    if not condition:
+        raise RegistryConsistencyError(message)
+
+
 # Every edge endpoint type in the contract must be a known node type — no edge
 # may point at a type the registry does not define.
 for _etype, (_froms, _tos) in EDGE_ENDPOINTS.items():
-    assert _etype in ALLOWED_EDGE_TYPES, f"EDGE_ENDPOINTS names unknown edge {_etype!r}"
+    _require(_etype in ALLOWED_EDGE_TYPES,
+             f"EDGE_ENDPOINTS names unknown edge {_etype!r}")
     _unknown = (_froms | _tos) - ALLOWED_NODE_TYPES
-    assert not _unknown, f"edge {_etype!r} references unknown node type(s) {_unknown}"
+    _require(not _unknown,
+             f"edge {_etype!r} references unknown node type(s) {_unknown}")
 
 # The GOV-98 additions must actually be additive (present, and not already in the
 # 1.07 set) so a future rename can't silently collide.
-assert _NODE_TYPES_GOV98 <= ALLOWED_NODE_TYPES
-assert _EDGE_TYPES_GOV98 <= ALLOWED_EDGE_TYPES
-assert not (_NODE_TYPES_1_07 & _NODE_TYPES_GOV98), "GOV-98 node collides with 1.07"
-assert not (_EDGE_TYPES_1_07 & _EDGE_TYPES_GOV98), "GOV-98 edge collides with 1.07"
-assert FORWARD_LINKING_EDGE_TYPES <= ALLOWED_EDGE_TYPES
-assert AGENDA_LIFECYCLE_EDGE_TYPES <= ALLOWED_EDGE_TYPES
+_require(_NODE_TYPES_GOV98 <= ALLOWED_NODE_TYPES,
+         "GOV-98 node types are not all in ALLOWED_NODE_TYPES")
+_require(_EDGE_TYPES_GOV98 <= ALLOWED_EDGE_TYPES,
+         "GOV-98 edge types are not all in ALLOWED_EDGE_TYPES")
+_require(not (_NODE_TYPES_1_07 & _NODE_TYPES_GOV98), "GOV-98 node collides with 1.07")
+_require(not (_EDGE_TYPES_1_07 & _EDGE_TYPES_GOV98), "GOV-98 edge collides with 1.07")
+_require(FORWARD_LINKING_EDGE_TYPES <= ALLOWED_EDGE_TYPES,
+         "FORWARD_LINKING_EDGE_TYPES names an edge outside ALLOWED_EDGE_TYPES")
+_require(AGENDA_LIFECYCLE_EDGE_TYPES <= ALLOWED_EDGE_TYPES,
+         "AGENDA_LIFECYCLE_EDGE_TYPES names an edge outside ALLOWED_EDGE_TYPES")
 
 
 class EdgeError(ValueError):
