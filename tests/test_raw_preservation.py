@@ -331,3 +331,52 @@ def test_dry_run_writes_nothing_at_all(tmp_path: Path) -> None:
     assert status == "seed_only", (
         "apply=False wrote to the database — a dry run that mutates is worse than "
         "no dry run, because operators rely on it being safe")
+
+
+# --- GOV-1693 (C7b hunt): a STORED path must not escape the repository root ---
+#
+# `Path(root) / value` silently DISCARDS `root` when `value` is absolute:
+# measured, `Path("/repo") / "/etc/passwd"` is `/etc/passwd` — no error. A `..`
+# segment walks out just as quietly. Either way the caller reads, hashes, or
+# reports a file OUTSIDE the preservation store while believing it is inside.
+#
+# NOT a live vulnerability: every writer of these columns constructs a contained
+# relative path. The reason to guard the READ side is that the invariant is
+# enforced at 6+ write sites and verified at none, so every future writer has to
+# re-derive it. One check covers all of them.
+
+
+def test_an_absolute_stored_path_is_refused_not_silently_followed(tmp_path: Path):
+    """The foot-gun in one line: an absolute value makes `/` throw the root away."""
+    db_path = tmp_path / "esc.db"
+    repo_root = tmp_path / "repo"
+    (repo_root / "Raw").mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"not ours")
+    db.apply_migrations(db_path)
+
+    with db.open_db(db_path) as conn:
+        _insert_source(conn, "alpine-escape", status="preserved",
+                       local_path=str(outside), sha=rp.sha256_file(outside))
+        with pytest.raises(rp.RawPathEscape, match="outside the repository root"):
+            rp.validate_sources(conn, repo_root, bad_document_ids=set(),
+                                apply=False, gap_exceptions=(), run_id=None)
+
+
+def test_a_dot_dot_stored_path_is_refused(tmp_path: Path):
+    """`..` escapes without ever looking absolute."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (tmp_path / "sibling.txt").write_bytes(b"x")
+    with pytest.raises(rp.RawPathEscape):
+        rp._contained(repo_root, "../sibling.txt")
+
+
+def test_an_ordinary_relative_path_still_resolves_normally(tmp_path: Path):
+    """The guard must not break the 99.9% case it sits in front of."""
+    repo_root = tmp_path / "repo"
+    (repo_root / "Raw").mkdir(parents=True)
+    (repo_root / "Raw" / "ok.pdf").write_bytes(b"%PDF")
+    got = rp._contained(repo_root, "Raw/ok.pdf")
+    assert got == repo_root / "Raw/ok.pdf"
+    assert got.exists(), "a legitimate contained path must still be usable"
