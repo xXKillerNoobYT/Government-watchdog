@@ -1,0 +1,223 @@
+{
+  "version": "5.15.0",
+  "note": "Stage 5.14 (GOV-581) reviewer-internal documentation-maintenance registry, extended in Stage 5.15 (GOV-585) with the handoff-escalation evaluator module + its contract. Every artifact that must stay current for the Alpine verification substrate, with owner + cadence. The deterministic detector (src/doc-continuity.js) reads this manifest plus the live repo file set and module export surface and emits a reviewer-internal continuity report. No public output; AI-boundary preserved (GOV-471/436).",
+  "entries": [
+    {
+      "id": "modcont-source-registry",
+      "path": "Docs/modules/source-registry.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — source capture/lifecycle layer",
+      "module": "src/source-registry.js",
+      "documentedExports": [
+        "SOURCE_CLASSES",
+        "LIFECYCLE_STATUSES",
+        "expandHomePath",
+        "canonicalizeUrl",
+        "hashFileSha256",
+        "buildSourceCapture",
+        "applyReplacementDetection",
+        "importSources"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/source-registry.test.js"
+    },
+    {
+      "id": "modcont-statement-verification",
+      "path": "Docs/modules/statement-verification.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — statement lifecycle + publication gate",
+      "module": "src/statement-verification.js",
+      "documentedExports": [
+        "STATEMENT_STATUSES",
+        "STATEMENT_KINDS",
+        "createStatement",
+        "createSourceLink",
+        "computeSourceTraceHash",
+        "applyVerificationTransition",
+        "evaluatePublicationGate"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/statement-verification.test.js"
+    },
+    {
+      "id": "modcont-digest-assembler",
+      "path": "Docs/modules/digest-assembler.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — reviewer-internal digest selection",
+      "module": "src/digest-assembler.js",
+      "documentedExports": [
+        "DIGEST_TITLE",
+        "assembleDigest"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/digest-assembler.test.js"
+    },
+    {
+      "id": "modcont-refresh-runner",
+      "path": "Docs/modules/refresh-runner.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — weekly refresh orchestration + run log",
+      "module": "src/refresh-runner.js",
+      "documentedExports": [
+        "ALPINE_HOSTS",
+        "DEFAULT_LOG_PATH",
+        "formatTimestamp",
+        "formatLogLine",
+        "runWeeklyRefresh",
+        "renderRunLog"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/refresh-runner.test.js"
+    },
+    {
+      "id": "modcont-briefing",
+      "path": "Docs/modules/briefing.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — correction-aware weekly briefing",
+      "module": "src/briefing.js",
+      "documentedExports": [
+        "BRIEFING_TITLE",
+        "detectHotTopics",
+        "buildCorrectionNotices",
+        "partitionBriefingStatements",
+        "assembleBriefing"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/briefing.test.js"
+    },
+    {
+      "id": "modcont-doc-continuity",
+      "path": "Docs/modules/doc-continuity.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — the doc-continuity detector itself",
+      "module": "src/doc-continuity.js",
+      "documentedExports": [
+        "CONTINUITY_REPORT_TITLE",
+        "FINDING_TYPES",
+        "analyzeDocContinuity",
+        "renderContinuityReport"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/doc-continuity.test.js"
+    },
+    {
+      "id": "modcont-handoff-escalation",
+      "path": "Docs/modules/handoff-escalation.md",
+      "kind": "module_continuity_doc",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "per_slice",
+      "requiredFor": "Stage 5 handoff continuity — the agent-handoff & owner-escalation evaluator (5.15)",
+      "module": "src/handoff-escalation.js",
+      "documentedExports": [
+        "HANDOFF_VERDICT_TITLE",
+        "MODEL_VERSION",
+        "HANDOFF_VIOLATION_TYPES",
+        "ROLE_SET",
+        "TRIGGER_SET",
+        "EVIDENCE_BUCKETS",
+        "OWNER_GATE_CONDITIONS",
+        "OWNER_GATES",
+        "evaluateHandoff",
+        "evaluateEscalation",
+        "evaluateStageExit",
+        "evaluateHandoffSlice",
+        "renderHandoffVerdict"
+      ],
+      "purpose": true,
+      "io": true,
+      "invariants": true,
+      "testEntry": "node --test test/handoff-escalation.test.js"
+    },
+    {
+      "id": "stage-contract-5-15-handoff-escalation",
+      "path": "Docs/stage5-15-agent-handoff-escalation-contract.md",
+      "kind": "stage_contract",
+      "owner": "CTO",
+      "cadence": "on_stage_close",
+      "requiredFor": "Stage 5.15 agent-handoff & owner-escalation contract (GOV-584) — governs this slice's evaluator + model.",
+      "mustReferenceModules": [],
+      "referencedModules": []
+    },
+    {
+      "id": "readme",
+      "path": "README.md",
+      "kind": "readme",
+      "owner": "AutomationOpsEngineer",
+      "cadence": "on_demand",
+      "requiredFor": "Repo entry point — how to run the tooling + test suite"
+    },
+    {
+      "id": "stage-contract-4-09-boundary",
+      "path": "Docs/stage4-automation-ai-boundary.md",
+      "kind": "stage_contract",
+      "owner": "CTO",
+      "cadence": "on_stage_close",
+      "requiredFor": "Governing automation-vs-AI boundary (GOV-471) — Stage 5.14 extends it",
+      "mustReferenceModules": [],
+      "referencedModules": []
+    },
+    {
+      "id": "stage-contract-5-13-backgap",
+      "path": "Docs/stage5-13-backgap-regression-analysis-contract.md",
+      "kind": "stage_contract",
+      "owner": "CTO",
+      "cadence": "on_stage_close",
+      "requiredFor": "Stage 5.13 back-gap/regression analysis contract. NOTE: the 5.13 analyzer ships in the Python substrate repo (scripts/stage5_backgap.py, GOV-574), NOT as a src/*.js module here. Registered as a contract so the maintenance record is drift-free; it intentionally has no JS module_continuity_doc.",
+      "mustReferenceModules": [],
+      "referencedModules": []
+    },
+    {
+      "id": "stage-contract-5-14-doc-continuity",
+      "path": "Docs/stage5-14-doc-maintenance-continuity-contract.md",
+      "kind": "stage_contract",
+      "owner": "CTO",
+      "cadence": "on_stage_close",
+      "requiredFor": "This slice's governing contract (GOV-580)",
+      "mustReferenceModules": [],
+      "referencedModules": []
+    },
+    {
+      "id": "stage-contract-5-08-briefing-editorial",
+      "path": "Docs/stage5-08-newsletter-briefing-editorial-contract.md",
+      "kind": "stage_contract",
+      "owner": "NewsletterEditor",
+      "cadence": "on_demand",
+      "requiredFor": "Stage 5.08 editorial contract (deferred x.08 lane — GOV-572 HOLD). Registered so the committed doc is not orphaned; lane is not advanced by this slice.",
+      "mustReferenceModules": [],
+      "referencedModules": []
+    },
+    {
+      "id": "ledger-stage-5-14",
+      "path": "Docs/stage5-14-doc-maintenance-continuity-contract.md",
+      "kind": "stage_ledger_ref",
+      "owner": "CEO",
+      "cadence": "on_stage_close",
+      "requiredFor": "Stage-ledger handle for the 5.14 goal. The detector has no network and cannot resolve goal status — fail-closed ledger_state_unknown (low) is the honest real-run outcome.",
+      "goalRef": "43937de7-4ba2-4348-a830-1a32f0908915"
+    }
+  ]
+}
