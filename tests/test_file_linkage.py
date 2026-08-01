@@ -322,3 +322,61 @@ class TestGapReversibilityAndDispositions:
             "SELECT resolved_status FROM completeness_gaps WHERE gap_id = ?", (gap_id,)
         ).fetchone()
         assert row[0] == "wontfix"
+
+
+# --- GOV-1686 (C1, ingest-provenance): pin P-3, the invariant most likely to be
+#     "fixed" by someone reading this module cold ---------------------------------
+
+
+class TestGapTracksCoverageNotPublishability:
+    """`Docs/supplied-file-provenance-contract.md` P-3.
+
+    `NON_COUNTING_REVIEW_STATES` contains **only** `rejected`, so a `pending`,
+    entirely unreviewed file closes the `no_primary_source` gap. Read cold that
+    looks fail-open in a fail-closed codebase, and the natural "fix" is to
+    require `web_safe`.
+
+    It is not a bug. The gap asks *"does this subject have a source at all?"* —
+    coverage — while publishability is a **separate** gate (B6's web-safe read
+    projection). Conflating them would silently redefine "gap closed" across the
+    whole completeness surface.
+
+    These tests exist so that redefinition cannot happen quietly: it has to fail
+    here first, and the failure names the contract.
+    """
+
+    def test_an_unreviewed_pending_file_closes_the_gap(self, conn):
+        rec = fr.insert_file_record(
+            conn, area="alpine", source_type="council_packet",
+            original_filename="packet.pdf", sha256=SHA, mime="application/pdf",
+            byte_size=1024, supplied_by="clerk@example.gov",
+            captured_at="2026-06-23T10:00:00+00:00")
+        assert rec.review_state == "pending", (
+            "a new record must start `pending` — review_state is deliberately not "
+            "an insert parameter")
+        fl.link_file(conn, subject_node_type="meeting", subject_node_id=MEETING_DATE,
+                     file_id=rec.file_id, is_primary_source=True,
+                     linked_by="clerk@example.gov")
+        assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is True, (
+            "P-3: an unreviewed `pending` file MUST still count as coverage. If "
+            "this now fails, someone tightened NON_COUNTING_REVIEW_STATES — that "
+            "changes what a closed gap MEANS everywhere. See the contract.")
+
+    def test_only_a_repudiated_file_fails_to_count(self, conn):
+        """The complement: `rejected` is the ONE state that does not count."""
+        rec = fr.insert_file_record(
+            conn, area="alpine", source_type="council_packet",
+            original_filename="packet.pdf", sha256=SHA, mime="application/pdf",
+            byte_size=1024, supplied_by="clerk@example.gov",
+            captured_at="2026-06-23T10:00:00+00:00")
+        fl.link_file(conn, subject_node_type="meeting", subject_node_id=MEETING_DATE,
+                     file_id=rec.file_id, is_primary_source=True,
+                     linked_by="clerk@example.gov")
+        fr.set_review_state(conn, rec.file_id, "rejected")
+        assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is False, (
+            "a repudiated file is not a source — `rejected` must not count")
+        # And every OTHER state does count, which is what makes the set minimal.
+        for state in ("reviewing", "held"):
+            fr.set_review_state(conn, rec.file_id, state)
+            assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is True, (
+                f"P-3: `{state}` must count as coverage; only `rejected` does not")
