@@ -380,3 +380,21 @@ class TestGapTracksCoverageNotPublishability:
             fr.set_review_state(conn, rec.file_id, state)
             assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is True, (
                 f"P-3: `{state}` must count as coverage; only `rejected` does not")
+
+
+def test_make_link_id_is_deterministic_and_is_the_uniqueness_key(conn):
+    """`Docs/supplied-file-provenance-contract.md` P-5, pinned DIRECTLY.
+
+    C1b (GOV-1687) found P-5 covered only *indirectly*, through
+    `test_relink_is_idempotent_upsert`. That test would still pass if the id
+    became random, because the upsert also matches on the natural key — so the
+    determinism itself was unguarded. C4 closes that: same inputs → same id,
+    different inputs → different id.
+    """
+    a = fl.make_link_id("meeting", MEETING_DATE, "file-1")
+    assert a == fl.make_link_id("meeting", MEETING_DATE, "file-1"), (
+        "make_link_id must be deterministic — a random id would let the same "
+        "file attach to the same subject twice and drift every link count")
+    assert a != fl.make_link_id("meeting", MEETING_DATE, "file-2")
+    assert a != fl.make_link_id("area", MEETING_DATE, "file-1")
+    assert a != fl.make_link_id("meeting", "2026-01-01", "file-1")
