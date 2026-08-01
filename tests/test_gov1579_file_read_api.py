@@ -422,3 +422,89 @@ class TestStateGateSurvivesAQueryThatStoppedFiltering:
             "re-check is invisible while the WHERE clause is intact — which is "
             "precisely why it needs its own guard.")
         assert served[0]["review_state"] == api.WEB_SAFE_STATE
+
+
+# --- GOV-1703 (C8 hunt): TWO web-safe allowlists exist, and they disagree ------
+#
+# C8 for read-api compared every web-safe field set in the repo. There are two
+# independent families:
+#
+#   * `publication.WEB_SAFE_FIELD_ALLOWLIST` / `WEB_UNSAFE_FIELDS` — the SSOT for
+#     the statements/cards surface, and the set other projections check against
+#     (`stage3_source_inventory` asserts a subset relation against it);
+#   * this module's `WEB_SAFE_FILE_FIELDS` / `_WEB_SAFE_FILE_COLUMNS` / link and
+#     diff sets, for supplied files.
+#
+# **`file_read_api` does not import `publication`, so nothing compared them.**
+# Measured: the supplied-file allowlist contains **`review_state`**, which the SSOT
+# names explicitly WEB-UNSAFE.
+#
+# It does not leak today, and the reason is precise rather than lucky: W-1 filters
+# to `web_safe` and re-checks after the SQL, so **every projected card carries the
+# same value** — measured across all five review states, 1 of 5 projected, one
+# distinct value. A constant carries no information.
+#
+# But that makes the exemption's safety rest **entirely on W-1**. The structural
+# allowlist — the second line of defence — has been opened for this field, so if
+# the state gate regressed the allowlist would not object. Hence two tests: one
+# pinning the divergence to its single reviewed exception, and one guarding the
+# *justification* for that exception rather than just asserting it.
+
+
+import publication as pub  # noqa: E402
+
+#: The one field the supplied-file surface serves that the SSOT calls unsafe.
+#: Reviewed and justified below; this set may only SHRINK.
+_REVIEWED_UNSAFE_EXEMPTIONS = frozenset({"review_state"})
+
+
+class TestAllowlistsAgreeWithTheNamedUnsafeSet:
+
+    @pytest.mark.parametrize("name", [
+        "WEB_SAFE_FILE_FIELDS", "WEB_SAFE_LINK_FIELDS", "WEB_SAFE_DIFF_FIELDS",
+        "_WEB_SAFE_FILE_COLUMNS",
+    ])
+    def test_no_unreviewed_named_unsafe_field_is_web_safe_here(self, name):
+        """A field the SSOT calls unsafe may not appear here without review."""
+        fields = frozenset(getattr(api, name))
+        unreviewed = sorted((fields & pub.WEB_UNSAFE_FIELDS) - _REVIEWED_UNSAFE_EXEMPTIONS)
+        assert not unreviewed, (
+            f"{name} contains {unreviewed}, which `publication.WEB_UNSAFE_FIELDS` "
+            "names as web-unsafe. Two allowlists govern what crosses to the website "
+            "and this module does not import the SSOT, so nothing else compares them. "
+            "Adding a field here is a publication-safety change: justify it and add "
+            "it to _REVIEWED_UNSAFE_EXEMPTIONS, or take it out.")
+
+    def test_the_exemption_set_is_not_carrying_a_field_that_left(self):
+        """An exemption for a field no longer served is stale, not safe.
+
+        Keeps the set shrinking rather than accumulating — the same rule as the
+        migration and doc-citation ratchets.
+        """
+        everywhere = (frozenset(api.WEB_SAFE_FILE_FIELDS)
+                      | frozenset(api._WEB_SAFE_FILE_COLUMNS)
+                      | frozenset(api.WEB_SAFE_LINK_FIELDS)
+                      | frozenset(api.WEB_SAFE_DIFF_FIELDS))
+        stale = sorted(_REVIEWED_UNSAFE_EXEMPTIONS - everywhere)
+        assert not stale, f"exemption(s) {stale} no longer appear in any allowlist — remove them"
+
+    def test_the_review_state_exemption_is_justified_because_it_is_a_CONSTANT(self, conn):
+        """Guard the REASON for the exemption, not just the exemption.
+
+        `review_state` is safe here only because W-1 means every projected card
+        carries `web_safe` — a constant carries no information. If the state gate
+        ever regressed, this field would start reporting real reviewer posture to
+        the website, and the structural allowlist would NOT object because the
+        field is allowlisted. So the justification is what needs a test.
+        """
+        for state in ("pending", "reviewing", api.WEB_SAFE_STATE, "held", "rejected"):
+            _make(conn, state=state, sha256=hashlib.sha256(state.encode()).hexdigest())
+
+        served = api.web_safe_files(conn)
+        values = {card.get("review_state") for card in served}
+        assert served, "nothing projected — the test would be vacuous"
+        assert values == {api.WEB_SAFE_STATE}, (
+            f"review_state is no longer constant across the projection: {sorted(values)}. "
+            "It is allowlisted ONLY because W-1 makes it carry no information; a "
+            "varying value means the projection is reporting reviewer posture to the "
+            "website.")

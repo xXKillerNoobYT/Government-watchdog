@@ -148,6 +148,30 @@ only ever serves reviewer-cleared files.
 
 ---
 
+### W-10 — There are TWO web-safe allowlists, and this one serves a field the other calls unsafe
+
+Measured 2026-08-01 (GOV-1703, C8). Two independent families govern what crosses:
+
+| | governs | checked against the other? |
+|---|---|---|
+| `publication.WEB_SAFE_FIELD_ALLOWLIST` / `WEB_UNSAFE_FIELDS` | statements / cards (the SSOT) | — |
+| this module's four sets | supplied files | **no — `file_read_api` does not import `publication`** |
+
+The overlap is exactly one field: **`review_state`**, which the SSOT names web-**unsafe**.
+
+**It does not leak, and the reason is precise rather than lucky.** W-1 filters to `web_safe` and
+re-checks after the SQL, so every projected card carries the *same* value — measured across all
+five review states: 1 of 5 projected, one distinct value. **A constant carries no information.**
+
+**But that puts the exemption's safety entirely on W-1.** The structural allowlist is the second
+line of defence, and for this one field it has been opened — so if the state gate regressed, the
+allowlist would not object. Guarded accordingly by
+`TestAllowlistsAgreeWithTheNamedUnsafeSet`, which pins the divergence to its single reviewed
+exception **and separately asserts the constancy that justifies it**, so the reason is tested and
+not merely written down here.
+
+---
+
 ## 4. Known gaps — named, not silently skipped
 
 - **`WEB_SAFE_DIFF_FIELDS` is fail-OPEN by construction.** It is `DIFF_FIELDS` *minus* a
