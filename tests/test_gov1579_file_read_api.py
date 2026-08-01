@@ -638,3 +638,81 @@ class TestProjectionQueryCostStaysLinear:
             f"only {counting.count - before} statements counted for 5 files — the "
             "counter is not seeing cursor-issued queries, so any cost measured "
             "with it is meaningless")
+
+
+# --- GOV-1705 (C12): the one fail-OPEN surface, held shut by tripwire ---------
+#
+# Every other allowlist in this module is fail-closed: an unknown key is denied.
+# `WEB_SAFE_DIFF_FIELDS` inverts that. It is `file_versioning.DIFF_FIELDS` MINUS
+# a two-field denylist, so **a field added to B5's diff becomes web-safe with no
+# review at all** — on the sole Backend->Website crossing for supplied files.
+#
+# The B6 contract named this gap on 2026-08-01 and deliberately did not close it,
+# because flipping the derivation to an allowlist is a BEHAVIOUR change: a new
+# diff field would then vanish from the projection silently instead of appearing
+# in it. Both of those are silent. The useful third option is to make the change
+# LOUD, which is what this class does — the derivation is untouched, and the
+# membership it derives from is pinned so a person has to make the call.
+
+
+class TestDiffFieldsAdditionsForceAWebSafetyDecision:
+    """A fail-open derivation is acceptable only while additions are impossible.
+
+    So this makes additions impossible-in-silence rather than impossible: change
+    `DIFF_FIELDS` and the suite stops, naming the decision you now owe.
+    """
+
+    #: Pinned 2026-08-01, and NOT a golden file for its own sake — each of these
+    #: nine has been judged web-safe or not (the two unsafe ones live in
+    #: `api._WEB_UNSAFE_DIFF_FIELDS`), and it is that JUDGEMENT the pin protects.
+    #: Update this in the same PR that changes `DIFF_FIELDS`, and say in the PR
+    #: body which side the new field landed on and why.
+    _REVIEWED_DIFF_FIELDS = frozenset({
+        "sha256", "byte_size", "original_filename", "mime", "area",
+        "source_type", "origin_url", "supplied_by", "captured_at",
+    })
+
+    def test_no_diff_field_appeared_without_a_web_safety_decision(self):
+        appeared = sorted(set(fv.DIFF_FIELDS) - self._REVIEWED_DIFF_FIELDS)
+        assert not appeared, (
+            f"{appeared} was added to file_versioning.DIFF_FIELDS and is now "
+            "WEB-SAFE BY DEFAULT — it will cross to the website in every "
+            "supersede diff. Decide: if it carries raw content addresses, "
+            "identity, or anything vault-shaped, add it to "
+            "file_read_api._WEB_UNSAFE_DIFF_FIELDS. Then add it here to record "
+            "that the call was made.")
+
+    def test_no_reviewed_diff_field_vanished(self):
+        """The other direction: a removal silently shrinks what the pin covers."""
+        vanished = sorted(self._REVIEWED_DIFF_FIELDS - set(fv.DIFF_FIELDS))
+        assert not vanished, (
+            f"{vanished} left DIFF_FIELDS but is still pinned here. Drop it from "
+            "the pin in the same PR — a pin listing fields that no longer exist "
+            "stops describing the real surface.")
+
+    def test_the_unsafe_denylist_still_matches_real_fields(self):
+        """Non-vacuity — the failure mode that would leak without any edit here.
+
+        `_WEB_UNSAFE_DIFF_FIELDS` denies BY NAME. Rename the `sha256` column in
+        B5 and the denylist matches nothing: the vault content-address flows
+        straight into the projection, and every allowlist test above still
+        passes because the *key set* is what they check. Nothing else in this
+        file would notice.
+        """
+        stale = sorted(api._WEB_UNSAFE_DIFF_FIELDS - set(fv.DIFF_FIELDS))
+        assert not stale, (
+            f"file_read_api._WEB_UNSAFE_DIFF_FIELDS names {stale}, which are no "
+            "longer in DIFF_FIELDS. The denylist is now denying nothing for "
+            "those names — if they were renamed, whatever replaced them is "
+            "crossing to the web RIGHT NOW. Re-point the denylist.")
+
+    def test_the_derivation_is_still_a_denylist_over_the_full_diff(self):
+        """Pins the RELATIONSHIP, so the two sets cannot drift apart quietly."""
+        expected = tuple(
+            f for f in fv.DIFF_FIELDS if f not in api._WEB_UNSAFE_DIFF_FIELDS)
+        assert api.WEB_SAFE_DIFF_FIELDS == expected, (
+            "WEB_SAFE_DIFF_FIELDS is no longer DIFF_FIELDS minus the denylist. "
+            "If it was deliberately flipped to an explicit allowlist that is an "
+            "improvement, but it is a behaviour change (new diff fields will now "
+            "vanish rather than appear) — update this test and the B6 contract's "
+            "known-gaps section together.")

@@ -122,8 +122,15 @@ WEB_SAFE_LINK_FIELDS = frozenset({
 #: superseded file's changed size / filename / type is shown, but never its vault
 #: hash or who supplied it. ``content_changed`` (a bool, no hash) still signals
 #: that the bytes changed.
+#: The diff fields that must never cross. Named rather than inlined so this
+#: module's one fail-OPEN surface is greppable, and so the tripwire test in
+#: ``TestDiffFieldsAdditionsForceAWebSafetyDecision`` can assert these names
+#: still EXIST in ``DIFF_FIELDS`` — a renamed column would leave the denylist
+#: matching nothing and silently let the raw/PII field through.
+_WEB_UNSAFE_DIFF_FIELDS = frozenset({"sha256", "supplied_by"})
+
 WEB_SAFE_DIFF_FIELDS = tuple(
-    f for f in fv.DIFF_FIELDS if f not in {"sha256", "supplied_by"}
+    f for f in fv.DIFF_FIELDS if f not in _WEB_UNSAFE_DIFF_FIELDS
 )
 
 #: URL-typed diff fields that must be a public web URL to cross (else redacted).
