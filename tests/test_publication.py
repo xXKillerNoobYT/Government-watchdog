@@ -246,3 +246,72 @@ def test_migration_0005_idempotent(fresh_db: Path) -> None:
     with db.open_db(fresh_db) as conn:
         cols = _columns(conn, "sources")
     assert "publication_state" in cols
+
+
+# --- GOV-1687 (C1b, ingest-provenance): a web-safe allowlist may not be an `assert`
+
+import ast as _ast  # noqa: E402  (local to this guard; the file's own imports are above)
+
+#: Names that mark a check as enforcing a *web-safe / publication* allowlist.
+_ALLOWLIST_MARKERS = ("WEB_SAFE", "ALLOWLIST")
+
+_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+
+#: Modules that carry this defect but CANNOT be fixed without an unfreeze decision.
+#:
+#: `publication.py` is **byte-frozen against `origin/main`** — not by
+#: `test_deploy_frozen_surface.py` (which freezes four *other* surfaces and is what
+#: `CLAUDE.md` documents), but by `git diff origin/main == ""` assertions in SEVEN
+#: separate test files enforcing "extend the SSOT, do not fork it". Its line 403
+#: guard has exactly the `-O` defect this test exists to catch, and fixing it takes
+#: an explicit unfreeze card. Named here rather than omitted: an allowlist you can
+#: read is a known gap; a narrowed scan is an invisible one. See GOV-1687 / #229.
+_FROZEN_BLOCKED = frozenset({"publication.py"})
+
+
+def _allowlist_asserts(path: Path) -> list[tuple[int, str]]:
+    """`assert` statements whose test mentions a web-safe/allowlist name."""
+    try:
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:                                    # pragma: no cover
+        return []
+    out = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Assert):
+            continue
+        names = {n.id for n in _ast.walk(node.test) if isinstance(n, _ast.Name)}
+        names |= {n.attr for n in _ast.walk(node.test) if isinstance(n, _ast.Attribute)}
+        if any(mk in n.upper() for n in names for mk in _ALLOWLIST_MARKERS):
+            out.append((node.lineno, sorted(names)))
+    return out
+
+
+def test_no_web_safe_allowlist_is_enforced_by_a_bare_assert():
+    """`python -O` DELETES `assert`. A stripped allowlist is a silent leak.
+
+    Measured 2026-07-31: under `-O` a dict carrying a non-allowlisted key passes
+    the assert and the process exits **0**. Two modules relied on this shape —
+    `stage3_source_inventory.py` (whose comment claimed the module would "refuse
+    to import") and `file_read_api.py`, *the sole Backend→Website crossing*,
+    whose sibling half already raised `FieldLeak` while the links half did not.
+
+    **Latent, not live**: no `-O` or `PYTHONOPTIMIZE` appears anywhere in CI or
+    config, so nothing strips these today. The point is that a defense-in-depth
+    check exists for a *future* edit, and `-O` is exactly the condition under
+    which that future edit would go unguarded.
+
+    Ratchet at **zero** — the cheapest moment to install it.
+    """
+    offenders = []
+    for py in sorted(_SCRIPTS.rglob("*.py")):
+        for lineno, names in _allowlist_asserts(py):
+            rel = py.relative_to(_SCRIPTS.parent)
+            if rel.name in _FROZEN_BLOCKED:
+                continue
+            offenders.append(f"{rel}:{lineno} asserts on {names}")
+    assert not offenders, (
+        "A web-safe/publication allowlist is enforced by a bare `assert`, which "
+        "`python -O` removes entirely — the check silently becomes a no-op and a "
+        "non-allowlisted field is projected. Raise an explicit exception "
+        "instead (see `file_read_api._assert_file_keys` for the shape):\n  "
+        + "\n  ".join(offenders))
