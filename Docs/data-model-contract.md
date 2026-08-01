@@ -211,6 +211,18 @@ should land in the same one.
 
 1. **Read `Database/migrations/` on current `main`** and take the next free slot. Check open PRs
    too — `main` alone cannot show you a sibling branch's claim (INV-1's live example).
+   **That second half is no longer a manual step** (GOV-1696):
+
+   ```
+   python scripts/migration_slot_claims.py --next   # the slot that is free counting open PRs
+   python scripts/migration_slot_claims.py          # exit 1 naming any collision
+   ```
+
+   It has to query the forge because **no test can**: `tests/test_migration_slots.py` reads the
+   working tree, so it sees one branch and fires only *after* a duplicate lands. Per-PR CI is
+   structurally blind here — every PR is tested against `main`, never against its siblings.
+   If the probe cannot enumerate every open PR it exits **2** rather than reporting clean: a
+   tool that answers "free" when it could not look converts an unknown into a false assurance.
 2. Zero-pad to four digits. `NNNN_short_snake_name.sql`.
 3. Every `CREATE TABLE` / `CREATE INDEX` uses **`IF NOT EXISTS`** (INV-2, now guarded).
    No `;` in an inline `--` comment or a string literal (INV-7, guarded).
