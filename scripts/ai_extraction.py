@@ -393,6 +393,20 @@ def run_extraction(
     ledger. Returns a structured result; never raises on a proposer error (it is
     recorded as ``error_status='failed'`` instead — fail-closed and auditable).
 
+    **Scope of that promise, measured (GOV-1714).** Every rejection path a
+    *proposer* can trigger is inside the per-claim ``try``: orphan/pointer
+    violations, the PII guard, a bad ``speaker_class``, and any
+    ``sqlite3.DatabaseError`` (a duplicate ``statement_id`` on a re-proposed claim
+    raises ``IntegrityError``, which is **not** a ``ValueError`` and used to
+    escape). The claim is rejected and counted; the run finishes and records.
+
+    **What is still not guaranteed:** an *unforeseen* exception raised outside that
+    block would still propagate before ``finalize_run``, leaving the ledger row at
+    its ``error_status='ok'`` column default with ``finished_utc`` NULL — a crashed
+    run reading as healthy. Closing that needs the whole body wrapped so the ledger
+    is finalized on any escape; deliberately not done here, because it is a
+    restructure of a 130-line function rather than the surgical fix this is.
+
     The model/tool version recorded on the run comes from ``model_name`` /
     ``model_version`` (or the loaded ``provider_config``); no secret is read.
     """
@@ -465,7 +479,15 @@ def run_extraction(
             # dropped and counted, never written.
             _assert_claim_pii_free(ai_statement, links)
             result = st.insert_statement(conn, ai_statement, links, commit=False)
-        except (st.OrphanClaimError, st.PointerError, PiiGuardError, ValueError) as exc:
+            # Attribution safety: an AI speaker guess never names (uncertain -> no
+            # name). MOVED INSIDE the try in GOV-1714 — it used to sit after the
+            # block, so a proposer-supplied bad `speaker_class` raised ValueError
+            # straight out of run_extraction, past the ledger finalize, leaving the
+            # audit row reading `error_status='ok'` for a run that never finished.
+            if claim.get("speaker"):
+                _apply_ai_speaker(conn, result["statement_id"], claim["speaker"])
+        except (st.OrphanClaimError, st.PointerError, PiiGuardError, ValueError,
+                sqlite3.DatabaseError) as exc:
             # No-orphan-claims (1.07 §2.3) + PII guard inherited fail-closed: an AI
             # claim with no resolving pointer/segment, or one carrying private PII,
             # is rejected and NOT written.
@@ -482,9 +504,6 @@ def run_extraction(
         ]
         written_links.extend(link_ids)
 
-        # Attribution safety: an AI speaker guess never names (uncertain -> no name).
-        if claim.get("speaker"):
-            _apply_ai_speaker(conn, result["statement_id"], claim["speaker"])
 
     if rejected and written_statements:
         error_status = "partial"
