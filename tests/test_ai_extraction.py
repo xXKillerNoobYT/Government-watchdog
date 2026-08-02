@@ -565,3 +565,110 @@ def test_run_vocab_matches_check_literals(tmp_path: Path) -> None:
         assert f"'{value}'" in sql
     for value in ai.ALLOWED_RUN_REVIEWER_STATE:
         assert f"'{value}'" in sql
+
+
+# --- GOV-1710 (C4): AI provenance was only ever checked on `statements` --------
+#
+# `slice3_smoke._check_ai_provenance` — the reference smoke's provenance gate —
+# runs one query, `SELECT ... FROM statements`. Measured: the string
+# `evidence_links` does not appear in it. So the check whose entire job is
+# proving AI provenance is blind to half the surface AI writes, and that is why
+# backend #256 (evidence links carry no AI bindings at all) went unnoticed
+# through every smoke run.
+#
+# These tests give the links half the coverage the statements half already has.
+# The correctness assertion is `xfail(strict=True)` because #256 is open and
+# unfixed: today it xfails and the suite stays green, and the moment #256 lands
+# it XPASSes — which `strict=True` turns into a failure telling the next person
+# to delete the marker. A ratchet that fires on the FIX, not on the bug.
+
+
+def _ai_links(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT evidence_link_id, layer, is_verbatim, verification_status, "
+        "ai_extraction_run_id FROM evidence_links ORDER BY evidence_link_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def test_the_ai_statement_half_IS_bound_so_the_links_failure_is_specific(tmp_path):
+    """Non-vacuity, and it localises the defect.
+
+    If the adapter were broken for everything, the links assertion below would be
+    unremarkable. It is not: the statement half binds `produced_by`,
+    `verification_status` and `review_state` correctly. The gap is specific to
+    evidence links, which is what makes it easy to miss.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        ai.run_extraction(
+            conn, run_id="r-links-a", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id],
+            proposer=_static_proposer([_seed_ai_claim(seg_id)]),
+            tool_version="gov-lane2@test")
+        row = conn.execute(
+            "SELECT produced_by, verification_status, review_state, layer, is_verbatim "
+            "FROM statements WHERE produced_by = 'ai'").fetchone()
+
+    assert row is not None, "no AI statement written — the fixture stopped working"
+    assert row["produced_by"] == ai.AI_PRODUCED_BY
+    assert row["verification_status"] == ai.AI_ENTRY_VERIFICATION_STATUS
+    assert row["review_state"] == ai.AI_REVIEW_STATE
+    assert row["layer"] == ai.AI_LAYER, (
+        "the STATEMENT half stopped defaulting to the AI layer — that is a "
+        "different and larger regression than the links gap these tests cover")
+
+
+def test_an_ai_run_writes_evidence_links_at_all(tmp_path):
+    """The precondition for the xfail below. Without it that test proves nothing."""
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        ai.run_extraction(
+            conn, run_id="r-links-b", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id],
+            proposer=_static_proposer([_seed_ai_claim(seg_id)]),
+            tool_version="gov-lane2@test")
+        links = _ai_links(conn)
+
+    assert links, "the AI run wrote no evidence_links; the guard below is vacuous"
+    assert links[0]["ai_extraction_run_id"] == "r-links-b", (
+        "the one field the adapter DOES bind on a link stopped being bound")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "backend #256: the adapter binds only ai_extraction_run_id on an evidence "
+    "link; layer and is_verbatim fall through to statements.py defaults "
+    "('known_then', 1). Remove this marker when #256 lands."))
+def test_ai_evidence_links_are_labelled_consistently_with_their_statement(tmp_path):
+    """An AI link must not claim to be a verbatim, known-then record.
+
+    The proposer here supplies **no** `layer` and **no** `is_verbatim` — it is not
+    lying, it is simply silent. The defaults alone are enough: the link persists
+    as `known_then` / verbatim while the statement it belongs to is
+    `ai_thought_then` / paraphrase. Both fields are on
+    `publication.WEB_SAFE_FIELD_ALLOWLIST`, and `evidence_links` has no
+    `produced_by` column, so nothing downstream can tell the link came from AI.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        ai.run_extraction(
+            conn, run_id="r-links-c", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id],
+            proposer=_static_proposer([_seed_ai_claim(seg_id)]),
+            tool_version="gov-lane2@test")
+        links = _ai_links(conn)
+        stmt = conn.execute(
+            "SELECT layer, is_verbatim FROM statements WHERE produced_by='ai'").fetchone()
+
+    assert links
+    for link in links:
+        assert link["layer"] == stmt["layer"], (
+            f"AI evidence link {link['evidence_link_id']} is layer="
+            f"{link['layer']!r} while its statement is {stmt['layer']!r}")
+        assert link["is_verbatim"] == stmt["is_verbatim"], (
+            f"AI evidence link {link['evidence_link_id']} claims "
+            f"is_verbatim={link['is_verbatim']} while its statement says "
+            f"{stmt['is_verbatim']}")
