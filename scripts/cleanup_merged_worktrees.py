@@ -205,7 +205,18 @@ def resolve_merge_ref(repo_root: Path, default_branch: str,
     gate still works in local-only repos and tests.
     """
     if do_fetch:
-        _run_git(["fetch", "origin", default_branch], cwd=repo_root, check=False)
+        # Best-effort only. ``_run_git`` caps the fetch at 30s; a remote that is
+        # merely SLOW (not failed) raises ``subprocess.TimeoutExpired`` — a
+        # DISTINCT exception from ``CalledProcessError``, so ``check=False`` does
+        # NOT suppress it. Left uncaught it crashed the entire post-merge lane
+        # (GOV-1670), defeating the fallback this docstring promises: a hung
+        # remote is functionally unreachable and must degrade to the cached
+        # ``origin/<default>`` (or the local branch), never abort the run.
+        try:
+            _run_git(["fetch", "origin", default_branch],
+                     cwd=repo_root, check=False)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
     remote_ref = f"origin/{default_branch}"
     if _ref_exists(remote_ref, repo_root):
         return remote_ref
@@ -402,6 +413,15 @@ def discover_candidates(repo_root: Path, api_url: str,
     branch_result = _run_git(["branch", "--format=%(refname:short)"], cwd=repo_root, check=False)
     all_branches = [b.strip() for b in branch_result.stdout.splitlines() if b.strip()]
 
+    # Refresh ``origin/<default>`` ONCE per repo, not once per branch. Gate 2
+    # (``check_gate2`` → ``resolve_merge_ref``) previously fetched for EVERY
+    # branch; an N-branch repo issued N sequential fetches, and with a slow
+    # remote (~90s/fetch measured during GOV-1670) that timed the whole scan out
+    # before ``execute_cleanup`` ran. ``origin/<default>`` cannot change
+    # mid-scan, so one upfront best-effort refresh is equivalent — each
+    # per-branch gate 2 below then runs against the cached ref (do_fetch=False).
+    resolve_merge_ref(repo_root, resolve_default_branch(repo_root), do_fetch=True)
+
     seen_branches = set()
     for branch in all_branches:
         if branch in ("main", "master", "develop"):
@@ -413,7 +433,7 @@ def discover_candidates(repo_root: Path, api_url: str,
         log.info("evaluating branch=%s issue=%s worktree=%s", branch, issue_id, wt_path)
 
         g1 = check_gate1(issue_id, api_url)
-        g2 = check_gate2(branch, repo_root)
+        g2 = check_gate2(branch, repo_root, do_fetch=False)
         g3 = check_gate3(branch, wt_path, repo_root)
         g4 = check_gate4(wt_path, branch, repo_root)
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -352,6 +353,61 @@ class TestCheckGate2OriginMain:
         _git(["merge", "--no-ff", "-m", "m", "gov-1-x"], repo)
         g = cm.check_gate2("gov-1-x", repo, do_fetch=False)
         assert g.passed is True
+
+    def test_resolve_merge_ref_survives_fetch_timeout(self, tmp_path,
+                                                      monkeypatch):
+        """GOV-1670 RED→GREEN: a remote that is merely SLOW (not failed) makes
+        ``_run_git``'s 30s cap raise ``subprocess.TimeoutExpired`` — a DIFFERENT
+        exception from ``CalledProcessError``, so ``check=False`` does not
+        suppress it. Uncaught, it crashed the whole post-merge lane during the
+        daily routine, defeating the "unreachable → fall back to cached ref"
+        contract this function documents. A hung remote is functionally
+        unreachable and must degrade to the cached ``origin/<default>``."""
+        work, _base, branch = self._origin_clone_with_truemerge(tmp_path)
+        real_run_git = cm._run_git
+
+        def slow_fetch(args, **kwargs):
+            if args[:1] == ["fetch"]:
+                raise subprocess.TimeoutExpired(cmd=["git"] + args, timeout=30)
+            return real_run_git(args, **kwargs)
+
+        monkeypatch.setattr(cm, "_run_git", slow_fetch)
+        # cached origin/main still exists (stale, but present) → preferred ref;
+        # the timed-out fetch must NOT propagate.
+        ref = cm.resolve_merge_ref(work, "main", do_fetch=True)
+        assert ref == "origin/main"
+
+    def test_discover_fetches_origin_at_most_once_per_repo(self, tmp_path,
+                                                            monkeypatch):
+        """GOV-1670 RED→GREEN: gate 2 must refresh ``origin/<default>`` ONCE per
+        repo, not once per branch. Previously ``check_gate2`` fetched for every
+        branch, so an N-branch repo issued N sequential fetches; with a slow
+        remote (~90s/fetch measured during GOV-1670) a full scan timed out and
+        the apply lane never reached ``execute_cleanup``. ``origin/<default>``
+        cannot change mid-scan, so one upfront refresh is equivalent."""
+        repo = tmp_path / "many_branches"
+        _init_work_repo(repo)
+        _commit(repo, "f.txt", "base\n", "base")
+        for b in ("gov-10-a", "gov-20-b", "gov-30-c"):
+            _git(["checkout", "-b", b], repo)
+            _git(["checkout", "main"], repo)
+
+        real_run_git = cm._run_git
+        fetch_count = {"n": 0}
+
+        def counting(args, **kwargs):
+            if args[:1] == ["fetch"]:
+                fetch_count["n"] += 1
+            return real_run_git(args, **kwargs)
+
+        monkeypatch.setattr(cm, "_run_git", counting)
+        # gate 1 offline → everything preserves; we only assert the fetch count.
+        monkeypatch.setattr(cm, "query_issue_status", lambda *a, **k: None)
+        log = logging.getLogger("gov1670-fetchcount")
+        cm.discover_candidates(repo, "http://127.0.0.1:3100", log)
+        assert fetch_count["n"] <= 1, (
+            f"expected ≤1 origin fetch per repo, got {fetch_count['n']} "
+            f"(one per branch — the O(branches) fetch storm)")
 
     def test_squash_merged_branch_now_eligible(self, tmp_path):
         """GOV-537 (CTO decision A) supersedes the GOV-536-era preserve: a
