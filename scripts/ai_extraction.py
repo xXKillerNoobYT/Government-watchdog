@@ -85,6 +85,8 @@ AI_ENTRY_VERIFICATION_STATUS = "machine_extracted_unreviewed"
 AI_REVIEW_STATE = "unreviewed"
 AI_PUBLICATION_STATE = "not_publishable"
 AI_LAYER = "ai_thought_then"
+#: An AI row is a paraphrase, never a verbatim quote (lane-2 invariant 1).
+AI_IS_VERBATIM = 0
 
 # The only reviewer state that, paired with error_status='ok', unblocks downstream.
 PROMOTABLE_REVIEWER_STATE = "approved"
@@ -325,14 +327,18 @@ def _apply_ai_speaker(
 
 def _bind_ai_fields(claim: dict[str, Any], run_id: str) -> dict[str, Any]:
     """Project a proposed claim onto the fixed AI bindings (gating fields overridden)."""
-    is_verbatim = 1 if claim.get("is_verbatim") else 0  # AI defaults to paraphrase (0)
+    # GOV-1717: FORCED, not defaulted. The lane-2 contract (invariant 1) says
+    # "Every AI row is forced to ... layer='ai_thought_then', is_verbatim=0 ...
+    # Gating fields are overridden by the adapter regardless of proposer output."
+    # These two were read from the claim, so a proposer supplying nothing already
+    # produced known_then/verbatim rows (backend #256) — no lying required.
     return {
         "statement_id": claim["statement_id"],
         "segment_id": claim.get("segment_id"),
         "agenda_item_id": claim.get("agenda_item_id"),
         "statement_text": claim.get("statement_text"),
-        "is_verbatim": is_verbatim,
-        "layer": claim.get("layer", AI_LAYER),
+        "is_verbatim": AI_IS_VERBATIM,
+        "layer": AI_LAYER,
         "confidence": claim.get("confidence", "low"),
         # Gating fields — overridden, NOT taken from the proposer (1.09 §2.3).
         "produced_by": AI_PRODUCED_BY,
@@ -472,6 +478,13 @@ def run_extraction(
         links = list(claim.get("evidence_links") or [])
         for link in links:
             link.setdefault("ai_extraction_run_id", run_id)
+            # GOV-1717: links carried NO AI binding beyond the run id, so a link
+            # persisted as known_then/verbatim under an ai_thought_then statement
+            # — and `evidence_links` has no `produced_by` column, so nothing
+            # downstream could tell it came from AI. Forced, like the statement.
+            link["layer"] = AI_LAYER
+            link["is_verbatim"] = AI_IS_VERBATIM
+            link["verification_status"] = AI_ENTRY_VERIFICATION_STATUS
         ai_statement = _bind_ai_fields(claim, run_id)
         try:
             # Write boundary, in order: PII guard (GOV-105/GOV-137) THEN the 1.07
