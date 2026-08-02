@@ -316,3 +316,108 @@ def test_run_id_is_not_web_safe() -> None:
         "produced_by": "ai",
     })
     assert "ai_extraction_run_id" not in projected
+
+
+# --- GOV-1706 (C1): A-4 was UNGUARDED — a third of the orphan definition ------
+#
+# `audit_ai_provenance` defines an orphan over THREE legs (module docstring):
+# statements with a NULL/blank run id, statements whose run id does not resolve,
+# and **evidence links whose run id does not resolve**. Only the first two were
+# tested.
+#
+# Measured 2026-08-01 by mutating the real line, not by inspection:
+#
+#     orphan_count = len(null_run) + len(unresolved_run) + len(unresolved_ev)
+#     ->  orphan_count = len(null_run) + len(unresolved_run)
+#
+# **49 of 49 tests still passed.** A third of the orphan definition could be
+# deleted and the suite would not notice, on an auditor whose whole job is to
+# prove the invariant persisted. Verified twice — a first attempt mutated the
+# docstring's JSON example by accident and "passed", which is not evidence of
+# anything except a mutation that missed.
+
+
+class TestEvidenceLinkOrphansCountAsOrphans:
+    """The A-4 leg: an evidence link naming a run that does not exist.
+
+    Why this leg exists at all: `evidence_links` carries `ai_extraction_run_id`
+    but has **no `produced_by` column** (30 columns, measured), so there is no
+    way to ask "is this link AI-produced?". Naming an unresolvable run is the
+    only detectable form of AI-provenance breakage on the evidence side.
+
+    **And why it is not dead code, which is the part that took measuring.**
+    `evidence_links.ai_extraction_run_id` has a FOREIGN KEY to
+    `ai_extraction_runs.run_id`, and `db.open_db` sets `PRAGMA foreign_keys=ON`
+    — so through the normal handle a dangling id **cannot be inserted at all**,
+    and the first version of this test died on that FK rather than on the
+    assertion it was written for.
+
+    That does not make the audit leg redundant; it names its actual threat.
+    **SQLite enforces foreign keys only when asked — the default is OFF, per
+    connection.** Any script that reaches the DB with a plain `sqlite3.connect`
+    instead of `db.open_db` writes with no FK enforcement whatever, and rows
+    written that way persist and resolve to nothing. That is precisely the
+    "prove the invariant PERSISTED" job this read-only auditor exists to do, so
+    the fixture below writes the way such a script would.
+    """
+
+    def _link_with_run(self, conn, run_id: str | None) -> str:
+        """Insert one evidence link carrying `run_id`, bypassing any writer gate."""
+        link_id = f"ev-{run_id or 'none'}"
+        # Model a writer that never enabled FK enforcement (sqlite3's default),
+        # which is the only way this row shape reaches disk. Restored after.
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT INTO evidence_links (evidence_link_id, from_node_id, from_node_type,"
+            " to_source_id, relation, layer, locator_kind, archive_status, is_verbatim,"
+            " verification_status, correction_status, confidence, ai_extraction_run_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (link_id, "stmt-x", "statement", SOURCE_ID, "supports", "ai_thought_then",
+             "timestamp", "not_checked", 0, "machine_extracted_unreviewed", "none",
+             "low", run_id),
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        return link_id
+
+    def test_a_dangling_evidence_run_id_makes_the_db_not_clean(self, tmp_path):
+        conn = _migrated(tmp_path)
+        _seed_source(conn)
+        baseline = prov.audit_ai_provenance(conn)
+        assert baseline["clean"] is True, "fixture is not clean before the orphan"
+
+        self._link_with_run(conn, "alpine:ai-extract:NO-SUCH-RUN")
+        report = prov.audit_ai_provenance(conn)
+
+        assert report["unresolved_evidence_run"], (
+            "an evidence link naming a run with no ledger row was not reported")
+        assert report["orphan_count"] >= 1, (
+            "the evidence-link orphan did not reach orphan_count — this is the "
+            "exact mutation that left 49 of 49 green")
+        assert report["clean"] is False, (
+            "the DB reports CLEAN while carrying an evidence link that names a "
+            "nonexistent extraction run. `main` exits 0 on clean, so this is the "
+            "difference between the gate passing and failing.")
+
+    def test_a_resolvable_evidence_run_id_stays_clean(self, tmp_path):
+        """Non-vacuity: the test above must fail on DANGLING ids, not on any id.
+
+        Without this, `unresolved_evidence_run` could be rewritten to flag every
+        evidence link that names a run at all — strictly more "findings", still
+        green above, and completely wrong.
+        """
+        conn = _migrated(tmp_path)
+        _seed_source(conn)
+        conn.execute(
+            "INSERT INTO ai_extraction_runs (run_id, error_status) VALUES (?, 'ok')",
+            (OK_RUN,),
+        )
+        conn.commit()
+
+        self._link_with_run(conn, OK_RUN)
+        report = prov.audit_ai_provenance(conn)
+
+        assert report["unresolved_evidence_run"] == [], (
+            f"a RESOLVABLE run id was reported as an orphan: "
+            f"{report['unresolved_evidence_run']}")
+        assert report["clean"] is True
