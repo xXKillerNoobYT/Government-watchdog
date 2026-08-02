@@ -672,3 +672,94 @@ def test_ai_evidence_links_are_labelled_consistently_with_their_statement(tmp_pa
             f"AI evidence link {link['evidence_link_id']} claims "
             f"is_verbatim={link['is_verbatim']} while its statement says "
             f"{stmt['is_verbatim']}")
+
+
+# --- GOV-1714 (C7b hunt): a crashed run recorded itself as HEALTHY --------------
+#
+# `run_extraction`'s docstring promises it "never raises on a proposer error (it is
+# recorded as error_status='failed' instead — fail-closed and auditable)".
+#
+# Measured 2026-08-02, before the fix: a claim carrying an invalid `speaker_class`
+# raised `ValueError` straight out of `run_extraction`, because `_apply_ai_speaker`
+# sat AFTER the per-claim try/except. The exception went past `finalize_run`, so
+# the audit ledger kept its column default:
+#
+#     error_status='ok'   finished_utc=None   output_count=0
+#
+# A run that crashed, reading as healthy, on the ledger that exists to say what
+# happened. The same shape as a duplicate `statement_id`: `insert_statement` raises
+# `sqlite3.IntegrityError`, which is NOT a `ValueError`, so it escaped the same way
+# — and that is what a contract-sanctioned retry (`retry_of_run_id`) does.
+
+
+class TestARunThatFailsNeverRecordsItselfAsOk:
+    """The ledger is the audit record. It must not say `ok` for a run that died."""
+
+    def _run(self, conn, seg_id, claim, run_id):
+        return ai.run_extraction(
+            conn, run_id=run_id, input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id], proposer=_static_proposer([claim]),
+            tool_version="gov-lane2@test")
+
+    def test_an_invalid_speaker_class_is_rejected_not_raised(self, tmp_path):
+        with db.open_db(_migrated(tmp_path)) as conn:
+            _seed_source(conn)
+            seg_id = _seed_segment(conn)
+            claim = _seed_ai_claim(seg_id)
+            claim["speaker"] = {"speaker_class": "not-a-real-class",
+                                "role_only_label": "Council Member"}
+
+            out = self._run(conn, seg_id, claim, "r-bad-speaker")
+
+            row = conn.execute(
+                "SELECT error_status, finished_utc FROM ai_extraction_runs "
+                "WHERE run_id = 'r-bad-speaker'").fetchone()
+
+        assert out["error_status"] != "ok", (
+            "a run whose only claim was rejected reported ok")
+        assert row["error_status"] != "ok", (
+            f"the LEDGER says {row['error_status']!r} for a run that rejected "
+            "everything. Before GOV-1714 this said 'ok' because the exception "
+            "escaped past finalize_run entirely.")
+        assert row["finished_utc"] is not None, (
+            "finished_utc is NULL — finalize_run never ran, so the row is the "
+            "column default rather than a record of what happened")
+
+    def test_a_duplicate_statement_id_is_rejected_not_raised(self, tmp_path):
+        """`sqlite3.IntegrityError` is not a `ValueError` — it used to escape.
+
+        This is the path a sanctioned retry takes: the contract's `retry_of_run_id`
+        expects re-proposing, and a re-proposed claim collides on `statement_id`.
+        """
+        with db.open_db(_migrated(tmp_path)) as conn:
+            _seed_source(conn)
+            seg_id = _seed_segment(conn)
+            self._run(conn, seg_id, _seed_ai_claim(seg_id), "r-first")
+
+            out = self._run(conn, seg_id, _seed_ai_claim(seg_id), "r-retry")
+
+            row = conn.execute(
+                "SELECT error_status, finished_utc FROM ai_extraction_runs "
+                "WHERE run_id = 'r-retry'").fetchone()
+
+        assert out["error_status"] != "ok"
+        assert row["error_status"] != "ok", (
+            "the ledger says ok for a run whose write collided")
+        assert row["finished_utc"] is not None
+        assert out["rejected"], "the collision was not recorded as a rejection"
+
+    def test_a_clean_run_still_records_ok(self, tmp_path):
+        """Non-vacuity: the fix must not mark every run failed."""
+        with db.open_db(_migrated(tmp_path)) as conn:
+            _seed_source(conn)
+            seg_id = _seed_segment(conn)
+            out = self._run(conn, seg_id, _seed_ai_claim(seg_id), "r-clean")
+            row = conn.execute(
+                "SELECT error_status, finished_utc FROM ai_extraction_runs "
+                "WHERE run_id = 'r-clean'").fetchone()
+
+        assert out["error_status"] == "ok", (
+            f"a clean run reported {out['error_status']!r} — the rejection path is "
+            "now swallowing good claims")
+        assert row["error_status"] == "ok"
+        assert row["finished_utc"] is not None
