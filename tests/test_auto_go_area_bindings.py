@@ -178,10 +178,23 @@ def test_every_bound_path_of_an_ACTIVE_area_exists():
 # be red on arrival against seven areas whose bindings are their own C1 work; a
 # ratchet means the number can only go down.
 
-#: Areas still missing a `tests:` binding, as of 2026-08-02 after ai-boundary's
-#: was added. **This number may only DECREASE.** Lower it when you bind an area;
-#: never raise it to make a new area pass.
-_AREAS_WITHOUT_TESTS_BINDING = 7
+#: Areas still missing a `tests:` binding. **This number may only DECREASE.**
+#: Lower it when you bind an area; never raise it to make a new area pass.
+#:
+#: CORRECTED 7 -> 6 on 2026-08-02 (GOV-1719). It was set to 7 when ai-boundary was
+#: bound, but the bindings block declares **10** areas and 4 of them carry `tests:`,
+#: so the true figure was 6 from that moment. The off-by-one survived because
+#: nothing pinned the DENOMINATOR: a ratchet over "areas without X" silently
+#: absorbs any change in how many areas the parser sees. `local-first-tooling`,
+#: for instance, is a parked area with NO `area_bindings:` entry at all — whether
+#: a parser counts it changes this number without anyone touching a binding.
+#: `_DECLARED_AREA_COUNT` below now pins the denominator so that shift fails loudly
+#: instead of moving the ratchet.
+_AREAS_WITHOUT_TESTS_BINDING = 6
+
+#: How many areas the bindings block declares. Pinned so a parser or file change
+#: cannot quietly redefine every per-area ratchet in this file.
+_DECLARED_AREA_COUNT = 10
 
 _AREA_TESTS = re.compile(
     r"^  ([a-z-]+):\n(?:(?!^  [a-z-]+:$).)*?    tests: \[((?:[^\]])*)\]",
@@ -202,6 +215,24 @@ def _declared_areas() -> set[str]:
     start = text.index("area_bindings:")
     end = text.index("\nareas:", start) if "\nareas:" in text[start:] else len(text)
     return set(re.findall(r"^  ([a-z-]+):$", text[start:end], re.M))
+
+
+def test_the_declared_area_count_is_what_every_ratchet_assumes():
+    """The denominator, pinned.
+
+    Ratchets in this file count areas *lacking* something. That shape is blind to
+    the total moving: if the parser stops seeing an area, "areas without a tests
+    binding" falls by one and reads as progress. This is the same
+    two-lists-agreeing trap CLAUDE.md records for the frozen-surface list — the
+    fix is to pin the thing both sides assume rather than compare them.
+    """
+    areas = _declared_areas()
+    assert len(areas) == _DECLARED_AREA_COUNT, (
+        f"the bindings block declares {len(areas)} areas ({sorted(areas)}), not "
+        f"{_DECLARED_AREA_COUNT}. Every per-area ratchet here is measured against "
+        "that total, so a change in it silently re-baselines them. If an area was "
+        "genuinely added or removed, update _DECLARED_AREA_COUNT **and** re-derive "
+        "_AREAS_WITHOUT_TESTS_BINDING in the same commit.")
 
 
 def test_areas_missing_a_tests_binding_only_ever_decreases():
@@ -243,3 +274,83 @@ def test_every_bound_test_file_exists_and_is_a_test():
     assert not problems, (
         f"`tests:` bindings that cannot select a real test: {problems}. C5 would "
         "report green having run nothing.")
+
+
+# --- GOV-1719 (C1, governance): the THIRD variant — what no area owns at all ---
+#
+# The breadth guard above catches an area bound to too MUCH. The existence guard
+# catches an area bound to NOTHING REAL. Neither asks the question that turns out
+# to matter most: **is every module owned by some area?**
+#
+# Measured 2026-08-02, on entering `governance`: **60 of 160 modules in `scripts/`
+# are owned by NO area — 38% of the backend.** 56 of those 60 are referenced by the
+# test suite, so this is live, exercised code, not scaffolding.
+#
+# What that costs: every path-scoped check (C1, C1b, C4, C5, C7b, C8, C9) ranges
+# over `paths:`. A module no area binds is never planned against a contract, never
+# security-reviewed, never performance-reviewed, and never counted in an area's
+# coverage — and the rotation still reports areas GRADUATING. The loop's own
+# accounting says "2 of 11 areas production-ready" while more than a third of the
+# tree has never been looked at by any check.
+#
+# It is a RATCHET rather than a requirement, for the same reason as the `tests:`
+# one below-but-above: demanding full coverage today would be red on arrival
+# against 60 modules and get suppressed rather than obeyed. The number may only
+# fall.
+
+#: Modules under `scripts/` that no area's `paths:` binding covers, as of
+#: 2026-08-02. **This number may only DECREASE.** Lower it when you widen an
+#: area or add one; never raise it to make a new module pass.
+_UNOWNED_MODULES = 60
+
+
+def _owned_by() -> dict[str, str | None]:
+    """{module path: owning area or None} for every module under `scripts/`."""
+    entries = _bindings()
+    out: dict[str, str | None] = {}
+    for path in sorted(SOURCE_ROOT.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        rel = str(path.relative_to(ROOT))
+        owner = None
+        for area, entry in entries:
+            if (entry.endswith("/") and rel.startswith(entry)) or entry == rel:
+                owner = area
+                break
+        out[rel] = owner
+    return out
+
+
+def test_the_ownership_map_actually_resolves_owners():
+    """Non-vacuity. If nothing resolved, "unowned" would be every module and the
+    ratchet below would look catastrophic for the wrong reason — or, if the
+    matching were inverted, nothing would ever be unowned and the guard would be
+    decoration."""
+    owned = _owned_by()
+    assert len(owned) > 50, f"only {len(owned)} modules found — SOURCE_ROOT looks wrong"
+    resolved = sum(1 for v in owned.values() if v)
+    assert resolved > 0, (
+        "no module resolved to an area at all — the prefix match is broken, so "
+        "the count below would report the whole tree as unowned")
+    areas = {v for v in owned.values() if v}
+    assert len(areas) >= 3, (
+        f"only {sorted(areas)} claimed any module. A single area matching "
+        "everything is the 'selects everything, selects nothing' defect one "
+        "level up, and it would make the ratchet meaningless.")
+
+
+def test_modules_owned_by_no_area_only_ever_decreases():
+    """A module no area binds is invisible to every path-scoped check."""
+    owned = _owned_by()
+    unowned = sorted(k for k, v in owned.items() if v is None)
+
+    assert len(unowned) <= _UNOWNED_MODULES, (
+        f"{len(unowned)} modules are owned by no area, up from "
+        f"{_UNOWNED_MODULES}. New: nothing in the rotation will ever plan, "
+        f"security-review or performance-review these. Bind them to an area (or "
+        f"add one), or if this growth is deliberate, say why here.\n"
+        f"{unowned}")
+    assert len(unowned) == _UNOWNED_MODULES, (
+        f"only {len(unowned)} modules are unowned, but the ratchet still says "
+        f"{_UNOWNED_MODULES}. Someone widened an area without tightening the "
+        "number — lower it so the next regression is caught.")
