@@ -160,3 +160,86 @@ def test_every_bound_path_of_an_ACTIVE_area_exists():
         "check scoped to a missing path can neither pass nor fail, so it is not "
         "evidence — bind it to the real path or retire it. (Parked areas are "
         "exempt: their bindings may legitimately await an unmerged PR.)")
+
+
+# --- GOV-1713 (C5): the `tests:` half of the binding was missing everywhere ----
+#
+# `area_bindings` has four keys — label / paths / contracts / tests — and C4
+# ("coverage >= 90% for this area's files") and C5 ("green on this area's test
+# suite") both scope on `tests:`. Measured 2026-08-02: **8 of 11 areas had no
+# `tests:` key at all**, so both checks fell back to the whole suite.
+#
+# A whole-suite green says nothing about whether THIS area is covered — the same
+# "selects everything, selects nothing" defect the breadth guard above catches for
+# `paths:`, one dimension over. And it is not hypothetical: `ingest-provenance`
+# GRADUATED with C4 and C5 marked done and no `tests:` binding.
+#
+# Guarded as a RATCHET, not a requirement. Requiring `tests:` on every area would
+# be red on arrival against seven areas whose bindings are their own C1 work; a
+# ratchet means the number can only go down.
+
+#: Areas still missing a `tests:` binding, as of 2026-08-02 after ai-boundary's
+#: was added. **This number may only DECREASE.** Lower it when you bind an area;
+#: never raise it to make a new area pass.
+_AREAS_WITHOUT_TESTS_BINDING = 7
+
+_AREA_TESTS = re.compile(
+    r"^  ([a-z-]+):\n(?:(?!^  [a-z-]+:$).)*?    tests: \[((?:[^\]])*)\]",
+    re.M | re.S,
+)
+
+
+def _test_bindings() -> dict[str, list[str]]:
+    text = HEARTBEAT.read_text(encoding="utf-8")
+    out: dict[str, list[str]] = {}
+    for area, blob in _AREA_TESTS.findall(text):
+        out[area] = [e.strip() for e in re.split(r",\s*", blob.replace("\n", " ")) if e.strip()]
+    return out
+
+
+def _declared_areas() -> set[str]:
+    text = HEARTBEAT.read_text(encoding="utf-8")
+    start = text.index("area_bindings:")
+    end = text.index("\nareas:", start) if "\nareas:" in text[start:] else len(text)
+    return set(re.findall(r"^  ([a-z-]+):$", text[start:end], re.M))
+
+
+def test_areas_missing_a_tests_binding_only_ever_decreases():
+    """A ratchet. C4/C5 silently mean "the whole suite" for every area listed here."""
+    areas = _declared_areas()
+    assert areas, "no areas parsed from area_bindings"
+    bound = set(_test_bindings())
+    missing = sorted(areas - bound)
+
+    assert len(missing) <= _AREAS_WITHOUT_TESTS_BINDING, (
+        f"{len(missing)} areas now lack a `tests:` binding ({missing}), up from "
+        f"{_AREAS_WITHOUT_TESTS_BINDING}. C4 and C5 scope on that key, so an "
+        "unbound area runs them against the entire suite and reports green "
+        "regardless of its own coverage. Bind the area, or if this count is meant "
+        "to drop, lower _AREAS_WITHOUT_TESTS_BINDING to match.")
+    assert len(missing) == _AREAS_WITHOUT_TESTS_BINDING, (
+        f"only {len(missing)} areas lack a `tests:` binding, but the ratchet still "
+        f"says {_AREAS_WITHOUT_TESTS_BINDING}. Someone bound an area without "
+        "lowering the number — tighten it so the next regression is caught.")
+
+
+def test_every_bound_test_file_exists_and_is_a_test():
+    """A `tests:` entry pointing at nothing makes C5 pass by selecting zero tests.
+
+    `pytest` exits 0 with "no tests ran" for a path that matches nothing in some
+    invocations, so a typo'd binding is the quietest possible way to turn C5 into
+    a no-op.
+    """
+    bindings = _test_bindings()
+    assert bindings, "no `tests:` bindings parsed at all — the regex stopped matching"
+    problems = []
+    for area, entries in sorted(bindings.items()):
+        for entry in entries:
+            path = ROOT / entry
+            if not path.exists():
+                problems.append(f"{area} -> {entry} (does not exist)")
+            elif not path.name.startswith("test_"):
+                problems.append(f"{area} -> {entry} (not a test file)")
+    assert not problems, (
+        f"`tests:` bindings that cannot select a real test: {problems}. C5 would "
+        "report green having run nothing.")
