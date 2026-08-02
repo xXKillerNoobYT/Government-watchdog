@@ -87,6 +87,17 @@ MATCH_METHOD = "token_containment.v1"
 MATCH_HIGH = 0.60      # >= this and not low-confidence -> source_match
 MISMATCH_LOW = 0.20    # <= this -> source_mismatch; in-between -> uncertain
 
+#: The ONLY confidence values that permit an automatic ``source_match`` (GOV-1708).
+#:
+#: An explicit allowlist, deliberately **not** ``statements.ALLOWED_CONFIDENCE -
+#: {"low"}``. Derivation-by-subtraction is what makes ``file_read_api``'s
+#: ``WEB_SAFE_DIFF_FIELDS`` the one fail-OPEN surface in a fail-closed repo
+#: (GOV-1705): a value added to the SSOT would become auto-matchable with nobody
+#: deciding it should be. Here a new vocabulary value denies until someone opts
+#: it in, and ``test_auto_matchable_confidences_are_real_vocabulary`` fails if
+#: these names stop existing upstream.
+_AUTO_MATCHABLE_CONFIDENCES = frozenset({"high", "medium"})
+
 # Lane-2 paraphrase rows carry a literal "AI paraphrase:" lead-in (see
 # ai_extraction); strip it so it does not inflate the overlap with itself.
 _AI_PREFIX_RE = re.compile(r"^\s*ai\s+(?:paraphrase|summary)\s*:\s*", re.IGNORECASE)
@@ -195,9 +206,10 @@ def classify(
 
     * source unresolved -> ``unverifiable`` (highest uncertainty).
     * score >= :data:`MATCH_HIGH` AND the claim is not low-confidence ->
-      ``source_match`` (low uncertainty). A **low-confidence** claim is NEVER
-      auto-matched — it is capped at ``uncertain`` no matter how high the overlap
-      (1.09 §5 low-confidence -> reviewer).
+      ``source_match`` (low uncertainty). A claim is auto-matched **only** when
+      its confidence is in :data:`_AUTO_MATCHABLE_CONFIDENCES`; low-confidence
+      claims and **unrecognised** ones alike are capped at ``uncertain`` no
+      matter how high the overlap (1.09 §5 low-confidence -> reviewer).
     * score <= :data:`MISMATCH_LOW` -> ``source_mismatch`` (high uncertainty).
     * otherwise -> ``uncertain`` (medium uncertainty).
     """
@@ -205,9 +217,13 @@ def classify(
         return "unverifiable", None, "high"
 
     score = containment_score(claim_text, source_text)
-    low_conf = (claim_confidence or "").lower() == "low"
+    # Fail-closed: only a RECOGNISED non-low confidence may auto-match. The
+    # previous form was `== "low"`, which denied on the literal and let every
+    # other value through — including " low", "", None and "unknown" (GOV-1708).
+    conf = (claim_confidence or "").strip().lower()
+    auto_matchable = conf in _AUTO_MATCHABLE_CONFIDENCES
 
-    if score >= MATCH_HIGH and not low_conf:
+    if score >= MATCH_HIGH and auto_matchable:
         return "source_match", score, "low"
     if score <= MISMATCH_LOW:
         return "source_mismatch", score, "high"

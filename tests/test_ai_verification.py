@@ -503,3 +503,87 @@ def test_to_web_safe_drops_verdict_fields() -> None:
     assert "match_score" not in safe
     assert "source_excerpt" not in safe
     assert safe.get("source_id") == "alpine:x"
+
+
+# --- GOV-1708 (C2b): the low-confidence guard used to fail OPEN ----------------
+#
+# `classify` promised, in its own docstring, "fail-closed bands" and that a
+# low-confidence claim is "NEVER auto-matched". The guard was:
+#
+#     low_conf = (claim_confidence or "").lower() == "low"
+#
+# An equality test on a literal denies exactly one string and admits every other,
+# so the house rule "unknown keys deny" was inverted precisely where it mattered.
+# Measured 2026-08-01 at a perfect overlap score of 1.0: `'low'` and `'LOW'` were
+# capped at `uncertain`, but `' low'`, `'low '`, `''`, `None`, `'unknown'` and any
+# typo all returned **`source_match`** — the "no reviewer needed" verdict.
+#
+# Containment, so the severity is not overstated: `statements.confidence` carries
+# `CHECK (confidence IN ('high','medium','low'))`, so the `verify_statement` DB
+# path could not reach the fail-open branch. **The CHECK constraint was doing the
+# work the guard claimed to do**, and `classify()` is a documented public entry
+# point called directly.
+
+
+class TestConfidenceGuardFailsClosed:
+    """Only a RECOGNISED non-low confidence may auto-match."""
+
+    _SOURCE = "the mayor asked the treasurer about the plant financing gap"
+
+    @pytest.mark.parametrize("conf", ["high", "medium"])
+    def test_recognised_confident_values_still_auto_match(self, conf):
+        """Non-vacuity: the fix must not simply deny everything."""
+        verdict, score, _ = av.classify(
+            claim_text=self._SOURCE, source_text=self._SOURCE, claim_confidence=conf)
+        assert verdict == "source_match", (
+            f"confidence={conf!r} at score {score} no longer auto-matches — the "
+            "guard has been tightened past its purpose, not fixed")
+
+    @pytest.mark.parametrize("conf", [
+        "low", "LOW", "Low",          # the case the original guard did catch
+        " low", "low ", "\tlow",      # whitespace — the original admitted these
+        "", None, "unknown", "hi",    # unrecognised — "unknown keys deny"
+    ])
+    def test_unrecognised_or_low_confidence_never_auto_matches(self, conf):
+        verdict, score, _ = av.classify(
+            claim_text=self._SOURCE, source_text=self._SOURCE, claim_confidence=conf)
+        assert score == 1.0, "fixture no longer produces a perfect overlap"
+        assert verdict == "uncertain", (
+            f"confidence={conf!r} produced {verdict!r} at a perfect overlap. Only "
+            f"{sorted(av._AUTO_MATCHABLE_CONFIDENCES)} may auto-match; anything "
+            "else must be capped at `uncertain` and reach a reviewer. An equality "
+            "test against one literal is what made this fail open before.")
+
+    def test_auto_matchable_confidences_are_real_vocabulary(self):
+        """A rename upstream would leave this allowlist naming nothing.
+
+        The same staleness class as `file_read_api._WEB_UNSAFE_DIFF_FIELDS`: a set
+        that filters BY NAME silently stops filtering when the names change. Here
+        the failure direction is over-blocking rather than a leak, but a guard that
+        denies everything gets deleted by the next person, so it still matters.
+        """
+        import statements as stmt  # noqa: PLC0415 — local: avoids a module-level dep
+        unknown = av._AUTO_MATCHABLE_CONFIDENCES - stmt.ALLOWED_CONFIDENCE
+        assert not unknown, (
+            f"_AUTO_MATCHABLE_CONFIDENCES names {sorted(unknown)}, which are not in "
+            f"statements.ALLOWED_CONFIDENCE ({sorted(stmt.ALLOWED_CONFIDENCE)}). "
+            "Either the vocabulary was renamed — in which case nothing auto-matches "
+            "any more — or this allowlist drifted from the SSOT.")
+
+    def test_the_allowlist_is_not_derived_by_subtraction(self):
+        """Pins the fail-CLOSED shape, which is the whole point of the fix.
+
+        `ALLOWED_CONFIDENCE - {"low"}` would be the tempting one-liner, and it is
+        the exact shape that makes `WEB_SAFE_DIFF_FIELDS` this repo's one fail-open
+        surface (GOV-1705): a value added to the SSOT becomes auto-matchable with
+        nobody deciding it should be. If someone adds a fourth confidence level,
+        this test is what makes them choose.
+        """
+        import statements as stmt  # noqa: PLC0415
+        subtraction = stmt.ALLOWED_CONFIDENCE - {"low"}
+        assert av._AUTO_MATCHABLE_CONFIDENCES <= subtraction, "allowlist admits a low-ish value"
+        if av._AUTO_MATCHABLE_CONFIDENCES != subtraction:
+            return  # a new SSOT value exists and was deliberately NOT opted in — correct
+        assert isinstance(av._AUTO_MATCHABLE_CONFIDENCES, frozenset), (
+            "the allowlist must stay an explicit literal set, not a computed "
+            "difference — see this test's docstring")
