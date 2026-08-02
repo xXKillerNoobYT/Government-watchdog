@@ -261,15 +261,20 @@ _CITATION_SERIES = (
     ("P-", re.compile(r"\bP-\d+\b"), "supplied-file-provenance-contract.md"),
     ("W-", re.compile(r"\bW-\d+\b"),
      "gov1579-web-safe-read-projection-contract.md"),
+    # The fourth contract, added 2026-08-02 (GOV-1718, C12) — one row, as the
+    # merge above predicted. `\bA-\d+\b` was checked for false positives before
+    # being added, not assumed safe: it matches exactly `A-5` and `A-8` in
+    # CLAUDE.md and nothing else.
+    ("A-", re.compile(r"\bA-\d+\b"),
+     "gov278-ai-provenance-audit-contract.md"),
 )
 
 
 def test_every_docs_path_claude_md_names_actually_exists():
     """Link rot in the one file everyone is told to read first.
 
-    Currently two references (the access-gate contract and the data-model
-    contract), so this is a ratchet at **zero** violations — cheapest possible
-    moment to install it.
+    A ratchet at **zero** violations, installed when CLAUDE.md named only two
+    contracts and still at zero with four (2026-08-02).
     """
     root = Path(__file__).resolve().parents[1]
     text = (root / "CLAUDE.md").read_text(encoding="utf-8")
