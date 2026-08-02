@@ -190,7 +190,7 @@ def test_every_bound_path_of_an_ACTIVE_area_exists():
 #: a parser counts it changes this number without anyone touching a binding.
 #: `_DECLARED_AREA_COUNT` below now pins the denominator so that shift fails loudly
 #: instead of moving the ratchet.
-_AREAS_WITHOUT_TESTS_BINDING = 6
+_AREAS_WITHOUT_TESTS_BINDING = 5  # 6 -> 5 iter 90: governance bound.
 
 #: How many areas the bindings block declares. Pinned so a parser or file change
 #: cannot quietly redefine every per-area ratchet in this file.
