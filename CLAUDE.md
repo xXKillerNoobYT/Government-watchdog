@@ -266,6 +266,47 @@ obviously right. Instead the membership is pinned by test
 the suite and makes a person choose. Contrast P-3, which merely *reads*
 fail-open and is correct as written; this one genuinely is.
 
+## The AI boundary (`scripts/ai_*.py`) — AI proposes, it never disposes
+
+`Docs/stage1-automation-ai-boundary-matrix-contract.md` is the rule: **17
+pipeline steps, each owned by DET, AI, or HUM**, and a MUST-NOT column per step
+that is where the interesting rules live. `Docs/gov278-ai-provenance-audit-contract.md`
+is the as-built contract for the audit that checks the boundary held — nine
+numbered invariants. Read the matrix row for the step you are changing first.
+
+Four traps, each measured rather than assumed:
+
+- **A byte-freeze protects the file, not the rule.** `scripts/ai_risk_gate.py` is
+  frozen and `promote_statement` is the only sanctioned way a record reaches a
+  reviewed status — step 11's MUST NOT is *"let AI or a script set a reviewed
+  status; auto-promote on confidence score."* But a freeze stops **edits**; it
+  says nothing about a **second writer** appearing in another module, which is
+  the reachable threat. `tests/test_gov1707_promotion_chokepoint.py` enforces the
+  exclusivity, and it matches the **SQL**, not the helper name — a bypass would
+  not call the helper, that is what makes it a bypass.
+- **AI never supplies its own trust labels.** `ai_extraction` binds
+  `is_verbatim`, `layer` and `verification_status` from module constants and
+  overwrites whatever the proposer sent, on statements *and* on evidence links.
+  That is not defensive tidiness: until [#256] those fields were forwarded
+  unbound, so a model could label its own output `human_verified`.
+- **`on-record-public` may never be named — not even at `attributed`.**
+  `AUTO_NAMEABLE_CLASSES` is exactly `{"on-record-official"}`, so a resolved
+  `display_name` on a public speaker still renders the generic label (step 9, a
+  CEO hard stop: **no name > wrong name**). The compensating control lives on the
+  READ side — `read_api` re-derives the label instead of trusting storage. It has
+  to, because `safe_speaker_label`'s docstring claim, *"provably name-free unless
+  safely attributed"*, **is not true today**: `role_only_label` is returned
+  verbatim with nothing checking it is name-free ([#262], pinned
+  `xfail(strict=True)` in `tests/test_gov1712_safe_speaker_label.py`).
+- **A-5 and A-8 — the audit fails CLOSED, and the exit code is the gate.** A
+  missing `ai_extraction_runs` table is a failure, not an empty result set. And
+  never read the summary line instead of the status: `sqlite3.connect` on a
+  missing path **creates a zero-byte database** (measured), which then audits as
+  trivially `clean` — a green light produced by the absence of any data at all.
+
+[#256]: https://github.com/xXKillerNoobYT/Government-watchdog/issues/256
+[#262]: https://github.com/xXKillerNoobYT/Government-watchdog/issues/262
+
 ## Working agreements
 
 - **Never commit to `main`.** Branch, push, open a PR.
