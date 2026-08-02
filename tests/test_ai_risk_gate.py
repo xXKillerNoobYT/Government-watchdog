@@ -853,3 +853,86 @@ def test_to_web_safe_drops_reviewer_identity_fields() -> None:
     }
     safe = pub.to_web_safe(record)
     assert safe == {"source_id": "alpine:video:2026-05-08-regular"}
+
+
+# --- GOV-1711 (C4): every text risk family must BLOCK, not just be detected ----
+#
+# Measured 2026-08-01, per fixture, across every test that calls
+# `promote_statement`:
+#
+#   _CLEAN_ID       7 tests
+#   _PRIVACY_ID     1  (test_open_risk_flag_blocks_promotion_until_resolved)
+#   _LEGAL_ID       1  (test_terminal_decisions_are_recorded)
+#   _MODERATION_ID  0
+#
+# Only privacy was proven end-to-end. `_LEGAL_ID`'s single appearance uses
+# `decision="rejected"` — a **terminal** decision, which takes the `elif` branch
+# and never reaches gates 2/3/4 — and it does not call `run_risk` at all. So the
+# legal flag has never been shown to block a *promoting* decision, and moderation
+# has never reached the gate in any form.
+#
+# All three are screened by `scan_text` and every text hit is `no_go`
+# (`blocks_downstream = 1`), so all three SHOULD block identically. Detection was
+# unit-tested for each; the detection -> flag -> gate wiring was not.
+#
+# Parametrised deliberately: a fourth text family gets this coverage for free,
+# and `test_every_text_screened_family_is_covered_here` fails if one is added
+# without being listed.
+
+_TEXT_RISK_FAMILIES = (
+    ("privacy", _PRIVACY_ID),
+    ("legal", _LEGAL_ID),
+    ("moderation", _MODERATION_ID),
+)
+
+
+def test_every_text_screened_family_is_covered_here() -> None:
+    """Completeness. Adding a 5th family must not silently skip the gate test.
+
+    `publication` is excluded on purpose and it is not an oversight: it is not
+    screened from text at all. `scan_text`'s own docstring says so — it depends on
+    the row's gating *state* and is handled by `scan_statement`.
+    """
+    covered = {family for family, _ in _TEXT_RISK_FAMILIES}
+    text_screened = set(rg.RISK_CATEGORIES) - {"publication"}
+    assert covered == text_screened, (
+        f"text-screened families are {sorted(text_screened)} but this test only "
+        f"covers {sorted(covered)}. A family that can raise a no_go flag without a "
+        "block test is a family whose gate wiring is unproven.")
+
+
+@pytest.mark.parametrize(
+    "family,statement_id", _TEXT_RISK_FAMILIES,
+    ids=[family for family, _ in _TEXT_RISK_FAMILIES])
+def test_every_text_risk_family_blocks_a_promoting_decision(
+        tmp_path: Path, family: str, statement_id: str) -> None:
+    """A no_go flag from ANY text family must stop `approved` at gate 4."""
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _setup(conn)
+        rg.run_risk(conn, run_id=f"r-risk-{family}",
+                    input_statement_ids=[statement_id], input_source_ids=[SOURCE_ID])
+
+        flags = rg.open_risk_flags(conn, statement_id)
+        assert flags, (
+            f"the {family} fixture raised no blocking flag, so the assertion below "
+            "would pass on an unscreened row — the exact shape of #254")
+        assert {f["risk_category"] for f in flags} == {family}, (
+            f"expected only {family} flags, got "
+            f"{sorted({f['risk_category'] for f in flags})} — the fixture is "
+            "triggering a different scanner than the one this case is testing")
+
+        with pytest.raises(rg.ReviewerGateError) as excinfo:
+            rg.promote_statement(
+                conn, statement_id, reviewer_id="reviewer:isaac", decision="approved",
+                to_verification_status="reviewed_source_linked",
+                reason=f"attempt to promote over an open {family} no-go")
+        assert family in str(excinfo.value), (
+            f"promotion was blocked, but the error does not name {family!r}: "
+            f"{excinfo.value}. A reviewer needs to know which screen fired.")
+
+        row = conn.execute(
+            "SELECT verification_status FROM statements WHERE statement_id = ?",
+            (statement_id,)).fetchone()
+        assert row["verification_status"] != "reviewed_source_linked", (
+            "the gate raised but the row was promoted anyway — the write happened "
+            "before the check")
