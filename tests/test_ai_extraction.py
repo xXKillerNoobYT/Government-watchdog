@@ -333,6 +333,41 @@ def test_ai_gating_fields_overridden_even_if_proposer_lies(tmp_path: Path) -> No
 
 # --- done-bar 8: no-orphan-claims (AI claim without evidence_link rejected) --
 
+
+def test_layer_and_is_verbatim_are_overridden_too(tmp_path: Path) -> None:
+    """GOV-1717 completes the override set the lane-2 contract already named.
+
+    Invariant 1 says an AI row is "forced to ... layer='ai_thought_then',
+    is_verbatim=0 ... regardless of proposer output". Until GOV-1717 those two
+    were READ FROM THE CLAIM, so a proposer supplying nothing already produced
+    known_then/verbatim rows. `test_ai_gating_fields_overridden_even_if_proposer_lies`
+    sets only the five fields the code did override, which is why it passed
+    throughout.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        liar = _seed_ai_claim(seg_id, layer="known_then", is_verbatim=1)
+        liar["evidence_links"][0].update(
+            {"layer": "actual_later", "is_verbatim": 1,
+             "verification_status": "human_verified"})
+        ai.run_extraction(
+            conn, run_id="r-liar-2", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id], proposer=_static_proposer([liar]),
+            tool_version="gov-lane2@test")
+        stmt = conn.execute(
+            "SELECT layer, is_verbatim FROM statements WHERE produced_by='ai'").fetchone()
+        link = conn.execute(
+            "SELECT layer, is_verbatim, verification_status FROM evidence_links").fetchone()
+
+    assert stmt["layer"] == ai.AI_LAYER, "the proposer's layer won on the statement"
+    assert stmt["is_verbatim"] == ai.AI_IS_VERBATIM
+    assert link["layer"] == ai.AI_LAYER, "the proposer's layer won on the link"
+    assert link["is_verbatim"] == ai.AI_IS_VERBATIM
+    assert link["verification_status"] == ai.AI_ENTRY_VERIFICATION_STATUS, (
+        "an AI evidence link kept a proposer-supplied verification_status — it "
+        "would project to the web claiming human review")
+
 def test_orphan_ai_claim_rejected(tmp_path: Path) -> None:
     with db.open_db(_migrated(tmp_path)) as conn:
         _seed_source(conn)
@@ -637,12 +672,13 @@ def test_an_ai_run_writes_evidence_links_at_all(tmp_path):
         "the one field the adapter DOES bind on a link stopped being bound")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "backend #256: the adapter binds only ai_extraction_run_id on an evidence "
-    "link; layer and is_verbatim fall through to statements.py defaults "
-    "('known_then', 1). Remove this marker when #256 lands."))
 def test_ai_evidence_links_are_labelled_consistently_with_their_statement(tmp_path):
     """An AI link must not claim to be a verbatim, known-then record.
+
+    Was `xfail(strict=True)` from GOV-1710 until GOV-1717 forced the bindings.
+    The ratchet worked as designed: applying the fix turned this into
+    `[XPASS(strict)]`, which failed the suite and named the marker to remove.
+    Left as a plain passing test — the behaviour it describes is now real.
 
     The proposer here supplies **no** `layer` and **no** `is_verbatim` — it is not
     lying, it is simply silent. The defaults alone are enough: the link persists
