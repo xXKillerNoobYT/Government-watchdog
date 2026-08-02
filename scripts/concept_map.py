@@ -273,6 +273,18 @@ _PII_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 )
 
 
+#: A literal every listed pattern REQUIRES, checked with a cheap `in` before the
+#: regex runs (GOV-1716). Only add an entry when the pattern cannot match without
+#: that literal — a wrong entry here silently disables a PII check.
+#:
+#: RESIDUAL, stated rather than hidden: this removes the quadratic blow-up only
+#: when the literal is ABSENT. `"a" * 25000 + "@"` still costs ~800 ms, because
+#: the backtracking is in the local part. Bounding it to `{1,64}` (RFC 5321's
+#: cap) would fix that too, but it NARROWS what the guard detects, which is a
+#: security call for the owner rather than a perf tidy-up. Filed separately.
+_PII_REQUIRED_LITERAL = {"email address": "@"}
+
+
 def assert_no_pii(value: Any, field: str) -> None:
     """Reject a write-boundary value that carries private-individual PII.
 
@@ -285,6 +297,19 @@ def assert_no_pii(value: Any, field: str) -> None:
     if not isinstance(value, str) or not value.strip():
         return
     for kind, pattern in _PII_PATTERNS:
+        # GOV-1716: cheap literal prerequisite before the regex. Measured on
+        # `"a" * 50000` (a long unbroken token — a base64 blob, a URL, OCR noise
+        # in a source document), the EMAIL pattern alone took **3.0 seconds**, and
+        # scaling is QUADRATIC: 6k/12k/25k/50k -> 67/195/713/2800 ms, ~x4 per
+        # doubling. Its local part `[A-Za-z0-9._%+-]+` matches greedily from every
+        # start position and then fails to find `@`.
+        #
+        # The skip is provably semantics-preserving, not a heuristic: the pattern
+        # contains a literal `@`, so a value with no `@` cannot match it. Same
+        # argument for each entry in _PII_REQUIRED_LITERAL.
+        required = _PII_REQUIRED_LITERAL.get(kind)
+        if required is not None and required not in value:
+            continue
         if pattern.search(value):
             raise PiiGuardError(
                 f"{field} rejected: matches a {kind}; private-individual PII may "
