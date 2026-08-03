@@ -504,6 +504,11 @@ ALL_BETA_REQUESTS = [
     ("POST", service.MAGIC_LINK_CONSUME_ROUTE, b"{}"),
     ("POST", service.WAITLIST_ROUTE, b'{"email":"inv@example.com"}'),
     ("DELETE", service.SESSION_CURRENT_ROUTE, b""),
+    # GOV-1565: account-deletion request. Unauthenticated here (no session
+    # cookie), so both variants take the neutral 401 path with a status-only
+    # body — the sweep proves the route carries zero civic data either way.
+    ("POST", service.ACCOUNT_DELETION_REQUEST_ROUTE, b'{"confirm":true}'),
+    ("POST", service.ACCOUNT_DELETION_REQUEST_ROUTE, b"not json"),
     ("GET", "/api/beta/does-not-exist", b""),
 ]
 
