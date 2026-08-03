@@ -20,6 +20,7 @@ MAGIC_LINK_VERIFY_ROUTE = "/api/beta/magic-link/verify"
 MAGIC_LINK_CONSUME_ROUTE = "/api/beta/magic-link/consume"  # 6-digit code (GOV-1538)
 WAITLIST_ROUTE = "/api/beta/waitlist"
 SESSION_CURRENT_ROUTE = "/api/beta/sessions/current"
+ACCOUNT_DELETION_REQUEST_ROUTE = "/api/beta/account/deletion-request"  # GOV-1565
 
 # Client-side (hash-router) redirect targets for the verify GET.
 APP_REDIRECT = "/#/app"
@@ -151,4 +152,39 @@ def sign_out(conn: sqlite3.Connection, raw_session_token: str | None, *,
     if not sessions.revoke(conn, raw_session_token):
         return False
     audit.record(conn, event="session_revoked", email=email, ip_hint=ip_hint)
+    return True
+
+
+def request_account_deletion(conn: sqlite3.Connection,
+                             raw_session_token: str | None, *,
+                             ip_hint: str | None = None) -> bool:
+    """Queue a deletion request for the caller's authenticated account.
+
+    Resolves the ``gw_beta_session`` cookie to its account — via the same
+    accounts lane the front door provisions on sign-in (GOV-1663) — and records
+    an idempotent, auditable deletion request against it
+    (:func:`accounts.service.request_deletion`). No hard delete: the gated beta
+    queues the request for owner action, matching the iOS request screen
+    (GOV-1539 AC#3).
+
+    Returns False when the session is missing/invalid or resolves to no account
+    (the HTTP layer answers a neutral 401 with no account-existence signal), and
+    True once the request is recorded — including an idempotent repeat, which is
+    still a success for the caller.
+
+    Privacy: the raw token never leaves this call and is never logged; only the
+    resolved ``user_id`` (a uuid, not PII) touches storage. No new audit event
+    is minted — the append-only ``account_deletion_requests`` row is the trail
+    (see 0032 / ``provision.py``), keeping ``audit.EVENTS`` and the
+    ``beta_audit_log`` CHECK enum the matched pair GOV-1664 pinned.
+    """
+    email = sessions.verify(conn, raw_session_token)
+    if email is None:
+        return False
+    # Deferred import keeps `beta` a leaf at import time (mirrors provision.py).
+    from accounts import service as accounts_service
+    user_id = accounts_service.find_user_by_email(conn, email)
+    if user_id is None:
+        return False
+    accounts_service.request_deletion(conn, user_id)
     return True

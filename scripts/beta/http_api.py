@@ -8,6 +8,9 @@ Five loopback-only routes wiring the GOV-799 landing to :mod:`beta.service`:
                                             one neutral 401 (GOV-1538 fallback)
   * POST   /api/beta/waitlist            -> neutral 200
   * DELETE /api/beta/sessions/current    -> 200 + cleared cookie (sign out)
+  * POST   /api/beta/account/deletion-request -> authed 200 (queues a deletion
+                                            request), neutral 401 if unauthed
+                                            (GOV-1565)
 
 Fail-closed activation (D1, same idiom as notifications/http_api): every route
 is checked against the owner-gated ``beta_gate_enabled`` feature flag FIRST, so
@@ -67,6 +70,9 @@ REQUEST_TIMEOUT_SECONDS = 15
 # One neutral rejection for the code consume: a wrong/expired code and a
 # never-requested (or non-allowlisted) email are indistinguishable here.
 BODY_401 = {"error": "invalid_code"}
+# Neutral rejection for an authed route reached without a live session — carries
+# no account-existence signal (GOV-1565).
+BODY_401_UNAUTH = {"error": "unauthorized"}
 
 
 class BindError(Exception):
@@ -178,6 +184,15 @@ def process_request(conn: sqlite3.Connection, *, method: str, path: str,
     if method == "DELETE" and route == service.SESSION_CURRENT_ROUTE:
         service.sign_out(conn, cookie_token(cookie_header), ip_hint=ip_hint)
         return 200, dict(BODY_OK), {"Set-Cookie": clear_session_cookie()}
+
+    if method == "POST" and route == service.ACCOUNT_DELETION_REQUEST_ROUTE:
+        # Authed via the session cookie the iOS client replays: a live session
+        # queues an auditable deletion request (neutral 200); a missing/invalid
+        # session is one neutral 401 with no account-existence signal. GOV-1565.
+        if not service.request_account_deletion(
+                conn, cookie_token(cookie_header), ip_hint=ip_hint):
+            return 401, dict(BODY_401_UNAUTH), {}
+        return 200, dict(BODY_OK), {}
 
     return 404, dict(BODY_404), {}
 

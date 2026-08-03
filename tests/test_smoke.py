@@ -116,6 +116,8 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         # GOV-1578 (0030 / GOV-1566 B5): supersede versioning + red-flag tables.
         "supplied_file_dependencies",
         "supplied_file_supersede_events",
+        # GOV-1565 (0032 / GOV-1523 P4c-2 addendum): account-deletion request lifecycle record.
+        "account_deletion_requests",
     }
 
 

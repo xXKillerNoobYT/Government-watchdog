@@ -257,7 +257,9 @@ Routes:
   GET    /api/beta/magic-link/verify   every /api/beta/* route answers a constant 404
   POST   /api/beta/magic-link/consume  until the owner-gated ``beta_gate_enabled``
   POST   /api/beta/waitlist            flag row is enabled (fail closed, D1). The
-  DELETE /api/beta/sessions/current    consume route redeems the GOV-1538 6-digit code.
+  DELETE /api/beta/sessions/current    consume route redeems the GOV-1538 6-digit code;
+  POST   /api/beta/account/deletion-request  the deletion-request route (GOV-1565) queues
+                                       an authed account-deletion request (neutral 401 if unauthed).
 
 Bind guard: refuses any host outside ALLOWED_BIND_HOSTS (127.0.0.1/localhost) —
 the service is never publicly addressable. All frozen serving logic is reused

@@ -132,6 +132,44 @@ def find_user_by_email(conn: sqlite3.Connection, email: str) -> str | None:
     return row[0] if row else None
 
 
+# --- deletion requests (GOV-1565, 0032) --------------------------------------
+
+def request_deletion(conn: sqlite3.Connection, user_id: str) -> bool:
+    """Record a user-initiated account-deletion request; idempotent.
+
+    A deletion *request* is the account owner asking to be removed, not an
+    owner/reviewer access decision, so it deliberately does NOT mint an
+    ``access_grants`` tier (those require an ``owner_decision_ref`` — the
+    owner's lever, 0025 §3). It is its own append-only lifecycle record
+    (``account_deletion_requests``, 0032) an owner later actions; the gated
+    beta queues the request and hard-deletes nothing here.
+
+    Idempotent: repeat requests collapse onto the single open 'requested' row
+    (``UNIQUE (user_id, status)``), so a double-submit is a no-op — never a
+    second row, never an error. Returns True when a new request row is written,
+    False when one was already open (an idempotent replay). Only the ``user_id``
+    (a uuid, not PII) and timestamps are stored.
+    """
+    now = _utcnow()
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO account_deletion_requests"
+        " (request_id, user_id, status, requested_utc, updated_utc)"
+        " VALUES (?, ?, 'requested', ?, ?)",
+        (str(uuid.uuid4()), user_id, now, now),
+    )
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def has_open_deletion_request(conn: sqlite3.Connection, user_id: str) -> bool:
+    """True if ``user_id`` has an open ('requested') deletion request."""
+    row = conn.execute(
+        "SELECT 1 FROM account_deletion_requests"
+        " WHERE user_id = ? AND status = 'requested' LIMIT 1", (user_id,)
+    ).fetchone()
+    return row is not None
+
+
 # --- tier check (INV-4 latest-row rule) ---------------------------------------
 
 def current_tier(conn: sqlite3.Connection, user_id: str) -> str:
