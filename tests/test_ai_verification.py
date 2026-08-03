@@ -379,6 +379,39 @@ def test_lane3_writes_no_gating_field(tmp_path: Path) -> None:
         "Lane 3 mutated an evidence_links field"
 
 
+#: Every column of `speaker_attributions` a Lane-3 run could alter. Selected in
+#: full rather than counted, because COUNT(*) is blind to in-place mutation —
+#: see `test_lane3_does_not_touch_an_EXISTING_speaker_attribution`.
+_ATTRIBUTION_COLUMNS = (
+    "speaker_attribution_id", "statement_id", "attribution_state", "speaker_class",
+    "person_id", "role_id", "candidate_person_id", "display_label", "basis",
+    "minutes_source_id", "reviewer_state", "confidence",
+)
+
+
+def _attributions(conn) -> list[tuple]:
+    return [tuple(r) for r in conn.execute(
+        f"SELECT {', '.join(_ATTRIBUTION_COLUMNS)} FROM speaker_attributions "
+        "ORDER BY speaker_attribution_id").fetchall()]
+
+
+def _seed_attribution(conn, statement_id: str) -> None:
+    """One realistic attribution: uncertain, name-free label, no resolved person.
+
+    This is the shape Stage 1.09 step 9 cares about — `attribution_state` reaches
+    `attributed` **only** via official records + review, and until then the row
+    renders a generic label. "No name > wrong name."
+    """
+    conn.execute(
+        "INSERT INTO speaker_attributions (speaker_attribution_id, statement_id,"
+        " attribution_state, speaker_class, display_label, basis, reviewer_state,"
+        " confidence) VALUES (?,?,?,?,?,?,?,?)",
+        ("sa-lane3-fixture", statement_id, "uncertain", "unidentified",
+         "a council member", "no official record resolved", "unreviewed", "medium"),
+    )
+    conn.commit()
+
+
 def test_lane3_adds_no_speaker_attribution(tmp_path: Path) -> None:
     # Attribution safety (done-bar 9) is preserved: Lane 3 never names or attributes.
     with db.open_db(_migrated(tmp_path)) as conn:
@@ -387,6 +420,66 @@ def test_lane3_adds_no_speaker_attribution(tmp_path: Path) -> None:
         av.run_verification(conn, run_id="r-v", input_statement_ids=ids)
         after = conn.execute("SELECT COUNT(*) FROM speaker_attributions").fetchone()[0]
     assert after == before
+
+
+# --- GOV-1709 (C4): the count-only guard above is blind to MUTATION -----------
+#
+# `test_lane3_adds_no_speaker_attribution` compares COUNT(*) before and after, and
+# the fixture holds **zero** attributions — measured. It is not vacuous: an
+# ADDITION would take 0 -> 1 and fail it. But two things it cannot see:
+#
+#   1. an in-place UPDATE of an existing attribution leaves the count identical;
+#   2. the empty fixture means the "existing row" case is never exercised at all.
+#
+# That second one is why the first was never noticed. The neighbouring
+# `test_lane3_writes_no_gating_field` already does this properly — it compares a
+# digest of every column, not a row count — so this is the same idiom applied to
+# the table Stage 1.09 step 9 protects.
+
+
+def test_lane3_does_not_touch_an_EXISTING_speaker_attribution(tmp_path: Path) -> None:
+    """Lane 3 must not change how a speaker is PRESENTED, not merely how many exist.
+
+    `display_label` is the field that matters: Lane 2 accepts a proposer-supplied
+    `role_only_label` unvalidated (backend #256's neighbourhood), so a guessed name
+    can already reach this column. Lane 3 silently rewriting it would change an
+    on-screen attribution with no reviewer anywhere in the loop.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        ids = _setup(conn)
+        _seed_attribution(conn, ids[0])
+
+        pre = _attributions(conn)
+        assert len(pre) == 1, (
+            "the fixture seeded no attribution, so this guard would be comparing "
+            "two empty lists — exactly the blind spot it exists to close")
+
+        av.run_verification(conn, run_id="r-v", input_statement_ids=ids,
+                            input_source_ids=[SOURCE_ID], tool_version="gov-lane3@test")
+        post = _attributions(conn)
+
+    assert post == pre, (
+        "Lane 3 mutated a speaker_attributions row. It is a read-only verification "
+        "lane: it may write verdicts to its own results table and nothing else. A "
+        "changed `display_label` or `attribution_state` here alters who a statement "
+        "appears to be from, with no reviewer gate involved (1.09 step 9 / G1).")
+
+
+def test_the_attribution_fixture_is_actually_reachable(tmp_path: Path) -> None:
+    """Non-vacuity for the seeder itself.
+
+    If `_seed_attribution` ever stops inserting — a renamed column, a new NOT NULL,
+    a CHECK it no longer satisfies — the guard above would compare `[] == []` and
+    pass, silently restoring the exact hole this iteration closed.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        ids = _setup(conn)
+        _seed_attribution(conn, ids[0])
+        rows = _attributions(conn)
+    assert len(rows) == 1, "the attribution fixture no longer inserts a row"
+    assert rows[0][7] == "a council member", (
+        "the seeded display_label changed shape; the mutation guard reads that "
+        "column specifically")
 
 
 # --- done-bar 10: the Lane-3 run is recorded on the shared ledger -----------
@@ -503,3 +596,87 @@ def test_to_web_safe_drops_verdict_fields() -> None:
     assert "match_score" not in safe
     assert "source_excerpt" not in safe
     assert safe.get("source_id") == "alpine:x"
+
+
+# --- GOV-1708 (C2b): the low-confidence guard used to fail OPEN ----------------
+#
+# `classify` promised, in its own docstring, "fail-closed bands" and that a
+# low-confidence claim is "NEVER auto-matched". The guard was:
+#
+#     low_conf = (claim_confidence or "").lower() == "low"
+#
+# An equality test on a literal denies exactly one string and admits every other,
+# so the house rule "unknown keys deny" was inverted precisely where it mattered.
+# Measured 2026-08-01 at a perfect overlap score of 1.0: `'low'` and `'LOW'` were
+# capped at `uncertain`, but `' low'`, `'low '`, `''`, `None`, `'unknown'` and any
+# typo all returned **`source_match`** — the "no reviewer needed" verdict.
+#
+# Containment, so the severity is not overstated: `statements.confidence` carries
+# `CHECK (confidence IN ('high','medium','low'))`, so the `verify_statement` DB
+# path could not reach the fail-open branch. **The CHECK constraint was doing the
+# work the guard claimed to do**, and `classify()` is a documented public entry
+# point called directly.
+
+
+class TestConfidenceGuardFailsClosed:
+    """Only a RECOGNISED non-low confidence may auto-match."""
+
+    _SOURCE = "the mayor asked the treasurer about the plant financing gap"
+
+    @pytest.mark.parametrize("conf", ["high", "medium"])
+    def test_recognised_confident_values_still_auto_match(self, conf):
+        """Non-vacuity: the fix must not simply deny everything."""
+        verdict, score, _ = av.classify(
+            claim_text=self._SOURCE, source_text=self._SOURCE, claim_confidence=conf)
+        assert verdict == "source_match", (
+            f"confidence={conf!r} at score {score} no longer auto-matches — the "
+            "guard has been tightened past its purpose, not fixed")
+
+    @pytest.mark.parametrize("conf", [
+        "low", "LOW", "Low",          # the case the original guard did catch
+        " low", "low ", "\tlow",      # whitespace — the original admitted these
+        "", None, "unknown", "hi",    # unrecognised — "unknown keys deny"
+    ])
+    def test_unrecognised_or_low_confidence_never_auto_matches(self, conf):
+        verdict, score, _ = av.classify(
+            claim_text=self._SOURCE, source_text=self._SOURCE, claim_confidence=conf)
+        assert score == 1.0, "fixture no longer produces a perfect overlap"
+        assert verdict == "uncertain", (
+            f"confidence={conf!r} produced {verdict!r} at a perfect overlap. Only "
+            f"{sorted(av._AUTO_MATCHABLE_CONFIDENCES)} may auto-match; anything "
+            "else must be capped at `uncertain` and reach a reviewer. An equality "
+            "test against one literal is what made this fail open before.")
+
+    def test_auto_matchable_confidences_are_real_vocabulary(self):
+        """A rename upstream would leave this allowlist naming nothing.
+
+        The same staleness class as `file_read_api._WEB_UNSAFE_DIFF_FIELDS`: a set
+        that filters BY NAME silently stops filtering when the names change. Here
+        the failure direction is over-blocking rather than a leak, but a guard that
+        denies everything gets deleted by the next person, so it still matters.
+        """
+        import statements as stmt  # noqa: PLC0415 — local: avoids a module-level dep
+        unknown = av._AUTO_MATCHABLE_CONFIDENCES - stmt.ALLOWED_CONFIDENCE
+        assert not unknown, (
+            f"_AUTO_MATCHABLE_CONFIDENCES names {sorted(unknown)}, which are not in "
+            f"statements.ALLOWED_CONFIDENCE ({sorted(stmt.ALLOWED_CONFIDENCE)}). "
+            "Either the vocabulary was renamed — in which case nothing auto-matches "
+            "any more — or this allowlist drifted from the SSOT.")
+
+    def test_the_allowlist_is_not_derived_by_subtraction(self):
+        """Pins the fail-CLOSED shape, which is the whole point of the fix.
+
+        `ALLOWED_CONFIDENCE - {"low"}` would be the tempting one-liner, and it is
+        the exact shape that makes `WEB_SAFE_DIFF_FIELDS` this repo's one fail-open
+        surface (GOV-1705): a value added to the SSOT becomes auto-matchable with
+        nobody deciding it should be. If someone adds a fourth confidence level,
+        this test is what makes them choose.
+        """
+        import statements as stmt  # noqa: PLC0415
+        subtraction = stmt.ALLOWED_CONFIDENCE - {"low"}
+        assert av._AUTO_MATCHABLE_CONFIDENCES <= subtraction, "allowlist admits a low-ish value"
+        if av._AUTO_MATCHABLE_CONFIDENCES != subtraction:
+            return  # a new SSOT value exists and was deliberately NOT opted in — correct
+        assert isinstance(av._AUTO_MATCHABLE_CONFIDENCES, frozenset), (
+            "the allowlist must stay an explicit literal set, not a computed "
+            "difference — see this test's docstring")

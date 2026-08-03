@@ -76,6 +76,11 @@ ALLOWED_MIMES = frozenset({
 #: this bounds memory and the raw store. Over-size is a 413, not a silent trim.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
+#: Seconds one connection may hold the handler. See http_api's constant for the
+#: measurement. Larger here because this surface accepts real uploads; still
+#: finite, which is the whole point — the default is None, i.e. never.
+REQUEST_TIMEOUT_SECONDS = 60
+
 #: Base64 inflates ~4/3 and rides inside a JSON envelope; cap the raw request a
 #: little above that so an over-size body is refused at the socket, never buffered.
 _READ_CAP = MAX_UPLOAD_BYTES * 2 + 8192
@@ -220,14 +225,24 @@ def build_store():
 def process_request(conn: sqlite3.Connection, store, *, method: str, path: str,
                     raw_body: bytes = b"", cookie_header: str | None = None,
                     known_bad: frozenset[str] | None = None,
+                    oversize: bool = False,
                     ) -> tuple[int, dict, dict]:
     """The unit-testable heart of the intake surface: ``(status, body, headers)``.
 
     The feature flag is checked before the method/route even matter, so a
     disabled or absent flag yields a constant 404 for every request (fail-closed).
+
+    ``oversize`` says the caller declared a body past the read cap and the
+    handler therefore read NOTHING. It is answered AFTER the flag check
+    (GOV-1670, #203): the cap used to reply 413 at the socket, before the flag
+    was consulted, so a disabled gate answered 404 to a normal request and 413
+    to an over-size one — telling an unauthenticated prober the route exists,
+    where INV-2 promises a constant 404.
     """
     if not flags.is_enabled(conn, BETA_GATE_FLAG):
         return 404, dict(BODY_404), {}
+    if oversize:
+        return 413, dict(BODY_413), {}
 
     route = urlsplit(path).path
     if not (method == "POST" and route == INTAKE_UPLOAD_ROUTE):
@@ -326,20 +341,34 @@ def make_handler(db_path: Path):
     known_bad = load_known_bad()
 
     class Handler(BaseHTTPRequestHandler):
+        #: socketserver applies this to the connection when it is not None.
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def log_message(self, *args):  # silence default stderr spam
             pass
 
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            if length > _READ_CAP:
-                # Refuse an over-size body at the socket — never buffer it.
-                return self._send(413, dict(BODY_413))
-            raw = self.rfile.read(length) if length else b""
+            oversize = False
+            length = common.parse_content_length(
+                self.headers.get("Content-Length"))
+            if length is None:
+                # Unusable header (non-numeric or negative). Read NOTHING and
+                # fall through: process_request answers 404 while the gate is
+                # off and 400 once it is on, so a malformed length can neither
+                # crash the handler nor reveal that the surface exists.
+                raw = b""
+            elif length > _READ_CAP:
+                # Still never buffer an over-size body — but let the FLAG decide
+                # the status, so a disabled gate stays a constant 404 (#203).
+                oversize, raw = True, b""
+            else:
+                raw = self.rfile.read(length) if length else b""
             conn = _open(db_path)
             try:
                 status, payload, headers = process_request(
                     conn, store, method="POST", path=self.path, raw_body=raw,
-                    cookie_header=self.headers.get("Cookie"), known_bad=known_bad)
+                    cookie_header=self.headers.get("Cookie"),
+                    known_bad=known_bad, oversize=oversize)
             finally:
                 conn.close()
             self._send(status, payload, headers)

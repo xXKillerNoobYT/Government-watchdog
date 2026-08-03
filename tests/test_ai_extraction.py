@@ -333,6 +333,41 @@ def test_ai_gating_fields_overridden_even_if_proposer_lies(tmp_path: Path) -> No
 
 # --- done-bar 8: no-orphan-claims (AI claim without evidence_link rejected) --
 
+
+def test_layer_and_is_verbatim_are_overridden_too(tmp_path: Path) -> None:
+    """GOV-1717 completes the override set the lane-2 contract already named.
+
+    Invariant 1 says an AI row is "forced to ... layer='ai_thought_then',
+    is_verbatim=0 ... regardless of proposer output". Until GOV-1717 those two
+    were READ FROM THE CLAIM, so a proposer supplying nothing already produced
+    known_then/verbatim rows. `test_ai_gating_fields_overridden_even_if_proposer_lies`
+    sets only the five fields the code did override, which is why it passed
+    throughout.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        liar = _seed_ai_claim(seg_id, layer="known_then", is_verbatim=1)
+        liar["evidence_links"][0].update(
+            {"layer": "actual_later", "is_verbatim": 1,
+             "verification_status": "human_verified"})
+        ai.run_extraction(
+            conn, run_id="r-liar-2", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id], proposer=_static_proposer([liar]),
+            tool_version="gov-lane2@test")
+        stmt = conn.execute(
+            "SELECT layer, is_verbatim FROM statements WHERE produced_by='ai'").fetchone()
+        link = conn.execute(
+            "SELECT layer, is_verbatim, verification_status FROM evidence_links").fetchone()
+
+    assert stmt["layer"] == ai.AI_LAYER, "the proposer's layer won on the statement"
+    assert stmt["is_verbatim"] == ai.AI_IS_VERBATIM
+    assert link["layer"] == ai.AI_LAYER, "the proposer's layer won on the link"
+    assert link["is_verbatim"] == ai.AI_IS_VERBATIM
+    assert link["verification_status"] == ai.AI_ENTRY_VERIFICATION_STATUS, (
+        "an AI evidence link kept a proposer-supplied verification_status — it "
+        "would project to the web claiming human review")
+
 def test_orphan_ai_claim_rejected(tmp_path: Path) -> None:
     with db.open_db(_migrated(tmp_path)) as conn:
         _seed_source(conn)
@@ -565,3 +600,202 @@ def test_run_vocab_matches_check_literals(tmp_path: Path) -> None:
         assert f"'{value}'" in sql
     for value in ai.ALLOWED_RUN_REVIEWER_STATE:
         assert f"'{value}'" in sql
+
+
+# --- GOV-1710 (C4): AI provenance was only ever checked on `statements` --------
+#
+# `slice3_smoke._check_ai_provenance` — the reference smoke's provenance gate —
+# runs one query, `SELECT ... FROM statements`. Measured: the string
+# `evidence_links` does not appear in it. So the check whose entire job is
+# proving AI provenance is blind to half the surface AI writes, and that is why
+# backend #256 (evidence links carry no AI bindings at all) went unnoticed
+# through every smoke run.
+#
+# These tests give the links half the coverage the statements half already has.
+# The correctness assertion is `xfail(strict=True)` because #256 is open and
+# unfixed: today it xfails and the suite stays green, and the moment #256 lands
+# it XPASSes — which `strict=True` turns into a failure telling the next person
+# to delete the marker. A ratchet that fires on the FIX, not on the bug.
+
+
+def _ai_links(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT evidence_link_id, layer, is_verbatim, verification_status, "
+        "ai_extraction_run_id FROM evidence_links ORDER BY evidence_link_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def test_the_ai_statement_half_IS_bound_so_the_links_failure_is_specific(tmp_path):
+    """Non-vacuity, and it localises the defect.
+
+    If the adapter were broken for everything, the links assertion below would be
+    unremarkable. It is not: the statement half binds `produced_by`,
+    `verification_status` and `review_state` correctly. The gap is specific to
+    evidence links, which is what makes it easy to miss.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        ai.run_extraction(
+            conn, run_id="r-links-a", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id],
+            proposer=_static_proposer([_seed_ai_claim(seg_id)]),
+            tool_version="gov-lane2@test")
+        row = conn.execute(
+            "SELECT produced_by, verification_status, review_state, layer, is_verbatim "
+            "FROM statements WHERE produced_by = 'ai'").fetchone()
+
+    assert row is not None, "no AI statement written — the fixture stopped working"
+    assert row["produced_by"] == ai.AI_PRODUCED_BY
+    assert row["verification_status"] == ai.AI_ENTRY_VERIFICATION_STATUS
+    assert row["review_state"] == ai.AI_REVIEW_STATE
+    assert row["layer"] == ai.AI_LAYER, (
+        "the STATEMENT half stopped defaulting to the AI layer — that is a "
+        "different and larger regression than the links gap these tests cover")
+
+
+def test_an_ai_run_writes_evidence_links_at_all(tmp_path):
+    """The precondition for the xfail below. Without it that test proves nothing."""
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        ai.run_extraction(
+            conn, run_id="r-links-b", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id],
+            proposer=_static_proposer([_seed_ai_claim(seg_id)]),
+            tool_version="gov-lane2@test")
+        links = _ai_links(conn)
+
+    assert links, "the AI run wrote no evidence_links; the guard below is vacuous"
+    assert links[0]["ai_extraction_run_id"] == "r-links-b", (
+        "the one field the adapter DOES bind on a link stopped being bound")
+
+
+def test_ai_evidence_links_are_labelled_consistently_with_their_statement(tmp_path):
+    """An AI link must not claim to be a verbatim, known-then record.
+
+    Was `xfail(strict=True)` from GOV-1710 until GOV-1717 forced the bindings.
+    The ratchet worked as designed: applying the fix turned this into
+    `[XPASS(strict)]`, which failed the suite and named the marker to remove.
+    Left as a plain passing test — the behaviour it describes is now real.
+
+    The proposer here supplies **no** `layer` and **no** `is_verbatim` — it is not
+    lying, it is simply silent. The defaults alone are enough: the link persists
+    as `known_then` / verbatim while the statement it belongs to is
+    `ai_thought_then` / paraphrase. Both fields are on
+    `publication.WEB_SAFE_FIELD_ALLOWLIST`, and `evidence_links` has no
+    `produced_by` column, so nothing downstream can tell the link came from AI.
+    """
+    with db.open_db(_migrated(tmp_path)) as conn:
+        _seed_source(conn)
+        seg_id = _seed_segment(conn)
+        ai.run_extraction(
+            conn, run_id="r-links-c", input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id],
+            proposer=_static_proposer([_seed_ai_claim(seg_id)]),
+            tool_version="gov-lane2@test")
+        links = _ai_links(conn)
+        stmt = conn.execute(
+            "SELECT layer, is_verbatim FROM statements WHERE produced_by='ai'").fetchone()
+
+    assert links
+    for link in links:
+        assert link["layer"] == stmt["layer"], (
+            f"AI evidence link {link['evidence_link_id']} is layer="
+            f"{link['layer']!r} while its statement is {stmt['layer']!r}")
+        assert link["is_verbatim"] == stmt["is_verbatim"], (
+            f"AI evidence link {link['evidence_link_id']} claims "
+            f"is_verbatim={link['is_verbatim']} while its statement says "
+            f"{stmt['is_verbatim']}")
+
+
+# --- GOV-1714 (C7b hunt): a crashed run recorded itself as HEALTHY --------------
+#
+# `run_extraction`'s docstring promises it "never raises on a proposer error (it is
+# recorded as error_status='failed' instead — fail-closed and auditable)".
+#
+# Measured 2026-08-02, before the fix: a claim carrying an invalid `speaker_class`
+# raised `ValueError` straight out of `run_extraction`, because `_apply_ai_speaker`
+# sat AFTER the per-claim try/except. The exception went past `finalize_run`, so
+# the audit ledger kept its column default:
+#
+#     error_status='ok'   finished_utc=None   output_count=0
+#
+# A run that crashed, reading as healthy, on the ledger that exists to say what
+# happened. The same shape as a duplicate `statement_id`: `insert_statement` raises
+# `sqlite3.IntegrityError`, which is NOT a `ValueError`, so it escaped the same way
+# — and that is what a contract-sanctioned retry (`retry_of_run_id`) does.
+
+
+class TestARunThatFailsNeverRecordsItselfAsOk:
+    """The ledger is the audit record. It must not say `ok` for a run that died."""
+
+    def _run(self, conn, seg_id, claim, run_id):
+        return ai.run_extraction(
+            conn, run_id=run_id, input_source_ids=[SOURCE_ID],
+            input_segment_ids=[seg_id], proposer=_static_proposer([claim]),
+            tool_version="gov-lane2@test")
+
+    def test_an_invalid_speaker_class_is_rejected_not_raised(self, tmp_path):
+        with db.open_db(_migrated(tmp_path)) as conn:
+            _seed_source(conn)
+            seg_id = _seed_segment(conn)
+            claim = _seed_ai_claim(seg_id)
+            claim["speaker"] = {"speaker_class": "not-a-real-class",
+                                "role_only_label": "Council Member"}
+
+            out = self._run(conn, seg_id, claim, "r-bad-speaker")
+
+            row = conn.execute(
+                "SELECT error_status, finished_utc FROM ai_extraction_runs "
+                "WHERE run_id = 'r-bad-speaker'").fetchone()
+
+        assert out["error_status"] != "ok", (
+            "a run whose only claim was rejected reported ok")
+        assert row["error_status"] != "ok", (
+            f"the LEDGER says {row['error_status']!r} for a run that rejected "
+            "everything. Before GOV-1714 this said 'ok' because the exception "
+            "escaped past finalize_run entirely.")
+        assert row["finished_utc"] is not None, (
+            "finished_utc is NULL — finalize_run never ran, so the row is the "
+            "column default rather than a record of what happened")
+
+    def test_a_duplicate_statement_id_is_rejected_not_raised(self, tmp_path):
+        """`sqlite3.IntegrityError` is not a `ValueError` — it used to escape.
+
+        This is the path a sanctioned retry takes: the contract's `retry_of_run_id`
+        expects re-proposing, and a re-proposed claim collides on `statement_id`.
+        """
+        with db.open_db(_migrated(tmp_path)) as conn:
+            _seed_source(conn)
+            seg_id = _seed_segment(conn)
+            self._run(conn, seg_id, _seed_ai_claim(seg_id), "r-first")
+
+            out = self._run(conn, seg_id, _seed_ai_claim(seg_id), "r-retry")
+
+            row = conn.execute(
+                "SELECT error_status, finished_utc FROM ai_extraction_runs "
+                "WHERE run_id = 'r-retry'").fetchone()
+
+        assert out["error_status"] != "ok"
+        assert row["error_status"] != "ok", (
+            "the ledger says ok for a run whose write collided")
+        assert row["finished_utc"] is not None
+        assert out["rejected"], "the collision was not recorded as a rejection"
+
+    def test_a_clean_run_still_records_ok(self, tmp_path):
+        """Non-vacuity: the fix must not mark every run failed."""
+        with db.open_db(_migrated(tmp_path)) as conn:
+            _seed_source(conn)
+            seg_id = _seed_segment(conn)
+            out = self._run(conn, seg_id, _seed_ai_claim(seg_id), "r-clean")
+            row = conn.execute(
+                "SELECT error_status, finished_utc FROM ai_extraction_runs "
+                "WHERE run_id = 'r-clean'").fetchone()
+
+        assert out["error_status"] == "ok", (
+            f"a clean run reported {out['error_status']!r} — the rejection path is "
+            "now swallowing good claims")
+        assert row["error_status"] == "ok"
+        assert row["finished_utc"] is not None

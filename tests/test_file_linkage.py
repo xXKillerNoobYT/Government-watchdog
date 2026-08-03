@@ -322,3 +322,144 @@ class TestGapReversibilityAndDispositions:
             "SELECT resolved_status FROM completeness_gaps WHERE gap_id = ?", (gap_id,)
         ).fetchone()
         assert row[0] == "wontfix"
+
+
+# --- GOV-1686 (C1, ingest-provenance): pin P-3, the invariant most likely to be
+#     "fixed" by someone reading this module cold ---------------------------------
+
+
+class TestGapTracksCoverageNotPublishability:
+    """`Docs/supplied-file-provenance-contract.md` P-3.
+
+    `NON_COUNTING_REVIEW_STATES` contains **only** `rejected`, so a `pending`,
+    entirely unreviewed file closes the `no_primary_source` gap. Read cold that
+    looks fail-open in a fail-closed codebase, and the natural "fix" is to
+    require `web_safe`.
+
+    It is not a bug. The gap asks *"does this subject have a source at all?"* —
+    coverage — while publishability is a **separate** gate (B6's web-safe read
+    projection). Conflating them would silently redefine "gap closed" across the
+    whole completeness surface.
+
+    These tests exist so that redefinition cannot happen quietly: it has to fail
+    here first, and the failure names the contract.
+    """
+
+    def test_an_unreviewed_pending_file_closes_the_gap(self, conn):
+        rec = fr.insert_file_record(
+            conn, area="alpine", source_type="council_packet",
+            original_filename="packet.pdf", sha256=SHA, mime="application/pdf",
+            byte_size=1024, supplied_by="clerk@example.gov",
+            captured_at="2026-06-23T10:00:00+00:00")
+        assert rec.review_state == "pending", (
+            "a new record must start `pending` — review_state is deliberately not "
+            "an insert parameter")
+        fl.link_file(conn, subject_node_type="meeting", subject_node_id=MEETING_DATE,
+                     file_id=rec.file_id, is_primary_source=True,
+                     linked_by="clerk@example.gov")
+        assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is True, (
+            "P-3: an unreviewed `pending` file MUST still count as coverage. If "
+            "this now fails, someone tightened NON_COUNTING_REVIEW_STATES — that "
+            "changes what a closed gap MEANS everywhere. See the contract.")
+
+    def test_only_a_repudiated_file_fails_to_count(self, conn):
+        """The complement: `rejected` is the ONE state that does not count."""
+        rec = fr.insert_file_record(
+            conn, area="alpine", source_type="council_packet",
+            original_filename="packet.pdf", sha256=SHA, mime="application/pdf",
+            byte_size=1024, supplied_by="clerk@example.gov",
+            captured_at="2026-06-23T10:00:00+00:00")
+        fl.link_file(conn, subject_node_type="meeting", subject_node_id=MEETING_DATE,
+                     file_id=rec.file_id, is_primary_source=True,
+                     linked_by="clerk@example.gov")
+        fr.set_review_state(conn, rec.file_id, "rejected")
+        assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is False, (
+            "a repudiated file is not a source — `rejected` must not count")
+        # And every OTHER state does count, which is what makes the set minimal.
+        for state in ("reviewing", "held"):
+            fr.set_review_state(conn, rec.file_id, state)
+            assert fl.has_primary_source(conn, "meeting", MEETING_DATE) is True, (
+                f"P-3: `{state}` must count as coverage; only `rejected` does not")
+
+
+def test_make_link_id_is_deterministic_and_is_the_uniqueness_key(conn):
+    """`Docs/supplied-file-provenance-contract.md` P-5, pinned DIRECTLY.
+
+    C1b (GOV-1687) found P-5 covered only *indirectly*, through
+    `test_relink_is_idempotent_upsert`. That test would still pass if the id
+    became random, because the upsert also matches on the natural key — so the
+    determinism itself was unguarded. C4 closes that: same inputs → same id,
+    different inputs → different id.
+    """
+    a = fl.make_link_id("meeting", MEETING_DATE, "file-1")
+    assert a == fl.make_link_id("meeting", MEETING_DATE, "file-1"), (
+        "make_link_id must be deterministic — a random id would let the same "
+        "file attach to the same subject twice and drift every link count")
+    assert a != fl.make_link_id("meeting", MEETING_DATE, "file-2")
+    assert a != fl.make_link_id("area", MEETING_DATE, "file-1")
+    assert a != fl.make_link_id("meeting", "2026-01-01", "file-1")
+
+
+# --- GOV-1695 (C9 hunt): P-9 — the hot lookups must stay index-backed ---------
+#
+# Measured with EXPLAIN QUERY PLAN, because grepping `CREATE INDEX` under-reports
+# (a UNIQUE constraint is already an index — CLAUDE.md records that trap).
+#
+# The failure this guards is SILENT: a migration that renames or drops an index,
+# or a query that changes shape, degrades SEARCH -> SCAN with no error and no
+# failing test — just a surface that gets slower as the corpus grows. Same
+# "correct answer, wrong cost" class as data-model INV-8.
+
+#: (label, sql, params, index-name-fragment) — each MUST use an index.
+_INDEX_BACKED = [
+    ("has_primary_source",
+     "SELECT 1 FROM supplied_file_links l JOIN supplied_files f ON f.file_id = l.file_id"
+     " WHERE l.subject_node_type=? AND l.subject_node_id=? AND l.is_primary_source=1"
+     " LIMIT 1", ("area", "alpine"), "idx_supplied_file_links"),
+    ("links_for_subject",
+     "SELECT link_id FROM supplied_file_links WHERE subject_node_type=? AND"
+     " subject_node_id=? ORDER BY linked_at, link_id", ("area", "alpine"),
+     "idx_supplied_file_links"),
+    ("links_for_file",
+     "SELECT link_id FROM supplied_file_links WHERE file_id=? ORDER BY linked_at,"
+     " link_id", ("f",), "idx_supplied_file_links_file"),
+    ("list_versions",
+     "SELECT file_id FROM supplied_files WHERE version_group_id=? ORDER BY"
+     " created_at, file_id", ("g",), "idx_supplied_files_version_group"),
+    ("list_dependencies",
+     "SELECT dependency_id FROM supplied_file_dependencies WHERE file_id=?", ("f",),
+     "idx_sfdep_file"),
+]
+
+
+def _plan(conn, sql, params) -> str:
+    return " | ".join(r[-1] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, params))
+
+
+class TestHotLookupsStayIndexBacked:
+    """`Docs/supplied-file-provenance-contract.md` P-9."""
+
+    @pytest.mark.parametrize("label,sql,params,index_frag", _INDEX_BACKED,
+                             ids=[q[0] for q in _INDEX_BACKED])
+    def test_lookup_uses_an_index(self, conn, label, sql, params, index_frag):
+        plan = _plan(conn, sql, params)
+        assert "SEARCH" in plan, (
+            f"{label} degraded to a full scan — plan: {plan}. A selective lookup "
+            "that scans is a silent cost regression: same answer, wrong cost.")
+        assert index_frag in plan, (
+            f"{label} no longer uses an index named like {index_frag!r} — "
+            f"plan: {plan}. If the index was deliberately renamed, update P-9.")
+
+    # A sibling test asserting the two full-corpus queries "stay scans" was written
+    # here and then DELETED, because its red proof exposed it as both weak and
+    # wrong-headed (GOV-1695):
+    #
+    #   * weak — `"SCAN" in plan` cannot tell `SCAN documents` from
+    #     `SCAN documents USING COVERING INDEX ...`; adding an index left it green;
+    #   * wrong-headed — tightening it to reject `USING` would fail on a COVERING
+    #     INDEX, which is a pure win here: the same rows visited, less I/O. A guard
+    #     that fails on a legitimate improvement obstructs rather than protects.
+    #
+    # The property actually wanted — "this query has no selective predicate, so it
+    # visits every row" — belongs to the QUERY, not the plan, and no plan assertion
+    # states it cleanly. It is documented in P-9 instead, where a reader can act on it.

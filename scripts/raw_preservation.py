@@ -98,6 +98,41 @@ class RawPreservationError(Exception):
     """
 
 
+class RawPathEscape(RawPreservationError):
+    """A STORED artifact path resolved outside the repository root (GOV-1693)."""
+
+
+def _contained(repo_root: Path, stored: str) -> Path:
+    """Join a stored artifact path under ``repo_root``, refusing any escape.
+
+    `Path(root) / value` **silently discards `root` when `value` is absolute** —
+    measured: ``Path("/repo") / "/etc/passwd"`` is ``/etc/passwd``, not an error.
+    A `..` segment walks out just as quietly. Either way the caller would then
+    read, hash, or report a file outside the preservation store while believing
+    it was inside.
+
+    **Not a live vulnerability today, and that is stated rather than implied.**
+    Every writer of these columns constructs a contained relative path —
+    `crawl_pdfs` uses `_safe_name()` then `local_path.relative_to(repo_root)`
+    (which raises on escape), and `ingest_local_corpus` builds
+    ``<store>/<sha[:2]>/<sha><ext>`` from a hex digest plus `Path.suffix`, which
+    cannot contain a separator.
+
+    The reason to check anyway: that invariant is enforced at **six-plus write
+    sites and verified at none**, so every future writer has to re-derive it
+    correctly. One read-side check covers all of them at once.
+    """
+    candidate = repo_root / stored
+    root = repo_root.resolve()
+    if not candidate.resolve().is_relative_to(root):
+        raise RawPathEscape(
+            f"stored path {stored!r} resolves outside the repository root "
+            f"({candidate.resolve()}); refusing to read it"
+        )
+    return candidate
+
+
+
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -160,7 +195,7 @@ def assert_raw_preserved(
         raise RawPreservationError(
             f"{object_type} id={object_id}: no local_path — raw not preserved"
         )
-    path = repo_root / rel_path
+    path = _contained(repo_root, rel_path)
     if not path.exists():
         raise RawPreservationError(
             f"{object_type} id={object_id}: raw artifact missing at {rel_path}"
@@ -202,7 +237,7 @@ def verify_reproducibility(
                 "id": row["id"],
                 "local_path": row["local_path"],
             }
-            path = repo_root / row["local_path"]
+            path = _contained(repo_root, row["local_path"])
             if not path.exists():
                 summary["missing"].append(entry)
                 continue
@@ -381,7 +416,7 @@ def validate_sources(
         own_hash = row["raw_sha256"]
         own_state = "none"
         if own_path and own_hash:
-            disk = repo_root / own_path
+            disk = _contained(repo_root, own_path)
             if not disk.exists():
                 own_state = "missing"
             elif sha256_file(disk) != own_hash:

@@ -164,21 +164,44 @@ ALLOWED_ALIAS_TYPES = frozenset({
 # Import-time drift guards (fail at import, not at runtime).
 # ---------------------------------------------------------------------------
 
+
+class RegistryConsistencyError(RuntimeError):
+    """The node/edge vocabulary is internally inconsistent. Raised at IMPORT.
+
+    Deliberately NOT ``assert``: `python -O` deletes assert statements outright, so
+    these guards would hold in a normal run and be **absent** in an optimised one —
+    exactly the condition under which a future edit goes unchecked. That matters here
+    because this registry is the vocabulary every edge is validated against, and
+    ``read_api`` (a byte-frozen serving surface) imports it (GOV-1702, read-api C7b).
+    """
+
+
+def _require(condition: object, message: str) -> None:
+    if not condition:
+        raise RegistryConsistencyError(message)
+
+
 # Every edge endpoint type in the contract must be a known node type — no edge
 # may point at a type the registry does not define.
 for _etype, (_froms, _tos) in EDGE_ENDPOINTS.items():
-    assert _etype in ALLOWED_EDGE_TYPES, f"EDGE_ENDPOINTS names unknown edge {_etype!r}"
+    _require(_etype in ALLOWED_EDGE_TYPES,
+             f"EDGE_ENDPOINTS names unknown edge {_etype!r}")
     _unknown = (_froms | _tos) - ALLOWED_NODE_TYPES
-    assert not _unknown, f"edge {_etype!r} references unknown node type(s) {_unknown}"
+    _require(not _unknown,
+             f"edge {_etype!r} references unknown node type(s) {_unknown}")
 
 # The GOV-98 additions must actually be additive (present, and not already in the
 # 1.07 set) so a future rename can't silently collide.
-assert _NODE_TYPES_GOV98 <= ALLOWED_NODE_TYPES
-assert _EDGE_TYPES_GOV98 <= ALLOWED_EDGE_TYPES
-assert not (_NODE_TYPES_1_07 & _NODE_TYPES_GOV98), "GOV-98 node collides with 1.07"
-assert not (_EDGE_TYPES_1_07 & _EDGE_TYPES_GOV98), "GOV-98 edge collides with 1.07"
-assert FORWARD_LINKING_EDGE_TYPES <= ALLOWED_EDGE_TYPES
-assert AGENDA_LIFECYCLE_EDGE_TYPES <= ALLOWED_EDGE_TYPES
+_require(_NODE_TYPES_GOV98 <= ALLOWED_NODE_TYPES,
+         "GOV-98 node types are not all in ALLOWED_NODE_TYPES")
+_require(_EDGE_TYPES_GOV98 <= ALLOWED_EDGE_TYPES,
+         "GOV-98 edge types are not all in ALLOWED_EDGE_TYPES")
+_require(not (_NODE_TYPES_1_07 & _NODE_TYPES_GOV98), "GOV-98 node collides with 1.07")
+_require(not (_EDGE_TYPES_1_07 & _EDGE_TYPES_GOV98), "GOV-98 edge collides with 1.07")
+_require(FORWARD_LINKING_EDGE_TYPES <= ALLOWED_EDGE_TYPES,
+         "FORWARD_LINKING_EDGE_TYPES names an edge outside ALLOWED_EDGE_TYPES")
+_require(AGENDA_LIFECYCLE_EDGE_TYPES <= ALLOWED_EDGE_TYPES,
+         "AGENDA_LIFECYCLE_EDGE_TYPES names an edge outside ALLOWED_EDGE_TYPES")
 
 
 class EdgeError(ValueError):
@@ -250,6 +273,18 @@ _PII_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 )
 
 
+#: A literal every listed pattern REQUIRES, checked with a cheap `in` before the
+#: regex runs (GOV-1716). Only add an entry when the pattern cannot match without
+#: that literal — a wrong entry here silently disables a PII check.
+#:
+#: RESIDUAL, stated rather than hidden: this removes the quadratic blow-up only
+#: when the literal is ABSENT. `"a" * 25000 + "@"` still costs ~800 ms, because
+#: the backtracking is in the local part. Bounding it to `{1,64}` (RFC 5321's
+#: cap) would fix that too, but it NARROWS what the guard detects, which is a
+#: security call for the owner rather than a perf tidy-up. Filed separately.
+_PII_REQUIRED_LITERAL = {"email address": "@"}
+
+
 def assert_no_pii(value: Any, field: str) -> None:
     """Reject a write-boundary value that carries private-individual PII.
 
@@ -262,6 +297,19 @@ def assert_no_pii(value: Any, field: str) -> None:
     if not isinstance(value, str) or not value.strip():
         return
     for kind, pattern in _PII_PATTERNS:
+        # GOV-1716: cheap literal prerequisite before the regex. Measured on
+        # `"a" * 50000` (a long unbroken token — a base64 blob, a URL, OCR noise
+        # in a source document), the EMAIL pattern alone took **3.0 seconds**, and
+        # scaling is QUADRATIC: 6k/12k/25k/50k -> 67/195/713/2800 ms, ~x4 per
+        # doubling. Its local part `[A-Za-z0-9._%+-]+` matches greedily from every
+        # start position and then fails to find `@`.
+        #
+        # The skip is provably semantics-preserving, not a heuristic: the pattern
+        # contains a literal `@`, so a value with no `@` cannot match it. Same
+        # argument for each entry in _PII_REQUIRED_LITERAL.
+        required = _PII_REQUIRED_LITERAL.get(kind)
+        if required is not None and required not in value:
+            continue
         if pattern.search(value):
             raise PiiGuardError(
                 f"{field} rejected: matches a {kind}; private-individual PII may "

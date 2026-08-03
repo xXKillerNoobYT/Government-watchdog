@@ -121,7 +121,13 @@ token-invalidation step exists or is needed.
 - **INV-1** No `/api/beta/*` response body ever contains civic data. Bodies are fixed
   constants or redirects (`beta/http_api.py:102-163`).
 - **INV-2** With `beta_gate_enabled` absent or off, every request to the surface is `404`,
-  regardless of method, route or credential.
+  regardless of method, route or credential — **including an over-size one**. Verified
+  2026-07-31 (GOV-1670, [#203](https://github.com/xXKillerNoobYT/Government-watchdog/issues/203)):
+  the read caps on both surfaces used to answer `413` *at the socket*, before the flag was
+  consulted, so a disabled gate replied `404` to a normal request and `413` to an over-size
+  one — an existence signal to an unauthenticated prober. Both now pass an `oversize` flag
+  into `process_request` and answer it **after** the flag check, so the body is still never
+  buffered and the constant-`404` promise holds.
 - **INV-3** An allowlist mutation without an `owner_decision_ref` is impossible — rejected
   in code *and* by the schema.
 - **INV-4** A magic token or numeric code redeems at most once, enforced by conditional
@@ -129,7 +135,15 @@ token-invalidation step exists or is needed.
 - **INV-5** Revoking an allowlist entry revokes that email's live sessions in the same
   call.
 - **INV-6** The audit log stores no raw email and no raw IP, and has no update or delete
-  path.
+  path. **Scope corrected 2026-07-31 (GOV-1668):** the two stored digests are *stable
+  pseudonyms, not confidentiality controls*. Both are unsalted, so INV-6 guarantees that the
+  audit trail is not the **source** of an address — it does **not** guarantee that a reader
+  holding the database cannot recover one. Measured: an `ip_hint` was reversed by enumerating
+  a single /16 in 0.04 s, and all 2^32 IPv4 addresses take ~0.6 core-hours in CPython (seconds
+  on a GPU) — expected 64-bit collisions across the whole space are ~0.5, so the preimage is
+  effectively unique. For `email_hash` the candidate list is `beta_allowlist` +
+  `beta_waitlist`, in the same file. Strengthening to a keyed digest is
+  [#204](https://github.com/xXKillerNoobYT/Government-watchdog/issues/204).
 - **INV-7** The front door reveals no allowlist membership through status code or body.
   *(Scope note: this is a statement about the response, not about latency — see §8.)*
 - **INV-8** No email leaves the machine while `email_adapter_enabled` is off.
@@ -206,8 +220,13 @@ decision core) and [#133](https://github.com/xXKillerNoobYT/Government-watchdog/
 2. **The waitlist is not an admission path.** `beta_waitlist` rows grant nothing; only
    `allowlist.add` admits. Two separate waitlists exist across the lanes
    (`beta_waitlist` and `waitlist_requests`) with no reconciliation between them.
-3. **`allowlist.add` overwrites `note` on re-add** — tracked as
-   [#185](https://github.com/xXKillerNoobYT/Government-watchdog/issues/185).
+3. ~~**`allowlist.add` overwrites `note` on re-add**~~ — **RESOLVED 2026-07-31 (GOV-1666,
+   [#185](https://github.com/xXKillerNoobYT/Government-watchdog/issues/185)).** `note` is now
+   three-state: `None` (the CLI default when `--note` is omitted) leaves the stored note
+   unchanged, a string replaces it, and `""` clears it deliberately. The failure modes are
+   not symmetric — a note surviving when the owner meant to drop it is visible and fixable;
+   a note silently erased on re-invite is unrecoverable and unaudited, since
+   `allowlist_added` records `owner_decision_ref` and never the note.
 4. **Duplicate cookie names resolve last-wins** on the beta and intake surfaces — tracked
    as [#182](https://github.com/xXKillerNoobYT/Government-watchdog/issues/182).
 

@@ -423,3 +423,48 @@ def test_guards_pass_on_live_body(conn: sqlite3.Connection) -> None:
     assert fs.assert_topic_anchors_honest(body, records) is True
     assert fs.assert_board_complete(body, envelope) is True
     assert fs.assert_single_surface_digest(body) is True
+
+
+# --- GOV-1701 (C4): `lane_label` runs on every board render and asserts nothing --
+#
+# C4 flagged 17 public callables in `read-api` as unreferenced by name. A
+# raise-on-entry mutation proved all 17 are EXECUTED — the name-based audit's
+# false-positive rate on this area was 100%, worse than the ~90% #213 estimates.
+#
+# But "executed" is a weaker claim than "tested". Replacing this function's body
+# with `return "MUTANT"` — same type, wrong value — left the suite **green**. It
+# runs on every board render and its output is asserted nowhere.
+#
+# What that leaves unguarded is the FAIL-CLOSED fallback: `LANE_LABELS.get(lane,
+# lane)` passes an unknown lane through unchanged. Rewriting it as
+# `LANE_LABELS[lane]` would raise `KeyError` on a lane added upstream, and no test
+# would have objected.
+
+
+class TestLaneLabel:
+    """The six known lanes, and the fallback that keeps an unknown one harmless."""
+
+    def test_every_known_lane_maps_to_its_display_label(self):
+        assert fs.lane_label(w.LANE_UPCOMING) == "Upcoming"
+        assert fs.lane_label(w.LANE_ACTIVE) == "Active"
+        assert fs.lane_label(w.LANE_PENDING_DECISION) == "Pending decision"
+        assert fs.lane_label(w.LANE_DECIDED) == "Decided"
+        assert fs.lane_label(w.LANE_FOLLOW_UP) == "Follow-up"
+        assert fs.lane_label(w.LANE_CORRECTION) == "Correction"
+
+    def test_the_map_covers_exactly_the_lanes_the_signals_module_defines(self):
+        """A lane added upstream with no label would fall through to its raw id.
+
+        Harmless (see below) but silent, so the two are pinned together here
+        rather than discovered on a board.
+        """
+        defined = {v for k, v in vars(w).items()
+                   if k.startswith("LANE_") and isinstance(v, str)}
+        assert set(fs.LANE_LABELS) == defined, (
+            "LANE_LABELS and the LANE_* constants disagree: "
+            f"unlabelled={sorted(defined - set(fs.LANE_LABELS))}, "
+            f"stale={sorted(set(fs.LANE_LABELS) - defined)}")
+
+    def test_an_unknown_lane_falls_through_instead_of_raising(self):
+        """Fail-closed to the RAW lane — the property a `[]` rewrite would break."""
+        assert fs.lane_label("lane-that-does-not-exist") == "lane-that-does-not-exist"

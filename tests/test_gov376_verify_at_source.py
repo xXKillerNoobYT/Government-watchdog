@@ -424,5 +424,133 @@ def test_audit_vs5_catches_off_vocab_status() -> None:
     assert "c1_bad" in verdict["bad_links"]
 
 
+def test_verify_at_source_cards_is_a_1to1_cover_in_the_FEED_ORDER(
+        conn: sqlite3.Connection) -> None:
+    """GOV-1689 (C4): the ordering coupling between two modules, unverified until now.
+
+    The docstring promises *"a 1:1 cover of the live feed surface with NO silent
+    drop … in the same order `stage3_card_feed.build_card_feed` emits them"*.
+
+    That is a **cross-module ordering contract**, and nothing checked it. The
+    drill-down and the feed are built by different functions over the same two
+    sources; if either changes its ordering, the drill-down silently misaligns
+    with the surface it is meant to explain — every card would still be present,
+    so a count-only check would stay green while the panels pointed at the wrong
+    rows.
+    """
+    _serve(conn, "cover-a", segment_id="seg-1", evidence=[_ev("alpine_packet")])
+    _serve(conn, "cover-b", segment_id="seg-unpreserved")
+    _serve(conn, "cover-c", segment_id="seg-1")
+
+    drill = vas.verify_at_source_cards(conn)
+    surface = feed.build_card_feed(conn)["cards"]
+
+    assert [c["handle"] for c in drill] == [c["handle"] for c in surface], (
+        "the drill-down must be a 1:1 cover of the feed IN FEED ORDER — a "
+        "mismatch means the panels explain the wrong rows")
+
+    # And the stated grouping: every record card precedes every gap card.
+    types = [c.get("type") for c in drill]
+    gap_positions = [i for i, t in enumerate(types) if t == feed.TYPE_SOURCE_MISSING]
+    record_positions = [i for i, t in enumerate(types) if t != feed.TYPE_SOURCE_MISSING]
+    if gap_positions and record_positions:
+        assert max(record_positions) < min(gap_positions), (
+            "record cards must come first, then gap cards (§4)")
+
+
+# --- GOV-1689 (C4): VS-1, VS-3 and VS-4 were NOT proven load-bearing ----------
+#
+# The section header above says "each check proven load-bearing". Measured at C4:
+# only VS-2 and VS-5 were. VS-1, VS-3 and VS-4 had a clean-corpus pass and nothing
+# else — so each could have returned `ok: True` unconditionally and the suite would
+# not have noticed.
+#
+# **For an auditor, "passes on good data" is the worthless half of the test.** The
+# claim that matters is that it FAILS on bad data, which is the same argument as
+# STEP 5.2's red proof, applied to the module under test rather than to the guard
+# around it.
+
+
+def test_audit_vs1_catches_a_card_that_is_not_honestly_labeled(
+        conn: sqlite3.Connection) -> None:
+    """VS-1's honesty half: a status outside the three honest labels is a breach.
+
+    `verifiable` / `unverified` / `source_missing` are the only labels a served
+    card may carry. Anything else — including a plausible-looking new word — means
+    the surface is asserting something the contract never defined.
+    """
+    unlabeled_body = {
+        "access": "reviewer_internal",
+        "cards": [{
+            "handle": "c1_unlabeled",
+            "type": "statement",
+            "verify_at_source_status": "probably_fine",  # not one of the three
+            "links": [],
+        }],
+    }
+    verdict = audit.check_vs1_completeness(conn, unlabeled_body)
+    assert verdict["ok"] is False
+    assert "c1_unlabeled" in verdict["unlabeled"], (
+        "VS-1 must name the dishonestly-labeled card, not just fail")
+
+
+def test_audit_vs3_catches_a_resolvability_flag_that_does_not_match_the_predicates(
+        conn: sqlite3.Connection) -> None:
+    """VS-3's whole purpose: derived, never stored.
+
+    Build the real projection, then flip one link's status. A *stored* or
+    fabricated flag would diverge from the canonical predicates exactly like
+    this — which is the failure VS-3 exists to catch, and the one that would let
+    a card claim source-verifiability it does not have.
+    """
+    _serve(conn, "vs3-real", segment_id="seg-1", evidence=[_ev("alpine_packet")])
+    body = vas.build_verify_at_source(conn)
+    card = next(c for c in body["cards"] if c.get("links"))
+    original = card["links"][0]["resolvability_status"]
+    card["links"][0]["resolvability_status"] = (
+        vas.RESOLVABILITY_UNRESOLVED if original == vas.RESOLVABILITY_RESOLVED
+        else vas.RESOLVABILITY_RESOLVED)
+
+    verdict = audit.check_vs3_derived_not_fabricated(conn, body)
+    assert verdict["ok"] is False
+    assert verdict["mismatches"], "VS-3 must report the diverging handle"
+    assert verdict["bound_ok"] is True, (
+        "the projection must still be bound to the REAL predicate modules — a "
+        "False here would mean the test poisoned the binding rather than the data")
+
+
+def test_audit_vs4_catches_the_wrong_lane(conn: sqlite3.Connection) -> None:
+    """VS-4's lane half: this projection is reviewer-internal, full stop.
+
+    A body served under any other access label means reviewer-internal
+    verify-at-source detail reached a lane that must never carry it.
+    """
+    verdict = audit.check_vs4_lane_and_no_leak(
+        conn, {"access": "public", "cards": []})
+    assert verdict["ok"] is False
+    assert verdict["lane_ok"] is False
+    assert verdict["no_raw_path"] is True, (
+        "only the lane should have failed here; a raw-path failure would mean "
+        "the fixture body leaked something and this test proves the wrong thing")
+
+
+def test_audit_vs4_catches_a_raw_path_leak(conn: sqlite3.Connection) -> None:
+    """VS-4's transport half: `assert_no_raw_paths` is the backstop, so prove it fires."""
+    leaky = {
+        "access": "reviewer_internal",
+        "cards": [{
+            "handle": "c1_leak",
+            "type": "statement",
+            "verify_at_source_status": vas.VERIFY_AT_SOURCE_UNVERIFIED,
+            "links": [{"locator": {"raw_local_path": "/Users/IA/vault/raw/abc.pdf"}}],
+        }],
+    }
+    verdict = audit.check_vs4_lane_and_no_leak(conn, leaky)
+    assert verdict["ok"] is False
+    assert verdict["no_raw_path"] is False, (
+        "a vault path in the body must trip the transport backstop")
+    assert verdict["lane_ok"] is True, "only the raw-path half should have failed"
+
+
 def _db_path(conn: sqlite3.Connection) -> Path:
     return Path(conn.execute("PRAGMA database_list").fetchone()[2])

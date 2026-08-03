@@ -319,3 +319,42 @@ def test_migration_is_rerunnable(tmp_path):
     cols = {row[1] for row in c.execute("PRAGMA table_info(supplied_files)")}
     assert cols == set(fr.PROVENANCE_COLUMNS)
     c.close()
+
+
+# --- GOV-1686 (C1, ingest-provenance): pin P-2's load-bearing row --------------
+
+
+def test_a_rejected_file_can_never_jump_straight_to_web_safe(tmp_path):
+    """`Docs/supplied-file-provenance-contract.md` P-2.
+
+    `rejected -> {reviewing}` is the narrowest row in the transition map, and it
+    is narrow **on purpose**: a repudiated file must re-enter review before it can
+    ever become public again. There is no path that turns a rejection directly
+    into published civic content.
+
+    Widening that row would be a **publication-safety** change wearing the clothes
+    of a convenience change, so it fails here first.
+    """
+    import db as db_mod
+    import file_records as fr_mod
+
+    db_path = tmp_path / "p2.db"
+    db_mod.apply_migrations(db_path)
+    conn = db_mod.open_db(db_path)
+    try:
+        rec = fr_mod.insert_file_record(
+            conn, area="alpine", source_type="council_packet",
+            original_filename="p.pdf",
+            sha256="a" * 64, mime="application/pdf", byte_size=10,
+            supplied_by="clerk@example.gov",
+            captured_at="2026-06-23T10:00:00+00:00")
+        fr_mod.set_review_state(conn, rec.file_id, "rejected")
+
+        with pytest.raises(fr_mod.IllegalReviewTransition):
+            fr_mod.set_review_state(conn, rec.file_id, "web_safe")
+
+        # The one legal exit, and it lands in review — not in publication.
+        assert fr_mod.set_review_state(
+            conn, rec.file_id, "reviewing").review_state == "reviewing"
+    finally:
+        conn.close()

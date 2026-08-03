@@ -127,7 +127,7 @@ minimum web-safe contract per card the website should consume:
 **Rule:** every field is a web-safe projection of an existing column or a typed
 edge. A field with no backing data is emitted **empty + disclosed**, never
 omitted silently and never fabricated (the same honest-anchor discipline the
-`hotTopicsSurface` already applies to `topic_id`, frontend_surface.py:202–290).
+`hotTopicsSurface` already applies to `topic_id`, stage5_frontend_surface.py:202–290).
 
 ---
 
@@ -138,11 +138,11 @@ omitted silently and never fabricated (the same honest-anchor discipline the
 | meeting id / date / body / title / source_url | **EXISTS** | meetings 0001:44–53 | project onto card |
 | agenda item id / order / title | **EXISTS** | agenda_items 0006:34–41 | project onto card |
 | thread id / label / status | **EXISTS** | agenda_threads 0012:28–37; read_api.py:761–803 | project onto card |
-| lifecycle / status lane | **EXISTS (two sources)** | thread `status` (0012) + six watchdog lanes (frontend_surface.py §3, :320–338) | expose both; keep distinct |
+| lifecycle / status lane | **EXISTS (two sources)** | thread `status` (0012) + six watchdog lanes (stage5_frontend_surface.py §3, :320–338) | expose both; keep distinct |
 | source links | **EXISTS** | evidence_links + `_safe_alias` sourceRef, read_api.py:693–732 | project onto card |
 | YouTube / timestamp links | **EXISTS but not projected onto board card** | `transcripts.video_url` 0001:28; `timestamp_seconds` 0006:58/0016:62 | **PROJECTION GAP** — compose `videoRef` |
 | decisions / actions | **LATENT** — node/edge types allowed (`vote`, `decision`, `voted_on`, `vote_decided`, `decision_affects`, concept_map.py:60–89) but **no landed table/rows** | concept_map.py:60–89 | emit `decisions: []` + disclose; issue only if Isaac wants decision extraction |
-| categories | **LATENT** — `topic_id` structurally absent today; agenda_thread is the honest anchor (VSR GOV-521) | frontend_surface.py:202–290 | emit `categoryAnchor.kind = agenda_thread` disclosure |
+| categories | **LATENT** — `topic_id` structurally absent today; agenda_thread is the honest anchor (VSR GOV-521) | stage5_frontend_surface.py:202–290 | emit `categoryAnchor.kind = agenda_thread` disclosure |
 | card lineage / related-card refs | **EXISTS (typed)** but not on board card | agenda lifecycle edges 0012:70–73; `updates_statement_id` 0007:71; read_api.py:786–802 | **PROJECTION GAP** — compose typed `lineage` |
 
 **Summary:**

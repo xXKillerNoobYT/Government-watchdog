@@ -33,8 +33,8 @@ def _utcnow() -> str:
 
 
 def record(conn: sqlite3.Connection, *, user_id: str, kind: str,
-           body_text: str) -> str:
-    """Append one notification event; returns the new ``notif_id``."""
+           body_text: str, commit: bool = True) -> str:
+    """Append one notification event; optionally leave commit to the caller."""
     if kind not in KINDS:
         raise UnknownNotificationKind(kind)
     notif_id = str(uuid.uuid4())
@@ -43,7 +43,8 @@ def record(conn: sqlite3.Connection, *, user_id: str, kind: str,
         " created_utc) VALUES (?, ?, ?, ?, ?)",
         (notif_id, user_id, kind, body_text, _utcnow()),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return notif_id
 
 
@@ -60,9 +61,10 @@ def notify_access_revoked(conn: sqlite3.Connection, user_id: str) -> str:
 
 
 def notify_cohort_advanced(conn: sqlite3.Connection, user_id: str,
-                           to_cohort: str) -> str:
+                           to_cohort: str, *, commit: bool = True) -> str:
     return record(conn, user_id=user_id, kind="cohort_advanced",
-                  body_text=f"Your account was added to cohort {to_cohort}.")
+                  body_text=f"Your account was added to cohort {to_cohort}.",
+                  commit=commit)
 
 
 def notify_consent_recorded(conn: sqlite3.Connection, user_id: str) -> str:

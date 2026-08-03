@@ -11,6 +11,8 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import pathlib
+import time
 import threading
 
 import pytest
@@ -477,3 +479,404 @@ def test_an_event_outside_the_enum_is_refused_before_sql(conn):
     with pytest.raises(audit.UnknownAuditEvent):
         audit.record(conn, event="magic_link_teleported", email="x@example.com")
     assert conn.execute("SELECT COUNT(*) FROM beta_audit_log").fetchone()[0] == 0
+
+
+# --- C1b: pin the contract's unpinned invariants (GOV-1665) ------------------
+#
+# Docs/gov801-access-gate-contract.md §5 states eight numbered invariants. The
+# C1b drift sweep on 2026-07-31 mapped each to the suite and found FOUR with no
+# test behind them: INV-1, INV-3's schema half, INV-6's second half, and INV-8.
+# They all hold in the code today — this pins them so they keep holding.
+
+#: Every key any /api/beta/* body is allowed to contain. Deliberately tiny: the
+#: surface answers with fixed status constants, never with data.
+ALLOWED_BODY_KEYS = {"status", "error"}
+
+#: The full dispatch table, so INV-1 is checked EXHAUSTIVELY rather than route
+#: by route. A route added later is covered the moment it is added here — and if
+#: someone adds a route and forgets, `test_dispatch_table_covers_every_route`
+#: below fails, so the omission cannot pass silently either.
+ALL_BETA_REQUESTS = [
+    ("POST", service.MAGIC_LINK_REQUEST_ROUTE, b'{"email":"inv@example.com"}'),
+    ("POST", service.MAGIC_LINK_REQUEST_ROUTE, b"not json"),
+    ("GET", service.MAGIC_LINK_VERIFY_ROUTE + "?token=nope", b""),
+    ("POST", service.MAGIC_LINK_CONSUME_ROUTE, b'{"email":"inv@example.com","code":"000000"}'),
+    ("POST", service.MAGIC_LINK_CONSUME_ROUTE, b"{}"),
+    ("POST", service.WAITLIST_ROUTE, b'{"email":"inv@example.com"}'),
+    ("DELETE", service.SESSION_CURRENT_ROUTE, b""),
+    ("GET", "/api/beta/does-not-exist", b""),
+]
+
+
+def test_no_beta_route_body_can_carry_civic_data(conn):
+    """INV-1, exhaustively: every /api/beta/* body is a fixed status constant.
+
+    The area's headline promise is that the front door serves ZERO civic data.
+    Existing tests assert specific routes return `BODY_OK`, which is a weaker
+    claim: a route added tomorrow that returned a record would satisfy all of
+    them. This walks the whole dispatch table and asserts every body's key set
+    is a subset of {status, error} — so a body carrying a record, an email, or
+    an allowlist flag fails regardless of which route grew it.
+    """
+    _enable_gate(conn)
+    allowlist.add(conn, "inv@example.com", owner_decision_ref="GOV-1665")
+
+    for method, path, raw in ALL_BETA_REQUESTS:
+        status, body, _headers = http_api.process_request(
+            conn, method=method, path=path, raw_body=raw)
+        assert isinstance(body, dict), f"{method} {path} returned {type(body)}"
+        assert set(body) <= ALLOWED_BODY_KEYS, (
+            f"{method} {path} -> {status} leaked non-status keys: "
+            f"{sorted(set(body) - ALLOWED_BODY_KEYS)}")
+        for value in body.values():
+            assert isinstance(value, str) and len(value) <= 32, (
+                f"{method} {path} -> {status} body value looks like data, "
+                f"not a status constant: {value!r}")
+
+
+def test_dispatch_table_covers_every_route(conn):
+    """INV-1's own guard: the table above must list every route the module serves.
+
+    Without this, INV-1 could silently stop being exhaustive — someone adds a
+    route to `service.py`, does not add it here, and the sweep above still
+    passes while covering less than it claims.
+    """
+    declared = {name: value for name, value in vars(service).items()
+                if name.endswith("_ROUTE")}
+    covered = {path.split("?")[0] for _m, path, _b in ALL_BETA_REQUESTS}
+    missing = {name: value for name, value in declared.items()
+               if value not in covered}
+    assert not missing, f"routes declared but not swept by INV-1: {missing}"
+
+
+def test_schema_refuses_an_ownerless_allowlist_row(conn):
+    """INV-3's SECOND half: the DB refuses it too, not just the service layer.
+
+    `test_allowlist_add_check_and_owner_gate` proves the Python guard raises.
+    The contract claims defence in depth — that `owner_decision_ref` is NOT NULL
+    in-schema as well — and that half was asserted nowhere. Written as a direct
+    INSERT so it bypasses the service guard entirely and lets the database
+    answer.
+    """
+    import sqlite3
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO beta_allowlist (email, status, owner_decision_ref,"
+            " added_utc) VALUES (?, 'active', NULL, ?)",
+            ("ownerless@example.com", common.iso(common.utcnow())))
+        conn.commit()
+    conn.rollback()
+    assert conn.execute("SELECT COUNT(*) FROM beta_allowlist").fetchone()[0] == 0
+
+
+def test_audit_module_has_no_update_or_delete_path(conn):
+    """INV-6's SECOND half: append-only is a property of the CODE, not a wish.
+
+    The 'no raw email/IP' half is tested; 'there is deliberately no update or
+    delete path' was not. Holding today by absence is exactly the kind of
+    property that a future convenience helper erases without anyone noticing,
+    so it is pinned by sweeping the module source — same idiom as the existing
+    SameSite sweep at the end of this file.
+    """
+    import pathlib
+
+    # Sweep the whole `beta` package, not just audit.py: the property is "no
+    # code writes to this table except by appending", and a helper added in a
+    # sibling module would break it just as thoroughly.
+    #
+    # Matched with the SQL keyword adjacent to the table name. An earlier
+    # version searched for bare "UPDATE " / "DELETE " and failed on audit.py's
+    # OWN DOCSTRING, which says "there is deliberately no update or delete
+    # path" — a prose sentence describing the guarantee tripped the guard that
+    # enforces it. Keyword+table adjacency cannot be triggered by prose.
+    package = pathlib.Path(audit.__file__).parent
+    offenders = []
+    for module in sorted(package.glob("*.py")):
+        text = module.read_text(encoding="utf-8").upper()
+        for verb in ("UPDATE BETA_AUDIT_LOG", "DELETE FROM BETA_AUDIT_LOG"):
+            if verb in text:
+                offenders.append(f"{module.name}: {verb}")
+    assert offenders == [], offenders
+
+    # And the append path itself is still there, so this cannot pass vacuously
+    # by the table having been renamed out from under the sweep.
+    assert "INSERT INTO BETA_AUDIT_LOG" in (
+        pathlib.Path(audit.__file__).read_text(encoding="utf-8").upper())
+
+
+def test_no_email_leaves_the_machine_while_the_adapter_flag_is_off(conn):
+    """INV-8: with the flag off, a registered real adapter is NOT reachable.
+
+    The `capture` fixture deliberately turns the flag ON so other tests can read
+    the magic-link body. That leaves the shipped state — flag OFF, null adapter,
+    nothing leaves the machine — untested. Here the capturer is registered
+    WITHOUT enabling the flag: `resolve_adapter` must still hand back the null
+    adapter, so the sink stays empty even on the happy path that would otherwise
+    send two emails.
+    """
+    sink: list[dict] = []
+
+    class _Capturing:
+        name = "capture-off"
+
+        def send(self, *, to_email, subject, body_text, body_html):
+            sink.append({"to": to_email})
+            return "should-never-happen"
+
+    adapters.register_adapter("capture-off", _Capturing)
+    try:
+        _enable_gate(conn)
+        allowlist.add(conn, "quiet@example.com", owner_decision_ref="GOV-1665")
+
+        service.request_magic_link(conn, "quiet@example.com")
+        service.join_waitlist(conn, "quiet@example.com")
+
+        assert sink == [], f"email escaped with the adapter flag OFF: {sink}"
+    finally:
+        adapters.unregister_adapter("capture-off")
+
+
+# --- #185: re-adding without a note must not destroy it (GOV-1666) ----------
+
+def test_readd_without_note_preserves_the_existing_note(conn):
+    """The real owner workflow: allow --note ... / revoke / allow (no --note).
+
+    `--note` is optional on the CLI, so the third command carries None. Before
+    GOV-1666 that NULL overwrote the stored note — silently, with no audit of
+    the erasure, since `allowlist_added` records only `owner_decision_ref`.
+    """
+    allowlist.add(conn, "note@example.com", owner_decision_ref="GOV-784",
+                  note="pilot reviewer, Alpine")
+    allowlist.revoke(conn, "note@example.com", owner_decision_ref="GOV-900")
+
+    allowlist.add(conn, "note@example.com", owner_decision_ref="GOV-901")
+
+    row = conn.execute("SELECT note, status, owner_decision_ref FROM"
+                       " beta_allowlist WHERE email = ?",
+                       ("note@example.com",)).fetchone()
+    assert row["note"] == "pilot reviewer, Alpine"
+    assert row["status"] == "active"          # re-activation still works
+    assert row["owner_decision_ref"] == "GOV-901"  # ...and the ref DOES update
+
+
+def test_readd_with_a_new_note_replaces_it(conn):
+    allowlist.add(conn, "note2@example.com", owner_decision_ref="GOV-784",
+                  note="first")
+    allowlist.add(conn, "note2@example.com", owner_decision_ref="GOV-901",
+                  note="second")
+
+    row = conn.execute("SELECT note FROM beta_allowlist WHERE email = ?",
+                       ("note2@example.com",)).fetchone()
+    assert row["note"] == "second"
+
+
+def test_empty_string_note_clears_it_deliberately(conn):
+    """Erasing stays possible — it just has to be asked for."""
+    allowlist.add(conn, "note3@example.com", owner_decision_ref="GOV-784",
+                  note="to be removed")
+    allowlist.add(conn, "note3@example.com", owner_decision_ref="GOV-901",
+                  note="")
+
+    row = conn.execute("SELECT note FROM beta_allowlist WHERE email = ?",
+                       ("note3@example.com",)).fetchone()
+    assert row["note"] == ""
+
+
+def test_first_add_without_a_note_stores_null(conn):
+    """COALESCE must not invent a value when there is no prior row."""
+    allowlist.add(conn, "note4@example.com", owner_decision_ref="GOV-784")
+
+    row = conn.execute("SELECT note FROM beta_allowlist WHERE email = ?",
+                       ("note4@example.com",)).fetchone()
+    assert row["note"] is None
+
+
+# --- GOV-1667 (C7b hunt): the front door had NO body cap at all -------------
+
+def test_front_door_body_is_capped(conn, live_server, monkeypatch):
+    """`http_api` accepted an arbitrarily large body before GOV-1667.
+
+    `intake_api` had `_READ_CAP`; this surface had nothing — `rfile.read(length)`
+    with no bound, so one unauthenticated POST could make the process buffer as
+    much as it cared to declare. Added because the red proof for the fix caught
+    that removing `MAX_BODY_BYTES` changed nothing observable: the cap existed
+    but nothing was watching it.
+    """
+    _enable_gate(conn)
+    monkeypatch.setattr(http_api, "MAX_BODY_BYTES", 64)
+
+    client = http.client.HTTPConnection("127.0.0.1", live_server)
+    client.request("POST", service.MAGIC_LINK_REQUEST_ROUTE,
+                   body=b"x" * 4096,
+                   headers={"Content-Type": "application/json"})
+    response = client.getresponse()
+    response.read()
+    client.close()
+
+    assert response.status == 413
+
+
+def test_front_door_normal_body_is_unaffected_by_the_cap(conn, live_server):
+    """The cap must not be so tight it rejects real traffic.
+
+    Pairs with the test above: a guard that returns 413 for everything would
+    satisfy it while breaking the surface entirely.
+    """
+    _enable_gate(conn)
+
+    client = http.client.HTTPConnection("127.0.0.1", live_server)
+    client.request("POST", service.MAGIC_LINK_REQUEST_ROUTE,
+                   body=json.dumps({"email": "capped@example.com"}).encode(),
+                   headers={"Content-Type": "application/json"})
+    response = client.getresponse()
+    response.read()
+    client.close()
+
+    assert response.status == 200
+
+
+# --- GOV-1668 (C8 hunt): pin what the pseudonyms ACTUALLY guarantee ---------
+#
+# These pin the properties the system relies on — determinism and normalisation
+# — and deliberately do NOT pin "non-reversible", because it is not true. The
+# old docstrings claimed it; C8 measured otherwise (see #204).
+
+def test_ip_hint_is_deterministic_and_bucketing():
+    """Rate-limit forensics need the SAME address to map to the SAME hint.
+
+    This is the property the column exists for, and the one a future change
+    (e.g. adding a per-call salt) would silently destroy while still looking
+    like a privacy improvement.
+    """
+    assert common.ip_hint("203.0.113.47") == common.ip_hint("203.0.113.47")
+    assert common.ip_hint("203.0.113.47") != common.ip_hint("203.0.113.48")
+    assert common.ip_hint(None) is None
+    assert common.ip_hint("") is None
+    assert len(common.ip_hint("203.0.113.47")) == common.IP_HINT_LEN
+
+
+def test_ip_hint_is_reversible_and_the_docs_must_not_claim_otherwise():
+    """The honest counterpart: a hint IS recoverable from a small search space.
+
+    Asserted rather than assumed, so the claim in the contract and docstrings
+    stays anchored to something executable. If a keyed digest lands (#204) this
+    test SHOULD start failing — that is the signal to update INV-6, not to
+    delete the test quietly.
+    """
+    import hashlib
+
+    target = "203.0.113.47"
+    hint = common.ip_hint(target)
+
+    recovered = [f"203.0.113.{n}" for n in range(256)
+                 if hashlib.sha256(f"203.0.113.{n}".encode()).hexdigest()
+                 [:common.IP_HINT_LEN] == hint]
+
+    assert recovered == [target], recovered
+    # ...and the module must not re-assert the disproved claim.
+    import inspect
+    doc = inspect.getdoc(common.ip_hint) or ""
+    assert "non-reversible" not in doc.lower()
+
+
+def test_email_hash_normalises_before_hashing(conn):
+    """INV-9 at the audit boundary: one address, one pseudonym, any casing."""
+    assert common.email_hash("A@Example.COM") == common.email_hash(" a@example.com ")
+    assert common.email_hash(None) is None
+    assert common.email_hash("") is None
+
+
+def test_audit_row_carries_the_pseudonym_not_the_address(conn):
+    """What INV-6 genuinely guarantees: plaintext never enters the column."""
+    audit.record(conn, event="waitlist_joined", email="Subject@Example.com",
+                 ip_hint=common.ip_hint("203.0.113.9"))
+
+    row = conn.execute("SELECT email_hash, ip_hint FROM beta_audit_log").fetchone()
+    assert row["email_hash"] == common.email_hash("subject@example.com")
+    assert "@" not in row["email_hash"]
+    assert row["ip_hint"] == common.ip_hint("203.0.113.9")
+    assert "203.0.113.9" not in (row["ip_hint"] or "")
+
+
+def db_path_for_thread_test():
+    """A migrated DB with the gate ON, outside the fixture (needs no cleanup)."""
+    import tempfile
+    path = pathlib.Path(tempfile.mkdtemp()) / "gov1669.db"
+    db.apply_migrations(path)
+    conn = db.open_db(path)
+    flags.set_flag(conn, http_api.BETA_GATE_FLAG, enabled=True,
+                   owner_decision_ref="test-card-gov1669")
+    conn.close()
+    return path
+
+
+# --- GOV-1669 (C9 hunt): one stalled client must not take the gate down -----
+
+def test_handler_has_a_finite_connection_timeout():
+    """BaseHTTPRequestHandler.timeout defaults to None, which means NEVER.
+
+    socketserver only calls ``settimeout`` when this is not None, so leaving the
+    default lets one connection hold the handler forever.
+    """
+    handler = http_api.make_handler(pathlib.Path("/nonexistent.db"))
+    assert handler.timeout is not None
+    assert 0 < handler.timeout <= 120
+
+
+def test_front_door_is_threaded_so_one_client_cannot_block_the_rest():
+    """The measured defect, as a test: a stalled client must not block others.
+
+    Before GOV-1669 this surface was a plain single-threaded ``HTTPServer``.
+    Measured then: baseline 200 in 0.004 s; with ONE client that sent 7 bytes of
+    a promised 100, a second client got nothing and timed out at 6 s. Here the
+    second client must still be served while the first is deliberately stuck.
+    """
+    import socket
+
+    server = http_api.serve(db_path_for_thread_test(), port=0)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    stalled = socket.create_connection(("127.0.0.1", port))
+    try:
+        stalled.sendall(
+            b"POST /api/beta/waitlist HTTP/1.1\r\nHost: t\r\n"
+            b"Content-Length: 100\r\n\r\npartial")   # 7 of 100, then silence
+        time.sleep(0.3)
+
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        client.request("GET", "/api/beta/nope")
+        response = client.getresponse()
+        response.read()
+        client.close()
+        assert response.status == 404      # served WHILE the other is stuck
+    finally:
+        stalled.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+# --- GOV-1670 (#203): the front door had the same leak, added by GOV-1667 ----
+
+def test_front_door_oversize_is_404_while_the_gate_is_off(conn):
+    """The cap GOV-1667 added put its 413 before the flag check — same leak.
+
+    Recorded plainly because this loop filed #203 against `intake_api` one
+    iteration AFTER introducing an identical instance here. Both are fixed
+    together.
+    """
+    status, body, _ = http_api.process_request(
+        conn, method="POST", path=service.WAITLIST_ROUTE, oversize=True)
+
+    assert (status, body) == (404, http_api.BODY_404)
+
+
+def test_front_door_oversize_is_413_once_the_gate_is_on(conn):
+    _enable_gate(conn)
+
+    status, body, _ = http_api.process_request(
+        conn, method="POST", path=service.WAITLIST_ROUTE, oversize=True)
+
+    assert (status, body) == (413, http_api.BODY_413)

@@ -131,6 +131,80 @@ def test_login_rehashes_weak_parameters(conn):
     PasswordHasher().verify(new, "pw-to-upgrade")
 
 
+# --- GOV-1674 (C4): the empty string is not a credential -------------------------
+#
+# Found by a C4 audit asking which public callables no test CALLS. `set_password`
+# had zero references in the whole tests/ tree — and it is the only exit from the
+# passwordless posture, i.e. the single function that turns a NULL-hash row
+# `login` always refuses into a row `login` accepts.
+#
+# Measured on main @ ca4d40c, before the fix:
+#   set_password(conn, uid, "")            -> accepted, wrote a real argon2 hash
+#   login(email, "")                       -> SUCCEEDED
+#   set_password(conn, "no-such-id", "pw") -> returned normally, changed nothing
+#
+# The cause is one expression: `_HASHER.hash(password) if password is not None`.
+# "" is falsy in Python but hashes to a perfectly valid PHC string, so the guard
+# that was watching for None never saw it.
+
+def test_set_password_rejects_empty_and_leaves_the_row_passwordless(conn):
+    uid = service.create_user(conn, email="empty-sp@example.com")
+    with pytest.raises(service.InvalidPassword):
+        service.set_password(conn, uid, "")
+    stored = conn.execute("SELECT password_hash FROM users WHERE user_id = ?",
+                          (uid,)).fetchone()[0]
+    assert stored is None, "a refused set_password must not alter the row"
+
+
+def test_empty_password_never_becomes_a_working_login_credential(conn):
+    """The end-to-end this exists to prevent, not just the raised exception.
+
+    Asserting only that `set_password` raises would still pass if some other
+    path wrote a hash of "". What matters is that `login(email, "")` cannot
+    succeed — before the fix it did.
+    """
+    service.create_user(conn, email="nolo@example.com")
+    with pytest.raises(service.InvalidPassword):
+        service.set_password(conn, service.find_user_by_email(
+            conn, "nolo@example.com"), "")
+    with pytest.raises(service.LoginFailed):
+        service.login(conn, email="nolo@example.com", password="")
+
+
+def test_set_password_on_unknown_user_raises_rather_than_silently_no_op(conn):
+    before = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    with pytest.raises(service.UnknownUser):
+        service.set_password(conn, "no-such-user-id", "a-real-password")
+    assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == before
+
+
+def test_create_user_refuses_empty_password_but_still_allows_none(conn):
+    with pytest.raises(service.InvalidPassword):
+        service.create_user(conn, email="ce@example.com", password="")
+    assert service.find_user_by_email(conn, "ce@example.com") is None, \
+        "a refused create_user must not leave a half-built account behind"
+    # None remains the supported passwordless posture (provision.py depends on it).
+    uid = service.create_user(conn, email="cn@example.com", password=None)
+    assert conn.execute("SELECT password_hash FROM users WHERE user_id = ?",
+                        (uid,)).fetchone()[0] is None
+
+
+def test_set_password_still_sets_a_working_credential(conn):
+    """OVER-CORRECTION guard: the fix must not break the function's actual job.
+
+    A guard that rejects everything would pass all four tests above. This is the
+    one that fails if `set_password` stops working, and it is also the first test
+    this repo has ever had for the happy path.
+    """
+    service.create_user(conn, email="works@example.com")
+    uid = service.find_user_by_email(conn, "works@example.com")
+    service.set_password(conn, uid, "a-real-password")
+    logged_in, token = service.login(conn, email="works@example.com",
+                                     password="a-real-password")
+    assert logged_in == uid
+    assert sessions.verify_session(conn, token) == uid
+
+
 # --- INV-10: sessions store sha256 only -----------------------------------------
 
 def test_raw_token_never_stored_only_sha256(conn):
@@ -163,3 +237,38 @@ def test_access_revoke_kills_all_live_sessions(conn):
     service.revoke(conn, uid, owner_decision_ref="card-b")
     assert sessions.verify_session(conn, t1) is None
     assert sessions.verify_session(conn, t2) is None
+
+
+# --- GOV-1673 (C1b): INV-4's SECOND half — append-only as a code property ----
+
+def test_no_code_path_updates_or_deletes_access_grants():
+    """INV-4 says `access_grants` IS append-only, not merely that it accumulates.
+
+    `test_decisions_append_rows_and_latest_wins` proves rows survive when the
+    SERVICE API is used. It cannot fail on a convenience helper added later —
+    a `correct_grant()` doing an UPDATE would pass it while destroying the audit
+    trail the tier resolution depends on. INV-4 is the reason
+    `current_tier` can trust "latest row wins"; if a row can be rewritten, the
+    history stops being evidence.
+
+    Swept across the whole `scripts/` tree, not just `accounts/`: the table is
+    read from seven files, and a helper in any of them breaks the invariant
+    equally. Matched on the SQL verb ADJACENT to the table name — prose and
+    docstrings that merely mention the rule must not trip it (learned three
+    times over: GOV-1665, GOV-1667, GOV-1672).
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+    offenders = []
+    for module in sorted(root.rglob("*.py")):
+        text = module.read_text(encoding="utf-8").upper()
+        for verb in ("UPDATE ACCESS_GRANTS", "DELETE FROM ACCESS_GRANTS"):
+            if verb in text:
+                offenders.append(f"{module.relative_to(root)}: {verb}")
+    assert offenders == [], offenders
+
+    # ...and the append path is still present, so this cannot pass vacuously
+    # by the table having been renamed out from under the sweep.
+    service_src = (root / "accounts" / "service.py").read_text(encoding="utf-8")
+    assert "INSERT INTO access_grants" in service_src

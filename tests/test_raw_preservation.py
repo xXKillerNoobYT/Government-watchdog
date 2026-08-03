@@ -229,3 +229,154 @@ def test_raw_before_parse_gate_blocks_extraction_on_tamper(tmp_path: Path) -> No
         ).fetchone()[0]
     assert extracted == 0
     assert raw_text is None
+
+
+# --- GOV-1690 (C4): the "absolute drift rule" was stated, never enforced -------
+#
+# `validate_sources` promises, in capitals: "NEVER overwrites raw_sha256 and NEVER
+# re-fetches (absolute drift rule)". Nothing tested it.
+#
+# This is the same class as `extract_metadata`'s provenance promise (GOV-1688), and
+# it is the sharper instance: `raw_sha256` is the recorded fingerprint of the bytes
+# this project captured from a government source. If validation quietly re-hashed a
+# file that had changed on disk, the divergence would DISAPPEAR — the record would
+# agree with the tampered bytes and the evidence that anything changed would be gone.
+
+
+def _insert_source(conn, sid: str, *, status: str, local_path: str, sha: str) -> None:
+    conn.execute(
+        "INSERT INTO sources (source_id, name, scope, raw_preservation_status,"
+        " raw_local_path, raw_sha256) VALUES (?, ?, 'alpine', ?, ?, ?)",
+        (sid, f"Source {sid}", status, local_path, sha))
+    conn.commit()
+
+
+def test_drifted_bytes_are_a_DEFECT_and_the_recorded_hash_is_never_rewritten(
+        tmp_path: Path) -> None:
+    """Tamper the stored file; the hash on record must survive untouched.
+
+    The module comments the branch itself — `own_state = "defect"  # drift —
+    defect, not a gap, never overwritten`. Reporting the defect is the whole
+    value: a system that re-hashed to match would be *self-healing into a lie*.
+    """
+    db_path = tmp_path / "drift.db"
+    repo_root = tmp_path / "repo"
+    db.apply_migrations(db_path)
+    original_sha = _write_raw(repo_root, "Raw/alpine/packet.pdf", b"%PDF original bytes")
+
+    with db.open_db(db_path) as conn:
+        _insert_source(conn, "alpine-drift", status="preserved",
+                       local_path="Raw/alpine/packet.pdf", sha=original_sha)
+        # Someone (or something) changes the stored artifact after capture.
+        (repo_root / "Raw/alpine/packet.pdf").write_bytes(b"%PDF TAMPERED bytes")
+
+        out = rp.validate_sources(
+            conn, repo_root, bad_document_ids=set(), apply=True,
+            gap_exceptions=(), run_id=None)
+
+        assert any(i["source_id"] == "alpine-drift" for i in out["invalid"]), (
+            "drifted bytes must be reported INVALID, not silently accepted")
+        still = conn.execute(
+            "SELECT raw_sha256 FROM sources WHERE source_id = 'alpine-drift'"
+        ).fetchone()[0]
+
+    assert still == original_sha, (
+        "validate_sources rewrote raw_sha256. Its docstring promises 'NEVER "
+        "overwrites raw_sha256 ... (absolute drift rule)'. Re-hashing to match a "
+        "changed file destroys the only evidence that the artifact drifted.")
+
+
+def test_an_upgraded_seed_only_source_keeps_its_hash_and_only_status_moves(
+        tmp_path: Path) -> None:
+    """The `apply` write path touches status + last_validated_utc, nothing else."""
+    db_path = tmp_path / "upgrade.db"
+    repo_root = tmp_path / "repo"
+    db.apply_migrations(db_path)
+    sha = _write_raw(repo_root, "Raw/alpine/ord.pdf", b"%PDF ordinance")
+
+    with db.open_db(db_path) as conn:
+        _insert_source(conn, "alpine-seed", status="seed_only",
+                       local_path="Raw/alpine/ord.pdf", sha=sha)
+        out = rp.validate_sources(
+            conn, repo_root, bad_document_ids=set(), apply=True,
+            gap_exceptions=(), run_id=None)
+        assert "alpine-seed" in out["upgraded"]
+        row = conn.execute(
+            "SELECT raw_preservation_status, raw_sha256, raw_local_path FROM sources"
+            " WHERE source_id = 'alpine-seed'").fetchone()
+
+    assert row[0] == rp.CANONICAL_PRESERVED
+    assert row[1] == sha, "the upgrade path must not touch raw_sha256"
+    assert row[2] == "Raw/alpine/ord.pdf", "nor the recorded locator"
+
+
+def test_dry_run_writes_nothing_at_all(tmp_path: Path) -> None:
+    """`apply=False` must classify without mutating — the safe-to-run guarantee."""
+    db_path = tmp_path / "dry.db"
+    repo_root = tmp_path / "repo"
+    db.apply_migrations(db_path)
+    sha = _write_raw(repo_root, "Raw/alpine/x.pdf", b"%PDF x")
+
+    with db.open_db(db_path) as conn:
+        _insert_source(conn, "alpine-dry", status="seed_only",
+                       local_path="Raw/alpine/x.pdf", sha=sha)
+        out = rp.validate_sources(
+            conn, repo_root, bad_document_ids=set(), apply=False,
+            gap_exceptions=(), run_id=None)
+        assert "alpine-dry" in out["upgraded"], "it must still CLASSIFY"
+        status = conn.execute(
+            "SELECT raw_preservation_status FROM sources WHERE source_id = 'alpine-dry'"
+        ).fetchone()[0]
+
+    assert status == "seed_only", (
+        "apply=False wrote to the database — a dry run that mutates is worse than "
+        "no dry run, because operators rely on it being safe")
+
+
+# --- GOV-1693 (C7b hunt): a STORED path must not escape the repository root ---
+#
+# `Path(root) / value` silently DISCARDS `root` when `value` is absolute:
+# measured, `Path("/repo") / "/etc/passwd"` is `/etc/passwd` — no error. A `..`
+# segment walks out just as quietly. Either way the caller reads, hashes, or
+# reports a file OUTSIDE the preservation store while believing it is inside.
+#
+# NOT a live vulnerability: every writer of these columns constructs a contained
+# relative path. The reason to guard the READ side is that the invariant is
+# enforced at 6+ write sites and verified at none, so every future writer has to
+# re-derive it. One check covers all of them.
+
+
+def test_an_absolute_stored_path_is_refused_not_silently_followed(tmp_path: Path):
+    """The foot-gun in one line: an absolute value makes `/` throw the root away."""
+    db_path = tmp_path / "esc.db"
+    repo_root = tmp_path / "repo"
+    (repo_root / "Raw").mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"not ours")
+    db.apply_migrations(db_path)
+
+    with db.open_db(db_path) as conn:
+        _insert_source(conn, "alpine-escape", status="preserved",
+                       local_path=str(outside), sha=rp.sha256_file(outside))
+        with pytest.raises(rp.RawPathEscape, match="outside the repository root"):
+            rp.validate_sources(conn, repo_root, bad_document_ids=set(),
+                                apply=False, gap_exceptions=(), run_id=None)
+
+
+def test_a_dot_dot_stored_path_is_refused(tmp_path: Path):
+    """`..` escapes without ever looking absolute."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (tmp_path / "sibling.txt").write_bytes(b"x")
+    with pytest.raises(rp.RawPathEscape):
+        rp._contained(repo_root, "../sibling.txt")
+
+
+def test_an_ordinary_relative_path_still_resolves_normally(tmp_path: Path):
+    """The guard must not break the 99.9% case it sits in front of."""
+    repo_root = tmp_path / "repo"
+    (repo_root / "Raw").mkdir(parents=True)
+    (repo_root / "Raw" / "ok.pdf").write_bytes(b"%PDF")
+    got = rp._contained(repo_root, "Raw/ok.pdf")
+    assert got == repo_root / "Raw/ok.pdf"
+    assert got.exists(), "a legitimate contained path must still be usable"

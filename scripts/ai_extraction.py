@@ -85,6 +85,8 @@ AI_ENTRY_VERIFICATION_STATUS = "machine_extracted_unreviewed"
 AI_REVIEW_STATE = "unreviewed"
 AI_PUBLICATION_STATE = "not_publishable"
 AI_LAYER = "ai_thought_then"
+#: An AI row is a paraphrase, never a verbatim quote (lane-2 invariant 1).
+AI_IS_VERBATIM = 0
 
 # The only reviewer state that, paired with error_status='ok', unblocks downstream.
 PROMOTABLE_REVIEWER_STATE = "approved"
@@ -325,14 +327,18 @@ def _apply_ai_speaker(
 
 def _bind_ai_fields(claim: dict[str, Any], run_id: str) -> dict[str, Any]:
     """Project a proposed claim onto the fixed AI bindings (gating fields overridden)."""
-    is_verbatim = 1 if claim.get("is_verbatim") else 0  # AI defaults to paraphrase (0)
+    # GOV-1717: FORCED, not defaulted. The lane-2 contract (invariant 1) says
+    # "Every AI row is forced to ... layer='ai_thought_then', is_verbatim=0 ...
+    # Gating fields are overridden by the adapter regardless of proposer output."
+    # These two were read from the claim, so a proposer supplying nothing already
+    # produced known_then/verbatim rows (backend #256) — no lying required.
     return {
         "statement_id": claim["statement_id"],
         "segment_id": claim.get("segment_id"),
         "agenda_item_id": claim.get("agenda_item_id"),
         "statement_text": claim.get("statement_text"),
-        "is_verbatim": is_verbatim,
-        "layer": claim.get("layer", AI_LAYER),
+        "is_verbatim": AI_IS_VERBATIM,
+        "layer": AI_LAYER,
         "confidence": claim.get("confidence", "low"),
         # Gating fields — overridden, NOT taken from the proposer (1.09 §2.3).
         "produced_by": AI_PRODUCED_BY,
@@ -392,6 +398,20 @@ def run_extraction(
     attribution-safety gate, counts orphan/pointer rejections, and finalizes the
     ledger. Returns a structured result; never raises on a proposer error (it is
     recorded as ``error_status='failed'`` instead — fail-closed and auditable).
+
+    **Scope of that promise, measured (GOV-1714).** Every rejection path a
+    *proposer* can trigger is inside the per-claim ``try``: orphan/pointer
+    violations, the PII guard, a bad ``speaker_class``, and any
+    ``sqlite3.DatabaseError`` (a duplicate ``statement_id`` on a re-proposed claim
+    raises ``IntegrityError``, which is **not** a ``ValueError`` and used to
+    escape). The claim is rejected and counted; the run finishes and records.
+
+    **What is still not guaranteed:** an *unforeseen* exception raised outside that
+    block would still propagate before ``finalize_run``, leaving the ledger row at
+    its ``error_status='ok'`` column default with ``finished_utc`` NULL — a crashed
+    run reading as healthy. Closing that needs the whole body wrapped so the ledger
+    is finalized on any escape; deliberately not done here, because it is a
+    restructure of a 130-line function rather than the surgical fix this is.
 
     The model/tool version recorded on the run comes from ``model_name`` /
     ``model_version`` (or the loaded ``provider_config``); no secret is read.
@@ -458,6 +478,13 @@ def run_extraction(
         links = list(claim.get("evidence_links") or [])
         for link in links:
             link.setdefault("ai_extraction_run_id", run_id)
+            # GOV-1717: links carried NO AI binding beyond the run id, so a link
+            # persisted as known_then/verbatim under an ai_thought_then statement
+            # — and `evidence_links` has no `produced_by` column, so nothing
+            # downstream could tell it came from AI. Forced, like the statement.
+            link["layer"] = AI_LAYER
+            link["is_verbatim"] = AI_IS_VERBATIM
+            link["verification_status"] = AI_ENTRY_VERIFICATION_STATUS
         ai_statement = _bind_ai_fields(claim, run_id)
         try:
             # Write boundary, in order: PII guard (GOV-105/GOV-137) THEN the 1.07
@@ -465,7 +492,15 @@ def run_extraction(
             # dropped and counted, never written.
             _assert_claim_pii_free(ai_statement, links)
             result = st.insert_statement(conn, ai_statement, links, commit=False)
-        except (st.OrphanClaimError, st.PointerError, PiiGuardError, ValueError) as exc:
+            # Attribution safety: an AI speaker guess never names (uncertain -> no
+            # name). MOVED INSIDE the try in GOV-1714 — it used to sit after the
+            # block, so a proposer-supplied bad `speaker_class` raised ValueError
+            # straight out of run_extraction, past the ledger finalize, leaving the
+            # audit row reading `error_status='ok'` for a run that never finished.
+            if claim.get("speaker"):
+                _apply_ai_speaker(conn, result["statement_id"], claim["speaker"])
+        except (st.OrphanClaimError, st.PointerError, PiiGuardError, ValueError,
+                sqlite3.DatabaseError) as exc:
             # No-orphan-claims (1.07 §2.3) + PII guard inherited fail-closed: an AI
             # claim with no resolving pointer/segment, or one carrying private PII,
             # is rejected and NOT written.
@@ -482,9 +517,6 @@ def run_extraction(
         ]
         written_links.extend(link_ids)
 
-        # Attribution safety: an AI speaker guess never names (uncertain -> no name).
-        if claim.get("speaker"):
-            _apply_ai_speaker(conn, result["statement_id"], claim["speaker"])
 
     if rejected and written_statements:
         error_status = "partial"

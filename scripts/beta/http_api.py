@@ -35,7 +35,7 @@ import json
 import sqlite3
 import sys
 from http.cookies import CookieError, SimpleCookie
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -52,6 +52,21 @@ COOKIE_NAME = "gw_beta_session"
 BODY_OK = {"status": "ok"}
 BODY_404 = {"error": "not_found"}
 BODY_400 = {"error": "bad_request"}
+BODY_413 = {"error": "payload_too_large"}
+
+#: Every body this surface accepts is a small JSON object (an email, a 6-digit
+#: code). 64 KiB is orders of magnitude more than any of them and still bounds
+#: what one unauthenticated request can make the process buffer. Before
+#: GOV-1667 there was NO cap here at all.
+MAX_BODY_BYTES = 64 * 1024
+
+#: Seconds a single connection may hold the handler before the socket is
+#: dropped. BaseHTTPRequestHandler.timeout defaults to None, which means NEVER —
+#: measured GOV-1669: one client that sent 7 bytes of a promised 100 blocked
+#: every other request indefinitely (a second client timed out at 6 s; without
+#: the client giving up it would have waited forever). Generous for the bodies
+#: this surface accepts, all of which are a few hundred bytes.
+REQUEST_TIMEOUT_SECONDS = 15
 # One neutral rejection for the code consume: a wrong/expired code and a
 # never-requested (or non-allowlisted) email are indistinguishable here.
 BODY_401 = {"error": "invalid_code"}
@@ -108,7 +123,8 @@ def _json_body(raw_body: bytes) -> dict | None:
 def process_request(conn: sqlite3.Connection, *, method: str, path: str,
                     raw_body: bytes = b"", cookie_header: str | None = None,
                     ip_hint: str | None = None,
-                    verify_base_url: str = service.DEFAULT_VERIFY_BASE_URL
+                    verify_base_url: str = service.DEFAULT_VERIFY_BASE_URL,
+                    oversize: bool = False,
                     ) -> tuple[int, dict, dict]:
     """The unit-testable heart of the surface: ``(status, body, headers)``.
 
@@ -117,6 +133,11 @@ def process_request(conn: sqlite3.Connection, *, method: str, path: str,
     """
     if not flags.is_enabled(conn, BETA_GATE_FLAG):
         return 404, dict(BODY_404), {}
+    if oversize:
+        # After the flag, never before — see intake_api.process_request (#203).
+        # GOV-1667 added this cap and put its 413 at the socket, reproducing the
+        # very leak this loop filed one iteration later. Corrected here.
+        return 413, dict(BODY_413), {}
     route = urlsplit(path).path
 
     if method == "POST" and route == service.MAGIC_LINK_REQUEST_ROUTE:
@@ -183,12 +204,22 @@ def make_handler(db_path: Path, *,
     """Build a request-handler class bound to one DB path."""
 
     class Handler(BaseHTTPRequestHandler):
+        #: socketserver applies this to the connection when it is not None.
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def log_message(self, *args):  # silence default stderr spam
             pass
 
         def _dispatch(self, method: str) -> None:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            raw = self.rfile.read(length) if length else b""
+            oversize = False
+            length = common.parse_content_length(
+                self.headers.get("Content-Length"))
+            if length is None:
+                raw = b""            # unusable header -> no body (see common)
+            elif length > MAX_BODY_BYTES:
+                oversize, raw = True, b""   # never buffer; the flag decides
+            else:
+                raw = self.rfile.read(length) if length else b""
             # ip_hint is computed at the boundary — a raw IP never crosses into
             # the service or audit layers (privacy: truncated hash only).
             ip_hint = common.ip_hint(
@@ -198,9 +229,13 @@ def make_handler(db_path: Path, *,
                 status, payload, headers = process_request(
                     conn, method=method, path=self.path, raw_body=raw,
                     cookie_header=self.headers.get("Cookie"), ip_hint=ip_hint,
-                    verify_base_url=verify_base_url)
+                    verify_base_url=verify_base_url, oversize=oversize)
             finally:
                 conn.close()
+            self._send(status, payload, headers)
+
+        def _send(self, status: int, payload: dict, headers: dict | None = None) -> None:
+            headers = headers or {}
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             for name, value in headers.items():
@@ -228,17 +263,27 @@ def _open(db_path: Path) -> sqlite3.Connection:
 
 
 def serve(db_path: Path, *, host: str = "127.0.0.1", port: int = 8801,
-          verify_base_url: str = service.DEFAULT_VERIFY_BASE_URL) -> HTTPServer:
-    """Create (do not yet serve) an HTTPServer bound to loopback only.
+          verify_base_url: str = service.DEFAULT_VERIFY_BASE_URL) -> ThreadingHTTPServer:
+    """Create (do not yet serve) a server bound to loopback only.
 
     Refuses any non-loopback host — GATE-PUB / INV-4. Returns the server so a
     caller/test can ``serve_forever`` or ``handle_request`` then shut down.
+
+    THREADING (GOV-1669): plain ``HTTPServer`` serves one request at a time, so
+    a single stalled connection blocked the whole gate — measured, not feared.
+    Threading is safe here because the handler shares no mutable state: each
+    request opens and closes its own sqlite connection, and ``verify_base_url``
+    is an immutable string. ``intake_api`` is deliberately NOT threaded — its
+    handler closes over a ``RawObjectStore`` whose ``_append_link`` appends to a
+    shared ledger file, and that is not established as thread-safe (#206).
     """
     if host not in ALLOWED_BIND_HOSTS:
         raise BindError(
             f"refusing to bind beta gate to {host!r}; loopback only (127.0.0.1)")
-    return HTTPServer((host, port),
-                      make_handler(db_path, verify_base_url=verify_base_url))
+    server = ThreadingHTTPServer(
+        (host, port), make_handler(db_path, verify_base_url=verify_base_url))
+    server.daemon_threads = True   # a stalled worker must not block shutdown
+    return server
 
 
 def main(argv: list[str] | None = None) -> int:

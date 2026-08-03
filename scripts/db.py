@@ -54,9 +54,31 @@ def _statements(sql: str) -> list[str]:
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Does ``table`` already have ``column``? Used for ADD COLUMN idempotency.
+
+    Uses the ``pragma_table_info`` table-valued function with a BOUND parameter
+    rather than interpolating the name into ``PRAGMA table_info(...)``.
+
+    That is a correctness fix, not only a hardening (GOV-1683). Measured on the
+    interpolated form:
+
+        table_info(t) --)  -> resolved to table `t` and returned True
+        table_info(t;x)    -> OperationalError
+
+    A malformed identifier therefore probed the WRONG table, and
+    ``_apply_statement`` would skip an ``ADD COLUMN`` it should have run — a
+    silently-missing column rather than an error. The bound form returns False
+    for both, which is the truthful answer.
+
+    Not a live vulnerability: the name comes from ``_ADD_COLUMN_RE`` matching
+    repo-authored migration text, and Python's driver refuses stacked statements
+    (``ProgrammingError: You can only execute one statement at a time``).
+    Recorded so nobody later reads this as a patched hole.
+    """
     table = table.strip('"')
     column = column.strip('"')
-    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})"))
+    return any(row[0] == column for row in
+               conn.execute("SELECT name FROM pragma_table_info(?)", (table,)))
 
 
 def _apply_statement(conn: sqlite3.Connection, stmt: str) -> None:

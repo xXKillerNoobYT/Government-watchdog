@@ -8,6 +8,7 @@ per-test via ``monkeypatch`` (never a repo constant, INV-7).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -20,6 +21,67 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import db  # noqa: E402
 
 MCP_SECRET = "unit-test-hmac-secret-not-committed"
+
+
+# --- GOV-1675 (AUTO GO C6): DeprecationWarning ratchet, OUR modules only -------
+
+def _first_party_module_pattern() -> str:
+    """Regex of every top-level module name importable from ``scripts/``.
+
+    **Derived from the filesystem, never hand-listed.** A hard-coded allowlist
+    would silently stop covering any module added after it was written — the
+    "property holds by absence" shape this repo has now hit three times. Reading
+    the directory means a new module is ratcheted the moment it exists.
+
+    ``scripts/`` is on ``sys.path``, so modules import under bare top-level
+    names (``accounts.service``, ``db``, ``beta.provision``) with no shared
+    prefix to match on. That is why this is a generated alternation rather than
+    one tidy ``scripts\\..*``.
+    """
+    scripts = ROOT / "scripts"
+    names = {p.stem for p in scripts.glob("*.py") if not p.stem.startswith("_")}
+    names |= {d.name for d in scripts.iterdir()
+              if d.is_dir() and (d / "__init__.py").exists()}
+    return "(%s)(\\..*)?" % "|".join(sorted(re.escape(n) for n in names))
+
+
+def pytest_configure(config):
+    """Make a DeprecationWarning raised by THIS repo's code a test failure.
+
+    WHY (measured 2026-07-31, iteration 25). The suite emits zero warnings, but
+    nothing held it there: injecting a `DeprecationWarning` into
+    `accounts/consent.py` produced `18 passed, 1 warning` and **exit code 0**.
+    CI runs bare `pytest -q` (`backend-tests.yml:39`), so the warning printed
+    into a log nobody reads and the merge went green — the same shape as
+    GOV-1661, where a `ResourceWarning` ratchet reported green with the defect
+    reintroduced.
+
+    WHY SCOPED. `pytest.ini` deliberately refused a blanket `-W error` because
+    it "would fail on third-party deprecations outside this repo's control".
+    That reasoning still holds, so this errors only on warnings attributed to
+    first-party modules; a deprecation raised inside `site-packages` stays a
+    warning and cannot break CI on someone else's release schedule.
+
+    Installed here rather than in `pytest.ini` because the module list is
+    computed, and `filterwarnings` ini lines are static text.
+
+    KNOWN GAP, stated rather than left to be discovered. A warning filter's
+    `module` field matches the `__name__` of the frame the warning is
+    *attributed* to — which `stacklevel` decides, not the file the `warn()`
+    call sits in. So a module-level `warnings.warn(..., stacklevel=2)` inside a
+    first-party module is charged to whichever module *imported* it (a test
+    file), falls outside this pattern, and stays a warning. Measured: that exact
+    mutation gave `18 passed, 1 warning`, exit 0. The realistic cases — our code
+    calling a deprecated API, or warning from inside one of our own functions —
+    attribute to us and DO fail (measured: 12 failed, exit 1). Widening this to
+    cover test modules would re-admit every third-party import-time deprecation,
+    which is precisely what `pytest.ini` refused, so the gap is left open on
+    purpose rather than closed at that cost.
+    """
+    config.addinivalue_line(
+        "filterwarnings",
+        f"error::DeprecationWarning:{_first_party_module_pattern()}")
+
 
 # The full scope set a wide-open pilot grant would carry.
 ALL_SCOPES = [

@@ -117,3 +117,75 @@ def test_next_free_slot_is_discoverable():
         "slots are not contiguous — see test_migration_slots_are_contiguous_from_0001"
     )
     assert not (MIGRATIONS_DIR / f"{next_free:04d}").exists()
+
+
+# --- GOV-1672 (C1): documentation must not advertise a stale slot ------------
+#
+# The file-level guards above stop two MIGRATIONS colliding. This stops the
+# DOCUMENT that sends someone to a slot from being wrong — the upstream cause.
+# Found by C1 on the accounts plan, whose header read "Next migration slot: 0025"
+# long after 0025 merged. PRs #199 and #132 both took 0032 the same week.
+
+import re
+from pathlib import Path
+
+DOCS = Path(__file__).resolve().parents[1] / "Docs"
+
+# Both patterns are anchored to the START OF A LINE with optional bold markers,
+# i.e. the header form only. That is deliberate: the first version matched
+# anywhere, and immediately fired on this very PR's correction note, which
+# QUOTES the old header line while explaining that it was wrong. Same trap as
+# GOV-1665, where an append-only sweep tripped on the docstring promising there
+# was no update path. **Match on syntax and position, not on vocabulary** —
+# any guard that greps for a phrase will eventually hit the prose describing it.
+#: `**Next migration slot:** NNNN` — a forward claim; the slot must still be FREE.
+_NEXT_CLAIM = re.compile(r"^\**Next migration slot:\**\s*(\d{4})", re.I | re.M)
+#: `**Migration slot (consumed):** NNNN` — historical; it must EXIST.
+_CONSUMED_CLAIM = re.compile(r"^\**Migration slot \(consumed\):\**\s*(\d{4})",
+                             re.I | re.M)
+
+
+def _doc_claims(pattern):
+    """Every (doc, slot) pair matching `pattern` across Docs/*.md."""
+    found = []
+    for doc in sorted(DOCS.rglob("*.md")):
+        for slot in pattern.findall(doc.read_text(encoding="utf-8")):
+            found.append((doc.name, slot))
+    return found
+
+
+def test_no_doc_advertises_an_already_consumed_slot():
+    """A doc saying "take slot NNNN" must name one that is genuinely free.
+
+    This is the upstream half of the collision guard. `test_migration_slots.py`'s
+    other tests fail the branch that lands a duplicate; this fails the *document*
+    that would send two people there in the first place.
+    """
+    existing = {f.name[:4] for f in _migration_files()}
+
+    stale = [(doc, slot) for doc, slot in _doc_claims(_NEXT_CLAIM)
+             if slot in existing]
+
+    assert not stale, (
+        "these docs point at a slot that is already taken: "
+        + ", ".join(f"{doc} -> {slot}" for doc, slot in stale))
+
+
+def test_consumed_slot_claims_name_a_migration_that_exists():
+    """The historical form must be true too, or it is just a different lie.
+
+    Also keeps this pair NON-VACUOUS: a guard that scans for a pattern and finds
+    nothing passes for the wrong reason. At least one claim must be present, so
+    deleting every claim to make the suite green fails instead.
+    """
+    existing = {f.name[:4] for f in _migration_files()}
+    claims = _doc_claims(_CONSUMED_CLAIM)
+
+    assert claims, ("no `Migration slot (consumed): NNNN` claim found in Docs/ — "
+                    "if the convention was dropped, drop these tests with it "
+                    "rather than leaving them to pass vacuously")
+
+    missing = [(doc, slot) for doc, slot in claims if slot not in existing]
+    assert not missing, (
+        "these docs record a consumed slot with no migration behind it: "
+        + ", ".join(f"{doc} -> {slot}" for doc, slot in missing))

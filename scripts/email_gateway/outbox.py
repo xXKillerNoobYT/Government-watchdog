@@ -87,6 +87,32 @@ def send_pending(conn: sqlite3.Connection, *, limit: int = 100) -> list[dict]:
 
     The adapter is resolved fresh from the feature flag — callers cannot
     inject one, so a disabled/absent flag can never be bypassed (INV-5).
+
+    **AT-MOST-ONCE per row (GOV-1676).** A send is an *irreversible outward
+    side effect*: an over-admitted cohort member can be corrected in the
+    database, a delivered email cannot be undelivered. So each row is CLAIMED
+    and the claim COMMITTED before ``adapter.send`` is ever called, and the row
+    is flipped to ``sent`` only after the adapter returns.
+
+    The claim writes ``status = 'failed'``, which is not a placeholder — it is
+    the literally true state from the moment we decide to send until we know we
+    succeeded. A crash anywhere in between therefore leaves the row ``failed``
+    rather than ``pending``, so nothing re-delivers it silently; an operator
+    sees a failed row and decides. **For an irreversible action, a visible stuck
+    row is the correct failure mode and a silent retry is not** — the same
+    fail-closed reasoning that governs every other gate in this repo.
+
+    The claim is a single conditional ``UPDATE ... WHERE status = 'pending'``,
+    so two concurrent senders cannot both take a row: the loser matches zero
+    rows and skips. That is the same technique the magic-code single-use guard
+    uses (``WHERE consumed_utc IS NULL``) and it needs no ``BEGIN IMMEDIATE``,
+    because the atomicity lives in the ``WHERE`` clause rather than in a
+    transaction spanning a read and a write.
+
+    Committing per row also means one bad row no longer discards the batch's
+    earlier successes — previously every ``UPDATE`` waited on a single commit
+    after the loop, so a raise on row 5 rolled back rows 1-4 whose mail had
+    already gone out.
     """
     adapter = adapters.resolve_adapter(conn)
     results = []
@@ -95,23 +121,46 @@ def send_pending(conn: sqlite3.Connection, *, limit: int = 100) -> list[dict]:
         " u.email FROM email_outbox o JOIN users u ON u.user_id = o.user_id"
         " WHERE o.status = 'pending' ORDER BY o.queued_utc, o.rowid LIMIT ?",
         (limit,)).fetchall()
-    now = _utcnow()
     for outbox_id, user_id, subject, body_text, body_html, email in rows:
         if not _consent_ok(conn, user_id):
             conn.execute(
                 "UPDATE email_outbox SET status = 'suppressed',"
-                " adapter_used = ? WHERE outbox_id = ?",
+                " adapter_used = ? WHERE outbox_id = ? AND status = 'pending'",
                 (adapter.name, outbox_id))
             _log(conn, outbox_id, "suppressed", None)
+            conn.commit()
             results.append({"outbox_id": outbox_id, "status": "suppressed"})
             continue
-        provider_ref = adapter.send(to_email=email, subject=subject,
-                                    body_text=body_text, body_html=body_html)
+
+        # CLAIM — single winner, durable BEFORE anything leaves the building.
+        claimed = conn.execute(
+            "UPDATE email_outbox SET status = 'failed', adapter_used = ?"
+            " WHERE outbox_id = ? AND status = 'pending'",
+            (adapter.name, outbox_id)).rowcount
+        if claimed != 1:
+            conn.rollback()  # another sender took it between SELECT and here
+            results.append({"outbox_id": outbox_id,
+                            "status": "skipped_not_pending"})
+            continue
+        conn.commit()
+
+        try:
+            provider_ref = adapter.send(to_email=email, subject=subject,
+                                        body_text=body_text,
+                                        body_html=body_html)
+        except Exception:
+            # The row is already 'failed' and already committed; record why and
+            # let the caller see the error. It will NOT be re-sent silently.
+            _log(conn, outbox_id, "failed", None)
+            conn.commit()
+            raise
+
         conn.execute(
             "UPDATE email_outbox SET status = 'sent', adapter_used = ?,"
-            " sent_utc = ? WHERE outbox_id = ?", (adapter.name, now, outbox_id))
+            " sent_utc = ? WHERE outbox_id = ?",
+            (adapter.name, _utcnow(), outbox_id))
         _log(conn, outbox_id, "sent", provider_ref)
+        conn.commit()
         results.append({"outbox_id": outbox_id, "status": "sent",
                         "adapter": adapter.name})
-    conn.commit()
     return results

@@ -172,6 +172,25 @@ All four gates must pass for any candidate to be eligible for removal:
 > (`TestCheckGate2OriginMain`): on a clone whose local refs are rewound behind a
 > genuinely-merged branch, gate 2 fails with `do_fetch=False` and passes with
 > `do_fetch=True`.
+>
+> **GOV-1670 — the fetch is once-per-repo and timeout-resilient.** Two hardenings
+> to that best-effort fetch, both surfaced when the daily routine crashed then
+> timed out against a slow remote:
+> 1. **One fetch per repo, not per branch.** `check_gate2` used to call
+>    `resolve_merge_ref(do_fetch=True)` for *every* branch, so an N-branch repo
+>    issued N sequential `git fetch`es of the same ref. With a slow remote
+>    (~90s/fetch measured) an 88-branch scan never reached `execute_cleanup`.
+>    `discover_candidates` now refreshes `origin/<default>` **once** up front and
+>    evaluates each branch's gate 2 with `do_fetch=False` against the cached ref
+>    (it cannot change mid-scan). RED-proof:
+>    `test_discover_fetches_origin_at_most_once_per_repo`.
+> 2. **A slow fetch degrades, it does not crash.** `_run_git` caps the fetch at
+>    30s; a merely-slow (not failed) remote raises `subprocess.TimeoutExpired`,
+>    which `check=False` does **not** suppress — that is a *different* exception
+>    from `CalledProcessError`. Uncaught it aborted the whole lane, defeating the
+>    documented "unreachable → fall back to cached ref" contract. `resolve_merge_ref`
+>    now catches `TimeoutExpired`/`OSError` and falls back. RED-proof:
+>    `test_resolve_merge_ref_survives_fetch_timeout`.
 
 ## Guarded squash-merge detector (GOV-537, CTO decision A / GOV-536)
 
