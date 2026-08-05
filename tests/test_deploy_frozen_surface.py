@@ -47,6 +47,7 @@ MIGRATION_ALLOWLIST = {
     "0031_supplied_file_provenance_note.sql",  # GOV-1625 (B3 schema evo): free-text provenance_note
     "0032_beta_account_deletion_requests.sql",  # GOV-1565: user-initiated account-deletion request lifecycle
     "0033_source_versions.sql",  # GOV-1684 (Stage 5 R1/Slice 1): civic source-version preservation + typed lineage
+    "0034_source_version_diffs.sql",  # GOV-1685 (Stage 5 R1/Slice 2): late-change detection + structured before/after diff
 }
 
 
