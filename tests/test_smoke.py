@@ -120,6 +120,10 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         "account_deletion_requests",
         # GOV-1684 (0033 / Stage 5 R1/Slice 1): civic source-version preservation + typed lineage.
         "source_versions",
+        # GOV-1685 (0034 / Stage 5 R1/Slice 2): late-change detection + structured
+        # before/after source diff over a preserved version pair.
+        "source_version_changes",
+        "source_version_diff_segments",
     }
 
 
