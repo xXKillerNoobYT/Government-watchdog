@@ -48,6 +48,7 @@ MIGRATION_ALLOWLIST = {
     "0032_beta_account_deletion_requests.sql",  # GOV-1565: user-initiated account-deletion request lifecycle
     "0033_source_versions.sql",  # GOV-1684 (Stage 5 R1/Slice 1): civic source-version preservation + typed lineage
     "0034_source_version_diffs.sql",  # GOV-1685 (Stage 5 R1/Slice 2): late-change detection + structured before/after diff
+    "0035_source_change_affected_records.sql",  # GOV-1688 (Stage 5 R1/Slice 3): affected-set resolver + selective invalidation + statement/evidence<->diff binding
 }
 
 

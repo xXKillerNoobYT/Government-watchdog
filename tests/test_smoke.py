@@ -124,6 +124,9 @@ def test_apply_creates_all_tables(fresh_db: Path) -> None:
         # before/after source diff over a preserved version pair.
         "source_version_changes",
         "source_version_diff_segments",
+        # GOV-1688 (0035 / Stage 5 R1/Slice 3): affected-set resolver + selective
+        # invalidation ledger + statement/evidence<->diff binding (one ledger table).
+        "source_change_affected_records",
     }
 
 
