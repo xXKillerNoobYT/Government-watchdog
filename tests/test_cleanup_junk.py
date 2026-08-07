@@ -8,9 +8,12 @@ path whose segments contain 'evidence', or that sits under a keep-marker.
 """
 from __future__ import annotations
 
+import io
+import json
 import os
 import sys
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -154,3 +157,111 @@ def test_keep_marker_dir_preserved_under_apply(repo):
     cj.remove_candidate(art, include_tracked=True, include_databases=True,
                         include_markdown_logs=True)
     assert artifact.exists()
+
+
+# --------------------------------------------------------------------------
+# GOV-1694 — dry-run preview parity + single-pass idempotency
+# --------------------------------------------------------------------------
+def _run_main(monkeypatch, argv):
+    """Invoke cleanup_junk.main() with argv and return the parsed --json summary."""
+    monkeypatch.setattr(sys, "argv", ["cleanup_junk.py", "--json", *argv])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = cj.main()
+    assert rc == 0
+    return json.loads(buf.getvalue())
+
+
+def _paths(rows):
+    return {r["path"] for r in rows}
+
+
+@pytest.fixture
+def mixed_tree(repo):
+    """A realistic Logs/ tree: stale .json captures (deletable) plus a markdown
+    note, a local .db, and a retained evidence subdir (all preserved)."""
+    logs = repo / "Logs"
+    # deletable stale routine captures
+    for i in range(4):
+        f = logs / f"dryrun-2026080{i}.json"
+        f.write_text('{"i": %d}' % i)
+        _age(f, 10)
+    nested = logs / "cache"
+    nested.mkdir()
+    for i in range(3):
+        f = nested / f"c{i}.json"
+        f.write_text("{}")
+        _age(f, 10)
+    _age(nested, 10)
+    # preserved: markdown note under a log dir
+    md = logs / "notes.md"
+    md.write_text("# review-only")
+    _age(md, 10)
+    # preserved: local database
+    db = logs / "state.db"
+    db.write_text("sqlite bytes")
+    _age(db, 10)
+    # preserved: owner-retained evidence subdir
+    ev = logs / "gov1-evidence" / "capture.json"
+    ev.parent.mkdir(parents=True)
+    ev.write_text("{}")
+    _age(ev, 10)
+    _age(ev.parent, 10)
+    _age(logs, 10)
+    return {"logs": logs, "md": md, "db": db, "evidence": ev, "nested": nested}
+
+
+def test_dry_run_preview_is_nonempty_and_matches_apply(monkeypatch, mixed_tree):
+    # GOV-1694 symptom 1: the dry-run `deleted` list must be a faithful preview
+    # of exactly what --apply removes, not an always-empty list.
+    dry = _run_main(monkeypatch, ["--retention-days", "3"])
+    assert dry["mode"] == "dry-run"
+    assert dry["deleted"], "dry-run must preview what apply would delete, not report 0"
+    assert dry["deleted_count"] > 0
+    assert dry["deleted_bytes"] > 0
+
+    applied = _run_main(monkeypatch, ["--retention-days", "3", "--apply"])
+    assert applied["mode"] == "apply"
+
+    # Byte-identical path set between the dry-run preview and the apply removal.
+    assert _paths(dry["deleted"]) == _paths(applied["deleted"])
+
+
+def test_apply_is_single_pass_idempotent(monkeypatch, mixed_tree):
+    # GOV-1694 symptom 2: a second --apply over the same tree must delete nothing.
+    first = _run_main(monkeypatch, ["--retention-days", "3", "--apply"])
+    assert first["deleted_count"] > 0
+    second = _run_main(monkeypatch, ["--retention-days", "3", "--apply"])
+    assert second["deleted_count"] == 0, "apply must reach its fixed point in one pass"
+    assert second["deleted"] == []
+
+
+def test_preview_and_apply_preserve_md_db_and_evidence(monkeypatch, mixed_tree):
+    # The existing safety gates (retained evidence / .db / .md) stay green: none
+    # of the preserved kinds appear in the delete preview, and all survive apply.
+    dry = _run_main(monkeypatch, ["--retention-days", "3"])
+    deleted_paths = _paths(dry["deleted"])
+    assert str(mixed_tree["md"]) not in deleted_paths
+    assert str(mixed_tree["db"]) not in deleted_paths
+    assert str(mixed_tree["evidence"]) not in deleted_paths
+
+    _run_main(monkeypatch, ["--retention-days", "3", "--apply"])
+    assert mixed_tree["md"].exists()
+    assert mixed_tree["db"].exists()
+    assert mixed_tree["evidence"].exists()
+    # ...but the stale captures are gone.
+    assert not (mixed_tree["logs"] / "dryrun-20260800.json").exists()
+    assert not mixed_tree["nested"].exists()
+
+
+def test_would_delete_is_pure_no_side_effects(mixed_tree):
+    # would_delete must not touch the filesystem — calling it leaves every path
+    # in place, including the deletable ones.
+    logs = mixed_tree["logs"]
+    before = {str(p) for p in logs.rglob("*")}
+    candidates = cj.iter_candidates([logs.parent], retention_days=3, include_tracked=False)
+    for c in candidates:
+        cj.would_delete(c, include_tracked=False, include_databases=False,
+                        include_markdown_logs=False)
+    after = {str(p) for p in logs.rglob("*")}
+    assert before == after
