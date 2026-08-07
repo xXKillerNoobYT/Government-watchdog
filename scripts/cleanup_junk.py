@@ -264,19 +264,50 @@ def iter_candidates(scan_roots: Iterable[Path], retention_days: int, include_tra
     return sorted(candidates, key=lambda c: len(c.path.parts), reverse=True)
 
 
-def remove_candidate(candidate: Candidate, include_tracked: bool, include_databases: bool, include_markdown_logs: bool) -> bool:
+DB_SUFFIXES = {".sqlite", ".sqlite3", ".db", ".duckdb", ".wal", ".db-journal", ".db-wal", ".db-shm"}
+
+
+def would_delete(
+    candidate: Candidate,
+    include_tracked: bool,
+    include_databases: bool,
+    include_markdown_logs: bool,
+) -> tuple[bool, str]:
+    """Pure, side-effect-free predicate: *would* this candidate be deleted under
+    these flags? (GOV-1694.)
+
+    Returns ``(True, "")`` when the candidate would be removed, else
+    ``(False, <reason it is preserved>)``. This holds every gate that used to
+    live inline in ``remove_candidate`` above the delete calls, so a dry-run can
+    render a faithful preview (which files ``--apply`` would remove) instead of
+    reporting an empty ``deleted`` list. ``remove_candidate`` now calls this and
+    deletes only when it returns ``True`` — one decision path, two callers.
+
+    Single-pass invariant (why apply needs no second pass): every reason this
+    returns ``False`` is an item that is *never* deleted (retained evidence,
+    git-tracked, a DB, a markdown note). So a directory's verdict here is
+    invariant under the deletion of its *deletable* descendants — deleting the
+    children this predicate would delete cannot flip a parent from preserved to
+    deletable or back. Combined with the children-before-parents ordering in
+    ``iter_candidates``, one pass reaches the fixed point.
+    """
     # Owner-retained-evidence guard (GOV-272): never delete, not even with
-    # --include-tracked. Re-derive at delete time so a directly-passed Candidate
-    # is also protected, mirroring the cleanup_merged_worktrees gate-4 contract.
+    # --include-tracked. Re-derive here so a directly-passed Candidate is also
+    # protected, mirroring the cleanup_merged_worktrees gate-4 contract.
     if candidate.retained or retained_evidence(candidate.path, REPO_ROOT)[0]:
-        return False
+        return False, "retained owner evidence (GOV-272); never deleted"
     if candidate.tracked and not include_tracked:
-        return False
-    db_suffixes = {".sqlite", ".sqlite3", ".db", ".duckdb", ".wal", ".db-journal", ".db-wal", ".db-shm"}
-    if candidate.path.is_file() and candidate.path.suffix in db_suffixes and not include_databases:
-        return False
-    if candidate.path.is_file() and candidate.path.suffix == ".md" and any(part in CLEAN_DIR_NAMES for part in candidate.path.parts) and not include_markdown_logs:
-        return False
+        return False, "git-tracked; report-only unless --include-tracked"
+    if candidate.path.is_file():
+        if candidate.path.suffix in DB_SUFFIXES and not include_databases:
+            return False, "local database; report-only unless --include-databases"
+        if (
+            candidate.path.suffix == ".md"
+            and any(part in CLEAN_DIR_NAMES for part in candidate.path.parts)
+            and not include_markdown_logs
+        ):
+            return False, "markdown log note; report-only unless --include-markdown-logs"
+        return True, ""
     if candidate.path.is_dir():
         # Do not delete a directory if it still contains review-only markdown/
         # database files, or any owner-retained evidence (GOV-272). Without the
@@ -285,12 +316,23 @@ def remove_candidate(candidate: Candidate, include_tracked: bool, include_databa
         # candidate but lives under a deletable parent.
         for child in candidate.path.rglob("*"):
             if retained_evidence(child, REPO_ROOT)[0]:
-                return False
+                return False, "directory contains retained owner evidence (GOV-272)"
             if child.is_file():
-                if child.suffix in db_suffixes and not include_databases:
-                    return False
+                if child.suffix in DB_SUFFIXES and not include_databases:
+                    return False, "directory contains a local database; needs --include-databases"
                 if child.suffix == ".md" and not include_markdown_logs:
-                    return False
+                    return False, "directory contains a markdown log note; needs --include-markdown-logs"
+        return True, ""
+    # Neither file nor dir on disk (e.g. removed as part of a parent rmtree
+    # earlier in the same pass) — nothing to delete.
+    return False, "path no longer present"
+
+
+def remove_candidate(candidate: Candidate, include_tracked: bool, include_databases: bool, include_markdown_logs: bool) -> bool:
+    ok, _reason = would_delete(candidate, include_tracked, include_databases, include_markdown_logs)
+    if not ok:
+        return False
+    if candidate.path.is_dir():
         shutil.rmtree(candidate.path)
     elif candidate.path.exists():
         candidate.path.unlink()
@@ -330,9 +372,21 @@ def main() -> int:
     deleted = []
     skipped = []
     for c in candidates:
-        did_delete = False
-        if args.apply:
-            did_delete = remove_candidate(c, args.include_tracked, args.include_databases, args.include_markdown_logs)
+        # Compute the delete verdict once, in BOTH modes (GOV-1694). In a dry
+        # run this populates a faithful preview of exactly what --apply would
+        # remove, instead of the old always-empty `deleted` list that left the
+        # routine's review gate blind. The verdict is invariant under deletion
+        # of deletable siblings/children (see would_delete's docstring), so the
+        # dry-run preview is byte-identical to the set apply removes.
+        will_delete, preserve_reason = would_delete(
+            c, args.include_tracked, args.include_databases, args.include_markdown_logs
+        )
+        if args.apply and will_delete:
+            did_delete = remove_candidate(
+                c, args.include_tracked, args.include_databases, args.include_markdown_logs
+            )
+        else:
+            did_delete = False
         row = {
             "path": str(c.path),
             "reason": c.reason,
@@ -340,9 +394,15 @@ def main() -> int:
             "tracked": c.tracked,
             "size_bytes": c.size_bytes,
         }
-        if did_delete:
+        if args.apply:
+            in_deleted = did_delete
+        else:
+            in_deleted = will_delete
+        if in_deleted:
             deleted.append(row)
         else:
+            if not will_delete and preserve_reason:
+                row = {**row, "preserved_reason": preserve_reason}
             skipped.append(row)
 
     summary = {
